@@ -60,7 +60,6 @@ class MelodyAudioService {
     _player.setAudioContext(
       AudioContext(
         android: const AudioContextAndroid(
-          isSpeakerphoneOn: false,
           stayAwake: true,
           contentType: AndroidContentType.music,
           usageType: AndroidUsageType.media,
