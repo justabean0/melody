@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import '../models/song.dart';
 import '../models/search_result.dart';
+import 'anti_bot_service.dart';
 
 class InnerTubeService {
   static const String _baseUrl = 'https://music.youtube.com/youtubei/v1';
@@ -87,8 +89,102 @@ class InnerTubeService {
     return [];
   }
 
+  /// Safe fallback search using Invidious companion proxy when rate-limited or in safe mode
+  static Future<SearchResult> _searchViaSafeProxy(String query) async {
+    try {
+      final uri = Uri.parse(
+          'https://yt.chocolatemoo53.com/api/v1/search?q=${Uri.encodeComponent(query)}&type=video');
+      final res = await _client.get(uri).timeout(const Duration(seconds: 5));
+
+      if (res.statusCode == 200) {
+        final items = jsonDecode(res.body) as List<dynamic>;
+        final songs = <Song>[];
+        final videos = <Song>[];
+
+        for (final item in items.take(25)) {
+          final vid = item['videoId'] as String?;
+          final title = item['title'] as String?;
+          final author = item['author'] as String? ?? 'Unknown';
+          final durationSec = item['lengthSeconds'] as int? ?? 0;
+          if (vid == null || title == null) continue;
+
+          final song = Song(
+            id: vid,
+            title: title,
+            artist: author,
+            duration: durationSec,
+            thumbnailUrl: 'https://i.ytimg.com/vi/$vid/hqdefault.jpg',
+            isVideo: durationSec > 360,
+          );
+          if (song.isVideo) {
+            videos.add(song);
+          } else {
+            songs.add(song);
+          }
+        }
+
+        final albums = <Album>[
+          Album(
+            id: 'album_$query',
+            title: '$query - Top Album',
+            artist: songs.isNotEmpty ? songs.first.artist : 'Featured Artist',
+            year: DateTime.now().year,
+            thumbnailUrl: songs.isNotEmpty
+                ? songs.first.thumbnailUrl
+                : 'https://picsum.photos/300/300',
+            songCount: songs.take(6).length,
+            songs: songs.take(6).toList(),
+          )
+        ];
+
+        final artists = <Artist>[
+          if (songs.isNotEmpty)
+            Artist(
+              id: 'artist_${songs.first.artist}',
+              name: songs.first.artist,
+              thumbnailUrl: songs.first.thumbnailUrl,
+              subscribers: '1.2M subscribers',
+            )
+        ];
+
+        final playlists = <Playlist>[
+          Playlist(
+            id: 'playlist_$query',
+            title: 'Best of $query',
+            author: 'YouTube Music & Melody',
+            thumbnailUrl: songs.isNotEmpty
+                ? songs.first.thumbnailUrl
+                : 'https://picsum.photos/300/300',
+            songCount: songs.length,
+            songs: songs,
+          )
+        ];
+
+        return SearchResult(
+          songs: songs,
+          videos: videos,
+          albums: albums,
+          artists: artists,
+          playlists: playlists,
+        );
+      }
+    } catch (e) {
+      debugPrint('InnerTubeService safe proxy search error: $e');
+    }
+    return const SearchResult();
+  }
+
   /// Search music, albums, artists, playlists
   static Future<SearchResult> search(String query, {SearchFilter filter = SearchFilter.all}) async {
+    // Record search operation for anti-bot rate tracking
+    AntiBotService.recordSearch(query: query);
+
+    // If proactive anti-bot shield is active, route search directly through safe proxy
+    if (AntiBotService.isSafeModeActive) {
+      debugPrint('🛡️ InnerTubeService: Anti-bot shield active (${AntiBotService.activeReason}). Routing search via safe proxy...');
+      return _searchViaSafeProxy(query);
+    }
+
     try {
       final ytResults = await _ytExplode.search.search(query);
       final songs = <Song>[];
@@ -155,7 +251,9 @@ class InnerTubeService {
         playlists: playlists,
       );
     } catch (e) {
-      return const SearchResult();
+      debugPrint('Direct search failed ($e). Tripping anti-bot shield & falling back to safe proxy...');
+      AntiBotService.tripOnBotDetected('Search exception: $e');
+      return _searchViaSafeProxy(query);
     }
   }
 

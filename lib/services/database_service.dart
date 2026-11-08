@@ -150,7 +150,7 @@ class DatabaseService {
 
   // --- Updates ---
   static String getUpdateSource() =>
-      _prefs?.getString(_updateSourceKey) ?? 'https://api.github.com/repos/Srijan/melody/releases/latest';
+      _prefs?.getString(_updateSourceKey) ?? 'https://api.github.com/repos/justabean0/melody/releases/latest';
   static Future<void> setUpdateSource(String source) async =>
       await _prefs?.setString(_updateSourceKey, source);
 

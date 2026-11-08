@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../models/song.dart';
+import 'anti_bot_service.dart';
+import 'audio_cache_service.dart';
 import 'database_service.dart';
 import 'innertube_service.dart';
 import 'stream_resolver_service.dart';
@@ -75,6 +77,7 @@ class MelodyAudioService {
   }
 
   Future<void> playSong(Song song, {List<Song>? contextQueue, int? startIndex}) async {
+    AntiBotService.recordPlay(videoId: song.id);
     if (contextQueue != null && contextQueue.isNotEmpty) {
       _queue.clear();
       _queue.addAll(contextQueue);
@@ -105,15 +108,48 @@ class MelodyAudioService {
     DatabaseService.addToHistory(_currentSong!);
 
     try {
-      // Resolve direct audio stream URL with multi-instance solver & geoblock fallback
-      final streamUrl = await StreamResolverService.resolveAudioStreamUrl(
+      // 1. Resolve audio stream with instant cache check & hybrid fast path
+      String streamUrl = await StreamResolverService.resolveAudioStreamUrl(
         _currentSong!.id,
         songTitle: _currentSong!.title,
         artist: _currentSong!.artist,
+        optimistic: true,
       );
 
+      // 2. Local Disk Cache & 5s Head Proxy mapping
+      String playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, streamUrl);
+
       await _player.stop();
-      await _player.play(UrlSource(streamUrl));
+
+      try {
+        if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
+          await _player.play(DeviceFileSource(playableUrl));
+        } else {
+          await _player.play(UrlSource(playableUrl));
+        }
+      } catch (playError) {
+        debugPrint('Optimistic play error ($playError). Retrying with safe probed stream...');
+        StreamResolverService.invalidateCache(_currentSong!.id);
+
+        // Safe fallback retry with active probe & alternative track lookup
+        streamUrl = await StreamResolverService.resolveAudioStreamUrl(
+          _currentSong!.id,
+          songTitle: _currentSong!.title,
+          artist: _currentSong!.artist,
+          optimistic: false,
+        );
+        playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, streamUrl);
+
+        if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
+          await _player.play(DeviceFileSource(playableUrl));
+        } else {
+          await _player.play(UrlSource(playableUrl));
+        }
+      }
+
+      // 3. NEXT-TRACK PRE-FETCHING:
+      // In the background, pre-resolve next track stream & pre-cache its 5-second head
+      _triggerNextTrackPrefetch();
 
       // Auto-mix recommendations when nearing queue completion
       if (_queue.length - _currentIndex <= 2) {
@@ -125,6 +161,29 @@ class MelodyAudioService {
     } finally {
       _isLoading = false;
       _stateChangeController.add(null);
+    }
+  }
+
+  void _triggerNextTrackPrefetch() {
+    if (_currentIndex + 1 < _queue.length) {
+      final nextTrack = _queue[_currentIndex + 1];
+      unawaited(_prefetchTrack(nextTrack));
+    }
+  }
+
+  Future<void> _prefetchTrack(Song song) async {
+    try {
+      debugPrint('AudioService: Pre-fetching next track in queue: "${song.title}" (${song.id})');
+      final url = await StreamResolverService.resolveAudioStreamUrl(
+        song.id,
+        songTitle: song.title,
+        artist: song.artist,
+        optimistic: true,
+      );
+      // Pre-cache first 5-8 seconds (~128KB) to disk
+      await AudioCacheService.prefetchHead(song.id, url);
+    } catch (e) {
+      debugPrint('Next-track prefetch error for ${song.id}: $e');
     }
   }
 

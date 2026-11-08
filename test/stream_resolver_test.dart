@@ -43,5 +43,15 @@ void main() {
       expect(url.startsWith('https://'), isTrue);
       expect(url.contains('gcr='), isFalse);
     }, timeout: const Timeout(Duration(seconds: 60)));
+
+    test('Stream URL Cache returns instantly (0ms) on repeated requests', () async {
+      final sw = Stopwatch()..start();
+      // Second request for Mayabono Biharini must hit memory cache instantly
+      final cachedUrl = await StreamResolverService.resolveAudioStreamUrl('5xPad9wg1B4');
+      sw.stop();
+
+      expect(cachedUrl, isNotEmpty);
+      expect(sw.elapsedMilliseconds, lessThan(20)); // Sub-20ms cache hit
+    });
   });
 }

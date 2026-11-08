@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/database_service.dart';
+import '../../services/innertube_version_manager.dart';
 import '../../services/update_service.dart';
 import '../components/update_dialog.dart';
 
@@ -100,6 +101,111 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Navigator.pop(ctx);
             },
             child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showInnerTubeDetailsDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.tune, color: Colors.blueAccent),
+            SizedBox(width: 10),
+            Text('InnerTube Engine Health'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'YouTube requires client version strings to process playback requests. '
+              'When Google deprecates older strings, Melody alerts you and automatically '
+              'rotates through safe fallback profiles.',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Client Profiles Pool:',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            ...InnerTubeVersionManager.allProfiles.map((p) {
+              final isDeprecated = InnerTubeVersionManager.isProfileDeprecated(p);
+              final isCurrent = InnerTubeVersionManager.currentProfile.key == p.key;
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      isDeprecated
+                          ? Icons.cancel_outlined
+                          : (isCurrent ? Icons.check_circle : Icons.circle_outlined),
+                      size: 16,
+                      color: isDeprecated
+                          ? Colors.red
+                          : (isCurrent ? Colors.green : Colors.grey),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${p.clientName} v${p.clientVersion}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                          decoration: isDeprecated ? TextDecoration.lineThrough : null,
+                          color: isDeprecated ? Colors.grey : null,
+                        ),
+                      ),
+                    ),
+                    if (isCurrent)
+                      const Text(
+                        'ACTIVE',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Colors.green,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            }),
+            if (InnerTubeVersionManager.isOutdatedWarningActive) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade900.withAlpha(40),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'Warning: ${InnerTubeVersionManager.outdatedReason ?? 'Outdated string detected'}',
+                  style: const TextStyle(fontSize: 11, color: Colors.amber),
+                ),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              InnerTubeVersionManager.reset();
+              Navigator.pop(ctx);
+              setState(() {});
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('InnerTube client profiles reset & re-enabled.')),
+              );
+            },
+            child: const Text('Reset Profiles'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Done'),
           ),
         ],
       ),
@@ -328,7 +434,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(),
 
-          // Section 5: About Melody
+          // Section 5: InnerTube Engine & Client Health
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text(
+              'InnerTube Engine Health',
+              style: TextStyle(
+                color: colorScheme.primary,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.tune),
+            title: const Text('Client Version String'),
+            subtitle: Text(
+              '${InnerTubeVersionManager.currentProfile.clientName} v${InnerTubeVersionManager.currentProfile.clientVersion}',
+            ),
+            trailing: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: InnerTubeVersionManager.isOutdatedWarningActive
+                    ? Colors.amber.withAlpha(40)
+                    : Colors.green.withAlpha(40),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: InnerTubeVersionManager.isOutdatedWarningActive
+                      ? Colors.amber
+                      : Colors.green,
+                ),
+              ),
+              child: Text(
+                InnerTubeVersionManager.isOutdatedWarningActive ? 'Outdated' : 'Healthy',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: InnerTubeVersionManager.isOutdatedWarningActive
+                      ? Colors.amber
+                      : Colors.green,
+                ),
+              ),
+            ),
+            onTap: _showInnerTubeDetailsDialog,
+          ),
+
+          const Divider(),
+
+          // Section 6: About Melody
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: Text(
@@ -340,22 +493,57 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: Center(
+              child: Column(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Image.asset(
+                      'assets/images/logo.png',
+                      width: 80,
+                      height: 80,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        width: 80,
+                        height: 80,
+                        color: colorScheme.primary,
+                        child: const Icon(Icons.music_note, color: Colors.white, size: 40),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Melody',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const Text(
+                    'v1.0.0 • Pure Audio Freedom',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
+          ),
           ListTile(
             leading: const Icon(Icons.info_outline),
-            title: const Text('Melody Flutter'),
-            subtitle: const Text('Version 1.0.0 • Material 3 YouTube Music Client'),
+            title: const Text('About Melody'),
+            subtitle: const Text('Material 3 YouTube Music Client'),
             onTap: () {
               showAboutDialog(
                 context: context,
                 applicationName: 'Melody',
                 applicationVersion: '1.0.0',
-                applicationIcon: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: colorScheme.primary,
-                    borderRadius: BorderRadius.circular(12),
+                applicationIcon: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.asset(
+                    'assets/images/logo_small.png',
+                    width: 48,
+                    height: 48,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const Icon(Icons.music_note, size: 48),
                   ),
-                  child: const Icon(Icons.music_note, color: Colors.white, size: 28),
                 ),
                 children: const [
                   Text(
