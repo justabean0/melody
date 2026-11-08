@@ -137,10 +137,10 @@ class MelodyAudioService {
         _currentIndex = 0;
       }
     } else {
-      if (!_queue.any((s) => s.id == song.id)) {
-        _queue.add(song);
-      }
-      _currentIndex = _queue.indexWhere((s) => s.id == song.id);
+      // Single song played by user: start fresh with this song as the active track
+      _queue.clear();
+      _queue.add(song);
+      _currentIndex = 0;
     }
 
     await _playCurrent();

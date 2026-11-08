@@ -3,7 +3,6 @@ import 'song.dart';
 enum SearchFilter {
   all('All'),
   songs('Songs'),
-  videos('Videos'),
   albums('Albums'),
   artists('Artists'),
   playlists('Playlists');

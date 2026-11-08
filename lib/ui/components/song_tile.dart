@@ -74,36 +74,13 @@ class SongTile extends StatelessWidget {
           color: isCurrent ? colorScheme.primary : colorScheme.onSurface,
         ),
       ),
-      subtitle: Row(
-        children: [
-          if (song.isVideo)
-            Container(
-              margin: const EdgeInsets.only(right: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-              decoration: BoxDecoration(
-                color: colorScheme.primary.withAlpha(40),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                'VIDEO',
-                style: TextStyle(
-                  fontSize: 9,
-                  fontWeight: FontWeight.bold,
-                  color: colorScheme.primary,
-                ),
-              ),
-            ),
-          Expanded(
-            child: Text(
-              '${song.artist} • ${song.formattedDuration}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-        ],
+      subtitle: Text(
+        '${song.artist} • ${song.formattedDuration}',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: colorScheme.onSurfaceVariant,
+        ),
       ),
       trailing: PopupMenuButton<String>(
         icon: Icon(Icons.more_vert, color: colorScheme.onSurfaceVariant),

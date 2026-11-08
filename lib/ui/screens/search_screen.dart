@@ -68,6 +68,7 @@ class _SearchScreenState extends State<SearchScreen> {
                   child: FilterChip(
                     label: Text(f.label),
                     selected: isSelected,
+                    showCheckmark: false,
                     onSelected: (_) {
                       search.setFilter(f);
                       if (_controller.text.isNotEmpty) {
@@ -88,7 +89,7 @@ class _SearchScreenState extends State<SearchScreen> {
                 itemBuilder: (ctx, index) {
                   final suggestion = search.suggestions[index];
                   return ListTile(
-                    leading: const Icon(Icons.history_rounded),
+                    leading: const Icon(Icons.search_rounded),
                     title: Text(suggestion),
                     trailing: const Icon(Icons.north_west, size: 18),
                     onTap: () {
@@ -161,21 +162,6 @@ class _SearchScreenState extends State<SearchScreen> {
             ),
           ),
           ...results.songs.map((s) => SongTile(
-                song: s,
-              )),
-        ],
-
-        // Videos
-        if (results.videos.isNotEmpty &&
-            (search.filter == SearchFilter.all || search.filter == SearchFilter.videos)) ...[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'Videos',
-              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-            ),
-          ),
-          ...results.videos.map((s) => SongTile(
                 song: s,
               )),
         ],

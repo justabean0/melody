@@ -114,13 +114,9 @@ class InnerTubeService {
             artist: author,
             duration: durationSec,
             thumbnailUrl: 'https://i.ytimg.com/vi/$vid/hqdefault.jpg',
-            isVideo: durationSec > 360,
+            isVideo: false,
           );
-          if (song.isVideo) {
-            videos.add(song);
-          } else {
-            songs.add(song);
-          }
+          songs.add(song);
         }
 
         final albums = <Album>[
@@ -197,13 +193,9 @@ class InnerTubeService {
           artist: item.author,
           duration: item.duration?.inSeconds ?? 0,
           thumbnailUrl: 'https://i.ytimg.com/vi/${item.id.value}/hqdefault.jpg',
-          isVideo: item.duration != null && item.duration!.inSeconds > 360,
+          isVideo: false,
         );
-        if (song.isVideo) {
-          videos.add(song);
-        } else {
-          songs.add(song);
-        }
+        songs.add(song);
       }
 
       final albums = <Album>[

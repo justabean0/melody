@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:provider/provider.dart';
+import '../../models/song.dart';
 import '../../providers/playback_provider.dart';
 import '../../providers/library_provider.dart';
 import '../../services/audio_service.dart';
@@ -81,16 +82,20 @@ class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSt
           ),
         ],
       ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          // 1. Full Player View
-          _buildPlayerView(context, playback, theme, colorScheme),
-          // 2. Lyrics View
-          const LyricsView(),
-          // 3. Queue View
-          _buildQueueView(context, playback, theme, colorScheme),
-        ],
+      body: SafeArea(
+        top: false,
+        bottom: true,
+        child: TabBarView(
+          controller: _tabController,
+          children: [
+            // 1. Full Player View
+            _buildPlayerView(context, playback, theme, colorScheme),
+            // 2. Lyrics View
+            const LyricsView(),
+            // 3. Queue View
+            _buildQueueView(context, playback, theme, colorScheme),
+          ],
+        ),
       ),
     );
   }
@@ -336,7 +341,11 @@ class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSt
                 const SizedBox(width: 12),
                 ActionChip(
                   avatar: const Icon(Icons.queue_music, size: 18),
-                  label: Text('Queue (${playback.queue.length})'),
+                  label: Text(
+                    playback.queue.length > playback.currentIndex + 1
+                        ? 'Queue (${playback.queue.length - playback.currentIndex - 1})'
+                        : 'Queue',
+                  ),
                   backgroundColor: colorScheme.surfaceContainerHighest,
                   onPressed: () {
                     _tabController.animateTo(2);
@@ -356,55 +365,122 @@ class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSt
     ThemeData theme,
     ColorScheme colorScheme,
   ) {
+    final currentSong = playback.currentSong;
     final queue = playback.queue;
-    if (queue.isEmpty) {
-      return const Center(child: Text('Queue is empty'));
-    }
+    final currentIdx = playback.currentIndex;
 
-    return Column(
+    final upcoming = (currentIdx >= 0 && currentIdx + 1 < queue.length)
+        ? queue.sublist(currentIdx + 1)
+        : <Song>[];
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16.0, 12.0, 16.0, 32.0),
       children: [
+        if (currentSong != null) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 4.0),
+            child: Text(
+              'Now Playing',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: colorScheme.primary,
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Container(
+            decoration: BoxDecoration(
+              color: colorScheme.primaryContainer.withAlpha(50),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: colorScheme.primary.withAlpha(70),
+                width: 1.5,
+              ),
+            ),
+            child: SongTile(song: currentSong),
+          ),
+          const SizedBox(height: 20),
+        ],
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          padding: const EdgeInsets.symmetric(horizontal: 4.0),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                'Playing Queue (${queue.length} tracks)',
-                style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                upcoming.isNotEmpty
+                    ? 'Up Next (${upcoming.length} ${upcoming.length == 1 ? 'track' : 'tracks'})'
+                    : 'Up Next',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-              TextButton(
-                onPressed: playback.clearQueue,
-                child: const Text('Clear'),
-              ),
+              if (upcoming.isNotEmpty)
+                TextButton.icon(
+                  onPressed: playback.clearQueue,
+                  icon: const Icon(Icons.clear_all, size: 18),
+                  label: const Text('Clear Queue'),
+                ),
             ],
           ),
         ),
-        Expanded(
-          child: ListView.builder(
-            itemCount: queue.length,
-            itemBuilder: (ctx, index) {
-              final s = queue[index];
-              return Dismissible(
-                key: ValueKey('${s.id}_$index'),
-                direction: DismissDirection.endToStart,
-                background: Container(
-                  color: Colors.red,
-                  alignment: Alignment.centerRight,
-                  padding: const EdgeInsets.only(right: 20),
-                  child: const Icon(Icons.delete, color: Colors.white),
-                ),
-                onDismissed: (_) {
-                  playback.removeFromQueue(index);
-                },
-                child: SongTile(
-                  song: s,
-                  index: index,
-                  contextQueue: queue,
-                ),
-              );
-            },
-          ),
-        ),
+        const SizedBox(height: 8),
+        if (upcoming.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 40.0),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.queue_music,
+                    size: 48,
+                    color: colorScheme.onSurfaceVariant.withAlpha(90),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'No upcoming songs in queue',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Tap ⋮ on any track and select\n"Play Next" or "Add to Queue".',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant.withAlpha(160),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else
+          ...upcoming.asMap().entries.map((entry) {
+            final upcomingIndex = entry.key;
+            final song = entry.value;
+            final actualQueueIndex = currentIdx + 1 + upcomingIndex;
+
+            return Dismissible(
+              key: ValueKey('${song.id}_$actualQueueIndex'),
+              direction: DismissDirection.endToStart,
+              background: Container(
+                color: Colors.red.shade700,
+                alignment: Alignment.centerRight,
+                padding: const EdgeInsets.only(right: 20),
+                child: const Icon(Icons.delete, color: Colors.white),
+              ),
+              onDismissed: (_) {
+                playback.removeFromQueue(actualQueueIndex);
+              },
+              child: SongTile(
+                song: song,
+                index: actualQueueIndex,
+                contextQueue: queue,
+              ),
+            );
+          }),
       ],
     );
   }

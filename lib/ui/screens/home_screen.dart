@@ -172,6 +172,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: FilterChip(
                             label: Text(mood),
                             selected: isSelected,
+                            showCheckmark: false,
                             onSelected: (val) {
                               setState(() => _activeMood = mood);
                               _loadFeed(mood);

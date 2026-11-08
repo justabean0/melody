@@ -213,7 +213,6 @@ class _LibraryScreenState extends State<LibraryScreen> with SingleTickerProvider
         ),
         ...history.map((s) => SongTile(
               song: s,
-              contextQueue: history,
             )),
       ],
     );
