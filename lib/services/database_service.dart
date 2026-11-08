@@ -149,8 +149,19 @@ class DatabaseService {
       await _prefs?.setBool(_normalizeVolumeKey, val);
 
   // --- Updates ---
-  static String getUpdateSource() =>
-      _prefs?.getString(_updateSourceKey) ?? 'https://api.github.com/repos/justabean0/melody/releases/latest';
+  static String getUpdateSource() {
+    final saved = _prefs?.getString(_updateSourceKey);
+    if (saved == null ||
+        saved.isEmpty ||
+        saved.contains('Srijan/melody') ||
+        saved.contains('YOUR_USERNAME')) {
+      const correct =
+          'https://api.github.com/repos/justabean0/melody/releases/latest';
+      _prefs?.setString(_updateSourceKey, correct);
+      return correct;
+    }
+    return saved;
+  }
   static Future<void> setUpdateSource(String source) async =>
       await _prefs?.setString(_updateSourceKey, source);
 

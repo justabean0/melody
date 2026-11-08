@@ -96,8 +96,12 @@ class UpdateService {
 
   /// Checks for an available update from the configured source URL
   static Future<UpdateInfo?> checkForUpdate({String? customSourceUrl}) async {
-    final sourceUrl = customSourceUrl ?? DatabaseService.getUpdateSource();
-    if (sourceUrl.trim().isEmpty) return null;
+    final rawSource = customSourceUrl ?? DatabaseService.getUpdateSource();
+    var sourceUrl = rawSource.trim();
+    if (sourceUrl.contains('Srijan/melody') || sourceUrl.contains('YOUR_USERNAME')) {
+      sourceUrl = 'https://api.github.com/repos/justabean0/melody/releases/latest';
+    }
+    if (sourceUrl.isEmpty) return null;
 
     final currentVer = await getCurrentVersion();
 
