@@ -1,7 +1,9 @@
 package com.melody.music
 
+import android.content.Context
 import android.content.Intent
 import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -9,12 +11,28 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
 class MainActivity: FlutterActivity() {
-    private val CHANNEL = "com.melody.music/updater"
+    companion object {
+        private const val UPDATER_CHANNEL = "com.melody.music/updater"
+        private const val PLAYBACK_CHANNEL = "com.melody.music/playback"
+
+        private var playbackChannel: MethodChannel? = null
+
+        fun sendPlaybackAction(action: String) {
+            val flutterAction = when (action) {
+                MediaNotificationService.ACTION_PLAY, MediaNotificationService.ACTION_PAUSE -> "playPause"
+                MediaNotificationService.ACTION_NEXT -> "next"
+                MediaNotificationService.ACTION_PREV -> "prev"
+                else -> return
+            }
+            playbackChannel?.invokeMethod("onNotificationAction", flutterAction)
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+        // 1. In-App Updater Channel
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UPDATER_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "getAppVersion" -> {
                     try {
@@ -69,5 +87,43 @@ class MainActivity: FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // 2. Persistent Media Playback Notification Channel
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PLAYBACK_CHANNEL)
+        playbackChannel = channel
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "showNotification" -> {
+                    val title = call.argument<String>("title") ?: "Melody"
+                    val artist = call.argument<String>("artist") ?: "Playing music"
+                    val isPlaying = call.argument<Boolean>("isPlaying") ?: true
+
+                    val intent = Intent(this, MediaNotificationService::class.java).apply {
+                        putExtra(MediaNotificationService.EXTRA_TITLE, title)
+                        putExtra(MediaNotificationService.EXTRA_ARTIST, artist)
+                        putExtra(MediaNotificationService.EXTRA_IS_PLAYING, isPlaying)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(intent)
+                    } else {
+                        startService(intent)
+                    }
+                    result.success(true)
+                }
+                "hideNotification" -> {
+                    val intent = Intent(this, MediaNotificationService::class.java).apply {
+                        action = MediaNotificationService.ACTION_STOP
+                    }
+                    startService(intent)
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        playbackChannel = null
+        super.onDestroy()
     }
 }

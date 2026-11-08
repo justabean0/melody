@@ -85,17 +85,17 @@ class _HomeScreenState extends State<HomeScreen> {
             ClipRRect(
               borderRadius: BorderRadius.circular(10),
               child: Image.asset(
-                'assets/images/logo_small.png',
-                width: 32,
-                height: 32,
-                fit: BoxFit.cover,
+                'assets/images/logo.png',
+                width: 38,
+                height: 38,
+                fit: BoxFit.contain,
                 errorBuilder: (_, __, ___) => Container(
                   padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(
                     color: colorScheme.primary,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.music_note, color: Colors.white, size: 20),
+                  child: const Icon(Icons.music_note, color: Colors.white, size: 22),
                 ),
               ),
             ),
@@ -212,7 +212,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   // Quick picks list
                   ..._quickPicks.take(5).map((song) => SongTile(
                         song: song,
-                        contextQueue: _quickPicks,
                       )),
 
                   const SizedBox(height: 20),
@@ -229,7 +228,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
 
                   SizedBox(
-                    height: 200,
+                    height: 220,
                     child: ListView(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -275,7 +274,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   ..._quickPicks.skip(5).map((song) => SongTile(
                         song: song,
-                        contextQueue: _quickPicks,
                       )),
                 ],
               ),

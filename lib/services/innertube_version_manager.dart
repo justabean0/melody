@@ -40,28 +40,27 @@ class InnerTubeVersionManager {
   /// Default pool of client profiles (ordered by modern stability)
   static final List<InnerTubeClientProfile> _profiles = [
     const InnerTubeClientProfile(
+      clientName: 'VISIONOS',
+      clientVersion: '0.1',
+      userAgent: 'Mozilla/5.0 (VisionOS; Mobile) AppleWebKit/605.1.15',
+    ),
+    const InnerTubeClientProfile(
+      clientName: 'ANDROID_VR',
+      clientVersion: '1.56.21',
+      userAgent:
+          'com.google.android.apps.youtube.vr.oculus/1.56.21 (Linux; U; Android 12; en_US) gzip',
+    ),
+    const InnerTubeClientProfile(
+      clientName: 'WEB_REMIX',
+      clientVersion: '1.20241001.01.00',
+      userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+    ),
+    const InnerTubeClientProfile(
       clientName: 'ANDROID_MUSIC',
       clientVersion: '7.02.51',
       userAgent:
           'com.google.android.apps.youtube.music/7.02.51 (Linux; U; Android 14; en_US) gzip',
-    ),
-    const InnerTubeClientProfile(
-      clientName: 'ANDROID_MUSIC',
-      clientVersion: '6.42.52',
-      userAgent:
-          'com.google.android.apps.youtube.music/6.42.52 (Linux; U; Android 14; en_US) gzip',
-    ),
-    const InnerTubeClientProfile(
-      clientName: 'IOS_MUSIC',
-      clientVersion: '6.41.0',
-      userAgent:
-          'YouTubeMusic/6.41.0 (iPhone14,3; U; CPU OS 17_0 like Mac OS X; en_US)',
-    ),
-    const InnerTubeClientProfile(
-      clientName: 'WEB_REMIX',
-      clientVersion: '1.20240101.01.00',
-      userAgent:
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     ),
   ];
 

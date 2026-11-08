@@ -108,13 +108,51 @@ class SongTile extends StatelessWidget {
       trailing: PopupMenuButton<String>(
         icon: Icon(Icons.more_vert, color: colorScheme.onSurfaceVariant),
         onSelected: (value) {
-          if (value == 'like') {
+          if (value == 'play_next') {
+            playback.playNextInQueue(song);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Playing next: ${song.title}'),
+                duration: const Duration(seconds: 2),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          } else if (value == 'add_queue') {
+            playback.addToQueue(song);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Added to queue: ${song.title}'),
+                duration: const Duration(seconds: 2),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          } else if (value == 'like') {
             library.toggleLike(song);
           } else if (value == 'add_playlist') {
             _showAddToPlaylistDialog(context, song);
           }
         },
         itemBuilder: (ctx) => [
+          const PopupMenuItem(
+            value: 'play_next',
+            child: Row(
+              children: [
+                Icon(Icons.playlist_play_rounded, size: 20),
+                SizedBox(width: 12),
+                Text('Play Next'),
+              ],
+            ),
+          ),
+          const PopupMenuItem(
+            value: 'add_queue',
+            child: Row(
+              children: [
+                Icon(Icons.queue_music_rounded, size: 20),
+                SizedBox(width: 12),
+                Text('Add to Queue'),
+              ],
+            ),
+          ),
           PopupMenuItem(
             value: 'like',
             child: Row(
@@ -129,9 +167,9 @@ class SongTile extends StatelessWidget {
               ],
             ),
           ),
-          PopupMenuItem(
+          const PopupMenuItem(
             value: 'add_playlist',
-            child: const Row(
+            child: Row(
               children: [
                 Icon(Icons.playlist_add, size: 20),
                 SizedBox(width: 12),

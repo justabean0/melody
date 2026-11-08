@@ -20,10 +20,10 @@ void main() {
       expect(AntiBotService.isSafeModeActive, isFalse);
     });
 
-    test('Burst search (> 3 searches in 15s) trips safe mode proactively BEFORE bot check', () {
-      AntiBotService.recordSearch(query: 'Track 1');
-      AntiBotService.recordSearch(query: 'Track 2');
-      AntiBotService.recordSearch(query: 'Track 3');
+    test('Burst search (> 8 searches in 15s) trips safe mode proactively BEFORE bot check', () {
+      for (int i = 0; i < 8; i++) {
+        AntiBotService.recordSearch(query: 'Track $i');
+      }
 
       expect(AntiBotService.isSafeModeActive, isTrue);
       expect(AntiBotService.activeReason, contains('Burst search pattern'));
@@ -31,31 +31,33 @@ void main() {
       expect(AntiBotService.remainingCooldown!.inSeconds, greaterThan(0));
     });
 
-    test('Burst playback / track skipping (> 3 plays in 15s) trips safe mode proactively', () {
-      AntiBotService.recordPlay(videoId: 'vid1');
-      AntiBotService.recordPlay(videoId: 'vid2');
-      AntiBotService.recordPlay(videoId: 'vid3');
+    test('Burst playback / track skipping (> 12 plays in 15s) trips safe mode proactively', () {
+      for (int i = 0; i < 12; i++) {
+        AntiBotService.recordPlay(videoId: 'vid$i');
+      }
 
       expect(AntiBotService.isSafeModeActive, isTrue);
       expect(AntiBotService.activeReason, contains('Rapid track skipping'));
     });
 
-    test('Combined burst activity (e.g. 2 searches + 2 plays in 15s) trips safe mode', () {
-      AntiBotService.recordSearch(query: 'Query 1');
-      AntiBotService.recordSearch(query: 'Query 2');
-      AntiBotService.recordPlay(videoId: 'vidA');
-      AntiBotService.recordPlay(videoId: 'vidB');
+    test('Combined burst activity (> 15 searches + plays in 15s) trips safe mode', () {
+      for (int i = 0; i < 8; i++) {
+        AntiBotService.recordSearch(query: 'Query $i');
+      }
+      for (int i = 0; i < 8; i++) {
+        AntiBotService.recordPlay(videoId: 'vid$i');
+      }
 
       expect(AntiBotService.isSafeModeActive, isTrue);
       expect(AntiBotService.activeReason, contains('Combined burst activity'));
     });
 
-    test('tripOnBotDetected reactively activates 3-minute extended safe mode', () {
+    test('tripOnBotDetected reactively activates extended safe mode', () {
       AntiBotService.tripOnBotDetected('LOGIN_REQUIRED');
 
       expect(AntiBotService.isSafeModeActive, isTrue);
       expect(AntiBotService.activeReason, contains('LOGIN_REQUIRED'));
-      expect(AntiBotService.remainingCooldown!.inSeconds, greaterThan(120));
+      expect(AntiBotService.remainingCooldown!.inSeconds, greaterThan(90));
     });
 
     test('Reset clears all active shields and cooldowns', () {

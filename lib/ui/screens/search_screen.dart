@@ -162,7 +162,6 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
           ...results.songs.map((s) => SongTile(
                 song: s,
-                contextQueue: results.songs,
               )),
         ],
 
@@ -178,7 +177,6 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
           ...results.videos.map((s) => SongTile(
                 song: s,
-                contextQueue: results.videos,
               )),
         ],
 
@@ -193,7 +191,7 @@ class _SearchScreenState extends State<SearchScreen> {
             ),
           ),
           SizedBox(
-            height: 190,
+            height: 220,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16.0),

@@ -120,6 +120,14 @@ class PlaybackProvider extends ChangeNotifier {
     _audioService.setPlaybackSpeed(speed);
   }
 
+  void addToQueue(Song song) {
+    _audioService.addToQueue(song);
+  }
+
+  void playNextInQueue(Song song) {
+    _audioService.playNextInQueue(song);
+  }
+
   void removeFromQueue(int index) {
     _audioService.removeFromQueue(index);
   }

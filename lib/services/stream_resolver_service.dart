@@ -25,13 +25,6 @@ class StreamResolverService {
   /// Primary solver: High-speed US instance with SABR companion proxy support
   static const String _primaryInstance = 'https://yt.chocolatemoo53.com';
 
-  /// Reliable fallback instances in priority order
-  static const List<String> _fallbackInstances = [
-    'https://invidious.nerdvpn.de',
-    'https://inv.nadeko.net',
-    'https://invidious.tiekoetter.com',
-  ];
-
   static int _parseBitrate(dynamic val) {
     if (val == null) return 0;
     if (val is num) return val.toInt();
@@ -94,7 +87,7 @@ class StreamResolverService {
   static Future<String?> _tryInnerTubeFastPath(String videoId) async {
     try {
       final profile = InnerTubeVersionManager.currentProfile;
-      final url = Uri.parse('https://music.youtube.com/youtubei/v1/player');
+      final url = Uri.parse('https://www.youtube.com/youtubei/v1/player');
       final body = jsonEncode({
         'context': {
           'client': profile.toContextClient(),
@@ -109,7 +102,7 @@ class StreamResolverService {
           'User-Agent': profile.userAgent,
         },
         body: body,
-      ).timeout(const Duration(milliseconds: 1800));
+      ).timeout(const Duration(milliseconds: 1500));
 
       Map<String, dynamic>? data;
       try {
@@ -236,34 +229,6 @@ class StreamResolverService {
     return null;
   }
 
-  /// PARALLEL INSTANCE RACING:
-  /// Races multiple fallback instances simultaneously. The first working stream wins!
-  static Future<String?> _raceInstances(String videoId, List<String> instances) async {
-    final completer = Completer<String?>();
-    int pending = instances.length;
-
-    for (final instance in instances) {
-      _extractAudioFromInstance(instance, videoId, timeout: const Duration(seconds: 4)).then((url) {
-        if (url != null && !completer.isCompleted) {
-          debugPrint('Parallel Instance Race won by $instance for $videoId');
-          completer.complete(url);
-        } else {
-          pending--;
-          if (pending <= 0 && !completer.isCompleted) {
-            completer.complete(null);
-          }
-        }
-      }).catchError((_) {
-        pending--;
-        if (pending <= 0 && !completer.isCompleted) {
-          completer.complete(null);
-        }
-      });
-    }
-
-    return completer.future;
-  }
-
   /// Searches an instance for an alternative working stream of the same track
   static Future<String?> _searchAlternativeAudio(
     String instance,
@@ -317,26 +282,42 @@ class StreamResolverService {
       return cached.url;
     }
 
-    // Record stream resolution action in anti-bot monitor
-    AntiBotService.recordPlay(videoId: videoId);
-
-    // 2. HYBRID FAST PATH: Direct InnerTube request
-    // Proactively bypass InnerTube if anti-bot shield is active due to burst activity
-    if (AntiBotService.isSafeModeActive) {
-      debugPrint('🛡️ StreamResolverService: Anti-bot shield is ACTIVE (${AntiBotService.activeReason}). Proactively routing directly to safe path...');
-    } else {
+    // 2. HYBRID FAST PATH: Direct InnerTube request (< 300ms)
+    if (!AntiBotService.isSafeModeActive) {
       final innerTubeUrl = await _tryInnerTubeFastPath(videoId);
       if (innerTubeUrl != null) {
         _saveToCache(videoId, innerTubeUrl);
         return innerTubeUrl;
       }
+    } else {
+      debugPrint('🛡️ StreamResolverService: Anti-bot shield is ACTIVE (${AntiBotService.activeReason}). Proactively routing directly to safe path...');
     }
 
-    // 3. PRIMARY SAFE SOLVER: Chocolatemoo
+    // 3. FAST LOCAL CLIENT: YoutubeExplode direct streams (~400ms)
+    try {
+      final manifest = await _ytExplode.videos.streamsClient.getManifest(yt.VideoId(videoId)).timeout(const Duration(seconds: 3));
+      final mp4Streams = manifest.audioOnly
+          .where((s) => s.container.name.toLowerCase() == 'mp4')
+          .toList();
+
+      final candidates = mp4Streams.isNotEmpty ? mp4Streams : manifest.audioOnly.toList();
+      for (final s in candidates.sortByBitrate().reversed) {
+        final streamUrl = s.url.toString();
+        if (optimistic || await _probeStream(streamUrl)) {
+          debugPrint('Resolved direct audio stream for $videoId via YoutubeExplode fast path');
+          _saveToCache(videoId, streamUrl);
+          return streamUrl;
+        }
+      }
+    } catch (e) {
+      debugPrint('YoutubeExplode fast path skipped ($e). Trying companion proxy...');
+    }
+
+    // 4. PRIMARY SAFE SOLVER: Chocolatemoo Companion Proxy
     final primaryUrl = await _extractAudioFromInstance(
       _primaryInstance,
       videoId,
-      timeout: const Duration(seconds: 5),
+      timeout: const Duration(seconds: 4),
       optimistic: optimistic,
     );
     if (primaryUrl != null) {
@@ -345,64 +326,23 @@ class StreamResolverService {
       return primaryUrl;
     }
 
-    // 4. SMART ALTERNATIVE TRACK SEARCH ON PRIMARY SOLVER:
+    // 5. SMART ALTERNATIVE TRACK SEARCH:
     if (songTitle != null && songTitle.trim().isNotEmpty) {
       final cleanTitle = songTitle.replaceAll(RegExp(r'\([^)]*\)'), '').trim();
       final query = Uri.encodeComponent('$cleanTitle ${artist ?? ''}'.trim());
       debugPrint('Direct stream for $videoId geoblocked or unavailable. Searching alternative for "$cleanTitle"...');
 
-      final primaryAlt = await _searchAlternativeAudio(_primaryInstance, query, videoId, songTitle);
+      final primaryAlt = await _searchAlternativeAudio(
+        _primaryInstance,
+        query,
+        videoId,
+        songTitle,
+        timeout: const Duration(seconds: 4),
+      );
       if (primaryAlt != null) {
         _saveToCache(videoId, primaryAlt);
         return primaryAlt;
       }
-    }
-
-    // 5. PARALLEL INSTANCE RACING: Race fallback instances concurrently
-    debugPrint('Racing fallback instances in parallel for $videoId...');
-    final racedUrl = await _raceInstances(videoId, _fallbackInstances);
-    if (racedUrl != null) {
-      _saveToCache(videoId, racedUrl);
-      return racedUrl;
-    }
-
-    // 6. FALLBACK SEARCH: If alternative was not found on primary, try fallbacks
-    if (songTitle != null && songTitle.trim().isNotEmpty) {
-      final cleanTitle = songTitle.replaceAll(RegExp(r'\([^)]*\)'), '').trim();
-      final query = Uri.encodeComponent('$cleanTitle ${artist ?? ''}'.trim());
-
-      for (final fallback in _fallbackInstances) {
-        final fallbackAlt = await _searchAlternativeAudio(
-          fallback,
-          query,
-          videoId,
-          songTitle,
-          timeout: const Duration(milliseconds: 2500),
-        );
-        if (fallbackAlt != null) {
-          _saveToCache(videoId, fallbackAlt);
-          return fallbackAlt;
-        }
-      }
-    }
-
-    // 7. SECONDARY FALLBACK: YoutubeExplode direct client
-    try {
-      final manifest = await _ytExplode.videos.streamsClient.getManifest(yt.VideoId(videoId));
-      final mp4Streams = manifest.audioOnly
-          .where((s) => s.container.name.toLowerCase() == 'mp4')
-          .toList();
-
-      final candidates = mp4Streams.isNotEmpty ? mp4Streams : manifest.audioOnly.toList();
-      for (final s in candidates.sortByBitrate().reversed) {
-        final streamUrl = s.url.toString();
-        if (await _probeStream(streamUrl)) {
-          _saveToCache(videoId, streamUrl);
-          return streamUrl;
-        }
-      }
-    } catch (e) {
-      debugPrint('YoutubeExplode fallback failed: $e');
     }
 
     throw Exception('Failed to resolve playable audio stream for video: $videoId');

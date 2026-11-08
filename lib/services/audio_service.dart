@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../models/song.dart';
 import 'anti_bot_service.dart';
 import 'audio_cache_service.dart';
 import 'database_service.dart';
-import 'innertube_service.dart';
 import 'stream_resolver_service.dart';
 
 enum MelodyLoopMode { off, all, one }
@@ -56,8 +56,43 @@ class MelodyAudioService {
   Stream<Duration> get onPositionChange => _positionChangeController.stream;
 
   void init() {
+    // Configure audio context to keep playing cleanly in background
+    _player.setAudioContext(
+      AudioContext(
+        android: const AudioContextAndroid(
+          isSpeakerphoneOn: false,
+          stayAwake: true,
+          contentType: AndroidContentType.music,
+          usageType: AndroidUsageType.media,
+          audioFocus: AndroidAudioFocus.gain,
+        ),
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playback,
+        ),
+      ),
+    );
+
+    // Persistent playback notification channel actions
+    const MethodChannel('com.melody.music/playback').setMethodCallHandler((call) async {
+      if (call.method == 'onNotificationAction') {
+        final action = call.arguments as String?;
+        switch (action) {
+          case 'playPause':
+            await togglePlayPause();
+            break;
+          case 'next':
+            await playNext();
+            break;
+          case 'prev':
+            await playPrevious();
+            break;
+        }
+      }
+    });
+
     _player.onPlayerStateChanged.listen((state) {
       _isPlaying = (state == PlayerState.playing);
+      _updateNotification();
       _stateChangeController.add(null);
     });
 
@@ -74,6 +109,22 @@ class MelodyAudioService {
     _player.onPlayerComplete.listen((_) {
       _handleTrackEnded();
     });
+  }
+
+  void _updateNotification() {
+    if (_currentSong == null) {
+      try {
+        const MethodChannel('com.melody.music/playback').invokeMethod('hideNotification');
+      } catch (_) {}
+      return;
+    }
+    try {
+      const MethodChannel('com.melody.music/playback').invokeMethod('showNotification', {
+        'title': _currentSong!.title,
+        'artist': _currentSong!.artist,
+        'isPlaying': _isPlaying,
+      });
+    } catch (_) {}
   }
 
   Future<void> playSong(Song song, {List<Song>? contextQueue, int? startIndex}) async {
@@ -150,14 +201,11 @@ class MelodyAudioService {
       // 3. NEXT-TRACK PRE-FETCHING:
       // In the background, pre-resolve next track stream & pre-cache its 5-second head
       _triggerNextTrackPrefetch();
-
-      // Auto-mix recommendations when nearing queue completion
-      if (_queue.length - _currentIndex <= 2) {
-        _fetchAutoMixTracks(_currentSong!.id);
-      }
+      _updateNotification();
     } catch (e) {
       debugPrint('Playback error resolving audio: $e');
       _isPlaying = false;
+      _updateNotification();
     } finally {
       _isLoading = false;
       _stateChangeController.add(null);
@@ -185,18 +233,6 @@ class MelodyAudioService {
     } catch (e) {
       debugPrint('Next-track prefetch error for ${song.id}: $e');
     }
-  }
-
-  void _fetchAutoMixTracks(String videoId) async {
-    try {
-      final related = await InnerTubeService.getRelatedSongs(videoId);
-      for (final s in related) {
-        if (!_queue.any((item) => item.id == s.id)) {
-          _queue.add(s);
-        }
-      }
-      _stateChangeController.add(null);
-    } catch (_) {}
   }
 
   void _handleTrackEnded() {
@@ -303,18 +339,52 @@ class MelodyAudioService {
     _stateChangeController.add(null);
   }
 
+  void addToQueue(Song song) {
+    if (!_queue.any((s) => s.id == song.id)) {
+      _queue.add(song);
+      if (_currentSong == null) {
+        _currentIndex = 0;
+        _playCurrent();
+      } else {
+        _stateChangeController.add(null);
+      }
+    }
+  }
+
+  void playNextInQueue(Song song) {
+    final existingIdx = _queue.indexWhere((s) => s.id == song.id);
+    if (existingIdx != -1 && existingIdx != _currentIndex) {
+      _queue.removeAt(existingIdx);
+      if (existingIdx < _currentIndex) _currentIndex--;
+    }
+
+    if (_currentIndex >= 0 && _currentIndex < _queue.length) {
+      _queue.insert(_currentIndex + 1, song);
+    } else {
+      _queue.add(song);
+      _currentIndex = 0;
+      _playCurrent();
+      return;
+    }
+    _stateChangeController.add(null);
+  }
+
   void clearQueue() {
-    _player.stop();
-    _queue.clear();
-    _currentSong = null;
-    _currentIndex = -1;
-    _position = Duration.zero;
-    _duration = Duration.zero;
-    _songChangeController.add(null);
+    if (_currentSong != null) {
+      _queue.clear();
+      _queue.add(_currentSong!);
+      _currentIndex = 0;
+    } else {
+      _queue.clear();
+      _currentIndex = -1;
+    }
     _stateChangeController.add(null);
   }
 
   void dispose() {
+    try {
+      const MethodChannel('com.melody.music/playback').invokeMethod('hideNotification');
+    } catch (_) {}
     _player.dispose();
     StreamResolverService.dispose();
     _songChangeController.close();

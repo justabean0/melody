@@ -518,9 +518,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     'Melody',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
-                  const Text(
-                    'v1.0.0 • Pure Audio Freedom',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  Text(
+                    'v$_currentVersion • Pure Audio Freedom',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 ],
               ),
@@ -534,14 +534,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               showAboutDialog(
                 context: context,
                 applicationName: 'Melody',
-                applicationVersion: '1.0.0',
+                applicationVersion: 'v$_currentVersion',
                 applicationIcon: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: Image.asset(
-                    'assets/images/logo_small.png',
+                    'assets/images/logo.png',
                     width: 48,
                     height: 48,
-                    fit: BoxFit.cover,
+                    fit: BoxFit.contain,
                     errorBuilder: (_, __, ___) => const Icon(Icons.music_note, size: 48),
                   ),
                 ),

@@ -10,8 +10,8 @@ void main() {
     test('Initial state provides modern active profile without outdated warnings', () {
       expect(InnerTubeVersionManager.isOutdatedWarningActive, isFalse);
       expect(InnerTubeVersionManager.outdatedReason, isNull);
-      expect(InnerTubeVersionManager.currentProfile.clientName, equals('ANDROID_MUSIC'));
-      expect(InnerTubeVersionManager.currentProfile.clientVersion, equals('7.02.51'));
+      expect(InnerTubeVersionManager.currentProfile.clientName, equals('VISIONOS'));
+      expect(InnerTubeVersionManager.currentProfile.clientVersion, equals('0.1'));
     });
 
     test('HTTP 400 detects outdated client version and triggers alert', () {
@@ -24,7 +24,7 @@ void main() {
       expect(InnerTubeVersionManager.isOutdatedWarningActive, isTrue);
       expect(InnerTubeVersionManager.outdatedReason, contains('HTTP 400 Bad Request'));
       // Verifies rotation to next fallback profile
-      expect(InnerTubeVersionManager.currentProfile.clientVersion, equals('6.42.52'));
+      expect(InnerTubeVersionManager.currentProfile.clientVersion, equals('1.56.21'));
     });
 
     test('PlayabilityStatus with deprecation reason triggers alert and rotates profile', () {
@@ -43,8 +43,8 @@ void main() {
       expect(InnerTubeVersionManager.outdatedReason, contains('no longer supported'));
       expect(InnerTubeVersionManager.isProfileDeprecated(
         const InnerTubeClientProfile(
-          clientName: 'ANDROID_MUSIC',
-          clientVersion: '7.02.51',
+          clientName: 'VISIONOS',
+          clientVersion: '0.1',
           userAgent: '',
         ),
       ), isTrue);
@@ -79,7 +79,7 @@ void main() {
 
       InnerTubeVersionManager.reset();
       expect(InnerTubeVersionManager.isOutdatedWarningActive, isFalse);
-      expect(InnerTubeVersionManager.currentProfile.clientVersion, equals('7.02.51'));
+      expect(InnerTubeVersionManager.currentProfile.clientVersion, equals('0.1'));
     });
   });
 }

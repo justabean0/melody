@@ -14,26 +14,26 @@ class AntiBotService {
   static String? _activeReason;
 
   // Search burst thresholds:
-  // > 3 searches in 15 seconds, or > 6 searches in 45 seconds
-  static const int maxSearchesShortWindow = 3;
+  // > 8 searches in 15 seconds, or > 15 searches in 45 seconds
+  static const int maxSearchesShortWindow = 8;
   static const Duration searchShortWindow = Duration(seconds: 15);
-  static const int maxSearchesLongWindow = 6;
+  static const int maxSearchesLongWindow = 15;
   static const Duration searchLongWindow = Duration(seconds: 45);
 
   // Play / track-skip burst thresholds:
-  // > 3 plays in 15 seconds, or > 5 plays in 30 seconds
-  static const int maxPlaysShortWindow = 3;
+  // > 12 plays in 15 seconds, or > 20 plays in 30 seconds
+  static const int maxPlaysShortWindow = 12;
   static const Duration playShortWindow = Duration(seconds: 15);
-  static const int maxPlaysLongWindow = 5;
+  static const int maxPlaysLongWindow = 20;
   static const Duration playLongWindow = Duration(seconds: 30);
 
   // Combined activity threshold:
-  // > 4 combined searches & plays in 15 seconds
-  static const int maxCombinedShortWindow = 4;
+  // > 15 combined searches & plays in 15 seconds
+  static const int maxCombinedShortWindow = 15;
 
   // Cooldown durations:
-  static const Duration burstCooldown = Duration(seconds: 60);
-  static const Duration botDetectedCooldown = Duration(minutes: 3);
+  static const Duration burstCooldown = Duration(seconds: 30);
+  static const Duration botDetectedCooldown = Duration(minutes: 2);
 
   /// Whether Safe Mode is currently active
   static bool get isSafeModeActive {
