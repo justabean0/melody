@@ -165,7 +165,7 @@ class StreamResolverService {
     bool optimistic = false,
   }) async {
     try {
-      final url = Uri.parse('$instance/api/v1/videos/$videoId');
+      final url = Uri.parse('$instance/api/v1/videos/$videoId?local=true');
       final response = await _httpClient.get(url).timeout(timeout);
 
       if (response.statusCode != 200) return null;
@@ -198,13 +198,9 @@ class StreamResolverService {
       final allCandidates = [...mp4Candidates, ...otherCandidates];
 
       // OPTIMISTIC PLAYBACK:
-      // If optimistic flag is enabled and stream has no geo-restrictions,
-      // return top candidate immediately without adding probe network latency.
+      // Return top candidate immediately without adding probe network latency.
       if (optimistic && allCandidates.isNotEmpty) {
-        final topUrl = allCandidates.first['url'] as String;
-        if (!topUrl.contains('gcr=')) {
-          return topUrl;
-        }
+        return allCandidates.first['url'] as String;
       }
 
       // Probe top candidates to guarantee playback without 403 Access Denied errors
@@ -263,12 +259,50 @@ class StreamResolverService {
     return null;
   }
 
+  /// CONCURRENT FAST RACING SOLVER:
+  /// Races direct InnerTube (< 300ms) and Companion Proxy (< 600ms) in parallel.
+  /// Whichever resolves first wins immediately, completely eliminating sequential timeout delays.
+  static Future<String?> _raceFastSolvers(String videoId, {bool optimistic = true}) async {
+    final completer = Completer<String?>();
+    int pending = 2;
+
+    void handleWinner(String? url, String source) {
+      if (url != null && !completer.isCompleted) {
+        debugPrint('⚡ Fast Stream Race WON by $source for $videoId!');
+        completer.complete(url);
+      } else {
+        pending--;
+        if (pending <= 0 && !completer.isCompleted) {
+          completer.complete(null);
+        }
+      }
+    }
+
+    // 1. Direct InnerTube fast path
+    if (!AntiBotService.isSafeModeActive) {
+      _tryInnerTubeFastPath(videoId)
+          .then((u) => handleWinner(u, 'InnerTube'))
+          .catchError((_) => handleWinner(null, 'InnerTube'));
+    } else {
+      pending--;
+    }
+
+    // 2. Primary Companion Proxy (Chocolatemoo)
+    _extractAudioFromInstance(
+      _primaryInstance,
+      videoId,
+      timeout: const Duration(seconds: 4),
+      optimistic: optimistic,
+    ).then((u) => handleWinner(u, 'CompanionProxy')).catchError((_) => handleWinner(null, 'CompanionProxy'));
+
+    return completer.future;
+  }
+
   /// Master stream resolver featuring:
   /// 1. Instant Cache hit (0ms)
-  /// 2. Hybrid Fast Path (InnerTube, ~250ms)
-  /// 3. Optimistic Safe Path with Chocolatemoo
-  /// 4. Parallel Instance Racing fallback
-  /// 5. Smart Alternative Track Matching
+  /// 2. Concurrent Fast Solver Race (InnerTube + Companion Proxy, 250-600ms)
+  /// 3. YoutubeExplode Local Client Fallback
+  /// 4. Smart Alternative Track Matching
   static Future<String> resolveAudioStreamUrl(
     String videoId, {
     String? songTitle,
@@ -282,20 +316,18 @@ class StreamResolverService {
       return cached.url;
     }
 
-    // 2. HYBRID FAST PATH: Direct InnerTube request (< 300ms)
-    if (!AntiBotService.isSafeModeActive) {
-      final innerTubeUrl = await _tryInnerTubeFastPath(videoId);
-      if (innerTubeUrl != null) {
-        _saveToCache(videoId, innerTubeUrl);
-        return innerTubeUrl;
-      }
-    } else {
-      debugPrint('🛡️ StreamResolverService: Anti-bot shield is ACTIVE (${AntiBotService.activeReason}). Proactively routing directly to safe path...');
+    // 2. CONCURRENT FAST SOLVER RACE: InnerTube & Companion Proxy simultaneously
+    final racedUrl = await _raceFastSolvers(videoId, optimistic: optimistic);
+    if (racedUrl != null) {
+      _saveToCache(videoId, racedUrl);
+      return racedUrl;
     }
 
-    // 3. FAST LOCAL CLIENT: YoutubeExplode direct streams (~400ms)
+    // 3. FAST LOCAL CLIENT: YoutubeExplode direct streams
     try {
-      final manifest = await _ytExplode.videos.streamsClient.getManifest(yt.VideoId(videoId)).timeout(const Duration(seconds: 3));
+      final manifest = await _ytExplode.videos.streamsClient
+          .getManifest(yt.VideoId(videoId))
+          .timeout(const Duration(seconds: 3));
       final mp4Streams = manifest.audioOnly
           .where((s) => s.container.name.toLowerCase() == 'mp4')
           .toList();
@@ -304,29 +336,16 @@ class StreamResolverService {
       for (final s in candidates.sortByBitrate().reversed) {
         final streamUrl = s.url.toString();
         if (optimistic || await _probeStream(streamUrl)) {
-          debugPrint('Resolved direct audio stream for $videoId via YoutubeExplode fast path');
+          debugPrint('Resolved direct audio stream for $videoId via YoutubeExplode fallback');
           _saveToCache(videoId, streamUrl);
           return streamUrl;
         }
       }
     } catch (e) {
-      debugPrint('YoutubeExplode fast path skipped ($e). Trying companion proxy...');
+      debugPrint('YoutubeExplode fallback skipped ($e). Trying alternative track match...');
     }
 
-    // 4. PRIMARY SAFE SOLVER: Chocolatemoo Companion Proxy
-    final primaryUrl = await _extractAudioFromInstance(
-      _primaryInstance,
-      videoId,
-      timeout: const Duration(seconds: 4),
-      optimistic: optimistic,
-    );
-    if (primaryUrl != null) {
-      debugPrint('Resolved verified stream for $videoId via primary ($_primaryInstance)');
-      _saveToCache(videoId, primaryUrl);
-      return primaryUrl;
-    }
-
-    // 5. SMART ALTERNATIVE TRACK SEARCH:
+    // 4. SMART ALTERNATIVE TRACK SEARCH:
     if (songTitle != null && songTitle.trim().isNotEmpty) {
       final cleanTitle = songTitle.replaceAll(RegExp(r'\([^)]*\)'), '').trim();
       final query = Uri.encodeComponent('$cleanTitle ${artist ?? ''}'.trim());

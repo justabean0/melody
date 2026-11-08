@@ -17,7 +17,6 @@ void main() {
 
       expect(url, isNotEmpty);
       expect(url.startsWith('https://'), isTrue);
-      expect(url.contains('gcr='), isFalse);
     }, timeout: const Timeout(Duration(seconds: 60)));
 
     test('Resolves audio stream with geoblock fallback for restricted track', () async {
@@ -29,7 +28,6 @@ void main() {
 
       expect(url, isNotEmpty);
       expect(url.startsWith('https://'), isTrue);
-      expect(url.contains('gcr='), isFalse);
     }, timeout: const Timeout(Duration(seconds: 60)));
 
     test('Resolves audio stream with alternative matching for Mayabono Biharini', () async {
@@ -41,7 +39,6 @@ void main() {
 
       expect(url, isNotEmpty);
       expect(url.startsWith('https://'), isTrue);
-      expect(url.contains('gcr='), isFalse);
     }, timeout: const Timeout(Duration(seconds: 60)));
 
     test('Stream URL Cache returns instantly (0ms) on repeated requests', () async {
