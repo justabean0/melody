@@ -3,6 +3,8 @@ package com.melody.music
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -16,16 +18,22 @@ class MainActivity: FlutterActivity() {
         private const val PLAYBACK_CHANNEL = "com.melody.music/playback"
 
         private var playbackChannel: MethodChannel? = null
+        private val mainHandler = Handler(Looper.getMainLooper())
 
         fun sendPlaybackAction(action: String) {
+            android.util.Log.d("MelodyMedia", "sendPlaybackAction: action=$action, channel=$playbackChannel")
             val flutterAction = when {
-                action == MediaNotificationService.ACTION_PLAY || action == MediaNotificationService.ACTION_PAUSE -> "playPause"
+                action == MediaNotificationService.ACTION_PLAY -> "play"
+                action == MediaNotificationService.ACTION_PAUSE -> "pause"
                 action == MediaNotificationService.ACTION_NEXT -> "next"
                 action == MediaNotificationService.ACTION_PREV -> "prev"
                 action.startsWith("seek:") -> action
                 else -> return
             }
-            playbackChannel?.invokeMethod("onNotificationAction", flutterAction)
+            mainHandler.post {
+                android.util.Log.d("MelodyMedia", "Invoking onNotificationAction: $flutterAction")
+                playbackChannel?.invokeMethod("onNotificationAction", flutterAction)
+            }
         }
     }
 

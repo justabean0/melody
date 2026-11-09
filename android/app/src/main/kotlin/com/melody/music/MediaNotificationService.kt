@@ -59,13 +59,26 @@ class MediaNotificationService : Service() {
     }
 
     private fun initMediaSession() {
+        android.util.Log.d("MelodyMedia", "initMediaSession called")
         mediaSession = MediaSessionCompat(this, "MelodyMediaSession").apply {
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onPlay() {
+                    android.util.Log.d("MelodyMedia", "MediaSessionCompat.Callback.onPlay triggered")
+                    currentIsPlaying = true
+                    updatePlaybackState(true, currentPositionMs)
+                    val notif = buildNotification(currentTitle, currentArtist, true, currentArtwork)
+                    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    manager.notify(NOTIFICATION_ID, notif)
                     MainActivity.sendPlaybackAction(ACTION_PLAY)
                 }
 
                 override fun onPause() {
+                    android.util.Log.d("MelodyMedia", "MediaSessionCompat.Callback.onPause triggered")
+                    currentIsPlaying = false
+                    updatePlaybackState(false, currentPositionMs)
+                    val notif = buildNotification(currentTitle, currentArtist, false, currentArtwork)
+                    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    manager.notify(NOTIFICATION_ID, notif)
                     MainActivity.sendPlaybackAction(ACTION_PAUSE)
                 }
 
@@ -115,6 +128,7 @@ class MediaNotificationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        android.util.Log.d("MelodyMedia", "onStartCommand: action=${intent?.action}, title=${intent?.getStringExtra(EXTRA_TITLE)}, isPlaying=${intent?.getBooleanExtra(EXTRA_IS_PLAYING, false)}")
         if (intent == null) return START_NOT_STICKY
 
         val action = intent.action
@@ -127,12 +141,18 @@ class MediaNotificationService : Service() {
                 ACTION_PLAY -> {
                     currentIsPlaying = true
                     updatePlaybackState(true, currentPositionMs)
+                    val notif = buildNotification(currentTitle, currentArtist, true, currentArtwork)
+                    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    manager.notify(NOTIFICATION_ID, notif)
                     MainActivity.sendPlaybackAction(action)
                     return START_STICKY
                 }
                 ACTION_PAUSE -> {
                     currentIsPlaying = false
                     updatePlaybackState(false, currentPositionMs)
+                    val notif = buildNotification(currentTitle, currentArtist, false, currentArtwork)
+                    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    manager.notify(NOTIFICATION_ID, notif)
                     MainActivity.sendPlaybackAction(action)
                     return START_STICKY
                 }

@@ -73,6 +73,7 @@ class MelodyAudioService {
 
     // Persistent playback notification channel actions
     const MethodChannel('com.melody.music/playback').setMethodCallHandler((call) async {
+      debugPrint('AudioService: onMethodCall: ${call.method}, args: ${call.arguments}');
       if (call.method == 'onNotificationAction') {
         final action = call.arguments as String?;
         if (action == null) return;
@@ -82,6 +83,12 @@ class MelodyAudioService {
           return;
         }
         switch (action) {
+          case 'play':
+            await resume();
+            break;
+          case 'pause':
+            await pause();
+            break;
           case 'playPause':
             await togglePlayPause();
             break;
@@ -302,13 +309,38 @@ class MelodyAudioService {
     }
   }
 
+  Future<void> resume() async {
+    if (_currentSong == null) return;
+    try {
+      if (_player.state == PlayerState.paused) {
+        await _player.resume();
+      } else {
+        await _playCurrent();
+      }
+      _isPlaying = true;
+      _updateNotification();
+      _stateChangeController.add(null);
+    } catch (e) {
+      debugPrint('Resume error: $e. Retrying playback...');
+      await _playCurrent();
+    }
+  }
+
+  Future<void> pause() async {
+    try {
+      await _player.pause();
+    } catch (_) {}
+    _isPlaying = false;
+    _updateNotification();
+    _stateChangeController.add(null);
+  }
+
   Future<void> togglePlayPause() async {
     if (_isPlaying) {
-      await _player.pause();
+      await pause();
     } else {
-      await _player.resume();
+      await resume();
     }
-    _stateChangeController.add(null);
   }
 
   Future<void> seek(Duration position) async {

@@ -6,6 +6,7 @@ import '../models/song.dart';
 import '../models/search_result.dart';
 import 'anti_bot_service.dart';
 import 'database_service.dart';
+import 'recommendation_service.dart';
 
 class InnerTubeService {
   static const String _baseUrl = 'https://music.youtube.com/youtubei/v1';
@@ -251,8 +252,8 @@ class InnerTubeService {
     }
   }
 
-  /// Fetch Quick Picks / Home feed songs personalized by chosen music languages and mood.
-  /// Uses memory and persistent caching for instant (0ms) loading and runs queries in parallel.
+  /// Fetch Quick Picks / Home feed songs personalized by chosen music languages and listened genre algorithm.
+  /// Strictly filters for single songs and leverages collaborative + content-based recommendations.
   static Future<List<Song>> getQuickPicks({
     List<String>? languages,
     String mood = 'All',
@@ -277,89 +278,19 @@ class InnerTubeService {
       }
     }
 
-    // 2. Build concise, high-yield queries based on active languages
-    final queries = <String>[];
-    if (activeLanguages.length == 1) {
-      final lang = activeLanguages.first;
-      if (mood == 'All') {
-        queries.add('Top $lang Music Hits 2026');
-        queries.add('Trending $lang Songs');
-      } else {
-        queries.add('$lang $mood Songs 2026');
-        queries.add('Top $lang $mood Hits');
-      }
-    } else {
-      // Multiple languages: take 1 top query per language (up to 3 queries total)
-      for (final lang in activeLanguages.take(3)) {
-        if (mood == 'All') {
-          queries.add('Top $lang Music Hits 2026');
-        } else {
-          queries.add('$lang $mood Songs 2026');
-        }
-      }
+    // 2. Fetch personalized single songs based on chosen languages & listened genre algorithm
+    final songs = await RecommendationService.getPersonalizedQuickPicks(
+      languages: activeLanguages,
+      mood: mood,
+    );
+
+    if (songs.isNotEmpty) {
+      _quickPicksMemoryCache[cacheKey] = songs;
+      await DatabaseService.saveCachedFeed(cacheKey, songs);
+      return songs;
     }
 
-    if (queries.isEmpty) {
-      queries.add('Top Music Hits 2026');
-      queries.add('Trending Global Songs');
-    }
-
-    // 3. Execute searches concurrently in parallel with strict per-query timeout
-    final queryTasks = queries.map((q) async {
-      try {
-        if (AntiBotService.isSafeModeActive) {
-          final res = await _searchViaSafeProxy(q);
-          return res.songs.take(8).toList();
-        }
-
-        final res = await _ytExplode.search
-            .search(q)
-            .timeout(const Duration(milliseconds: 2500));
-
-        final songs = <Song>[];
-        for (final item in res.take(8)) {
-          songs.add(Song(
-            id: item.id.value,
-            title: item.title,
-            artist: item.author,
-            duration: item.duration?.inSeconds ?? 0,
-            thumbnailUrl: 'https://i.ytimg.com/vi/${item.id.value}/hqdefault.jpg',
-          ));
-        }
-        return songs;
-      } catch (e) {
-        debugPrint('Direct quick picks query "$q" failed or timed out: $e. Using safe proxy fallback...');
-        try {
-          final safeRes = await _searchViaSafeProxy(q);
-          return safeRes.songs.take(8).toList();
-        } catch (_) {
-          return <Song>[];
-        }
-      }
-    });
-
-    final queryResults = await Future.wait(queryTasks);
-
-    // 4. Interleave results so each selected language is fairly represented
-    final mergedSongs = <Song>[];
-    final maxCount = queryResults.fold<int>(0, (max, l) => l.length > max ? l.length : max);
-    for (int i = 0; i < maxCount; i++) {
-      for (final list in queryResults) {
-        if (i < list.length) {
-          mergedSongs.add(list[i]);
-        }
-      }
-    }
-
-    if (mergedSongs.isNotEmpty) {
-      final seen = <String>{};
-      final uniqueSongs = mergedSongs.where((s) => seen.add(s.id)).toList();
-      _quickPicksMemoryCache[cacheKey] = uniqueSongs;
-      await DatabaseService.saveCachedFeed(cacheKey, uniqueSongs);
-      return uniqueSongs;
-    }
-
-    // 5. Fallback to cached feed if present, else safe defaults
+    // 3. Fallback to cached feed if present
     final diskFallback = DatabaseService.getCachedFeed(cacheKey);
     if (diskFallback.isNotEmpty) {
       return diskFallback;
