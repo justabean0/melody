@@ -225,7 +225,10 @@ class MelodyAudioService {
         }
       }
 
-      // 3. NEXT-TRACK PRE-FETCHING:
+      // 3. Keep 5-second head of this listened song in local cache for instant future replays
+      AudioCacheService.ensureHeadCached(_currentSong!.id, streamUrl);
+
+      // 4. NEXT-TRACK PRE-FETCHING:
       // In the background, pre-resolve next track stream & pre-cache its 5-second head
       _triggerNextTrackPrefetch();
       _updateNotification();

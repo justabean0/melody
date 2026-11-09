@@ -55,9 +55,11 @@ class SearchProvider extends ChangeNotifier {
       _results = await InnerTubeService.search(query, filter: _filter);
 
       // Speculative Stream Pre-warming:
-      // Instantly pre-resolve and pre-cache the 5s audio head for the top 2 results in background
+      // Instantly pre-resolve and pre-cache the 5s audio head for the top 3 results in background
       if (_results.songs.isNotEmpty) {
-        for (final song in _results.songs.take(2)) {
+        final toPreWarm = _results.songs.take(3).toList();
+        debugPrint('⚡ [Search Pre-Warming]: Speculatively pre-resolving top ${toPreWarm.length} results for "$query"...');
+        for (final song in toPreWarm) {
           StreamResolverService.preWarm(song.id, songTitle: song.title, artist: song.artist);
         }
       }
