@@ -5,6 +5,7 @@ import '../../providers/playback_provider.dart';
 import '../../services/database_service.dart';
 import '../../services/innertube_service.dart';
 import '../../services/innertube_version_manager.dart';
+import '../../services/stream_resolver_service.dart';
 import '../../services/update_service.dart';
 import '../components/album_card.dart';
 import '../components/song_tile.dart';
@@ -67,6 +68,13 @@ class _HomeScreenState extends State<HomeScreen> {
         _quickPicks = songs;
         _isLoading = false;
       });
+
+      // Pre-warm top recommendations in the background for zero-delay instant playback
+      if (songs.isNotEmpty) {
+        for (final s in songs.take(2)) {
+          StreamResolverService.preWarm(s.id, songTitle: s.title, artist: s.artist);
+        }
+      }
     } catch (_) {
       setState(() => _isLoading = false);
     }

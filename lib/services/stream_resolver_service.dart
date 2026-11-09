@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import 'anti_bot_service.dart';
+import 'audio_cache_service.dart';
 import 'innertube_version_manager.dart';
 
 class CachedStream {
@@ -365,6 +366,24 @@ class StreamResolverService {
     }
 
     throw Exception('Failed to resolve playable audio stream for video: $videoId');
+  }
+
+  /// Speculatively pre-resolves a stream and pre-caches its 5-second head
+  /// in the background, turning subsequent taps into instant 0ms playback.
+  static void preWarm(String videoId, {String? songTitle, String? artist}) {
+    if (_streamCache.containsKey(videoId) && !_streamCache[videoId]!.isExpired) return;
+    unawaited(() async {
+      try {
+        final url = await resolveAudioStreamUrl(
+          videoId,
+          songTitle: songTitle,
+          artist: artist,
+          optimistic: true,
+        );
+        await AudioCacheService.prefetchHead(videoId, url);
+        debugPrint('⚡ Pre-warmed audio stream & head cache for $videoId');
+      } catch (_) {}
+    }());
   }
 
   static void dispose() {
