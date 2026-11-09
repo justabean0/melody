@@ -31,6 +31,13 @@ class MainActivity: FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        // Request POST_NOTIFICATIONS permission on Android 13+ (API 33+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
+
         // 1. In-App Updater Channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UPDATER_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -97,11 +104,15 @@ class MainActivity: FlutterActivity() {
                     val title = call.argument<String>("title") ?: "Melody"
                     val artist = call.argument<String>("artist") ?: "Playing music"
                     val isPlaying = call.argument<Boolean>("isPlaying") ?: true
+                    val thumbnailUrl = call.argument<String>("thumbnailUrl")
 
                     val intent = Intent(this, MediaNotificationService::class.java).apply {
                         putExtra(MediaNotificationService.EXTRA_TITLE, title)
                         putExtra(MediaNotificationService.EXTRA_ARTIST, artist)
                         putExtra(MediaNotificationService.EXTRA_IS_PLAYING, isPlaying)
+                        if (!thumbnailUrl.isNullOrEmpty()) {
+                            putExtra(MediaNotificationService.EXTRA_THUMBNAIL_URL, thumbnailUrl)
+                        }
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         startForegroundService(intent)
