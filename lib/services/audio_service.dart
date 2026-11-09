@@ -126,6 +126,7 @@ class MelodyAudioService {
         'title': _currentSong!.title,
         'artist': _currentSong!.artist,
         'isPlaying': _isPlaying,
+        'thumbnailUrl': _currentSong!.thumbnailUrl,
       });
     } catch (_) {}
   }
