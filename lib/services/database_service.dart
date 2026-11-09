@@ -15,6 +15,8 @@ class DatabaseService {
   static const String _updateSourceKey = 'melody_update_source';
   static const String _autoCheckUpdatesKey = 'melody_auto_check_updates';
   static const String _lastUpdateCheckKey = 'melody_last_update_check';
+  static const String _musicLanguagesKey = 'melody_music_languages';
+  static const String _hasSelectedLanguagesKey = 'melody_has_selected_languages';
 
   static SharedPreferences? _prefs;
 
@@ -174,4 +176,20 @@ class DatabaseService {
       _prefs?.getInt(_lastUpdateCheckKey) ?? 0;
   static Future<void> setLastUpdateCheck(int timestamp) async =>
       await _prefs?.setInt(_lastUpdateCheckKey, timestamp);
+
+  // --- Music Languages Preferences ---
+  static List<String> getMusicLanguages() {
+    final list = _prefs?.getStringList(_musicLanguagesKey);
+    if (list != null && list.isNotEmpty) return list;
+    return ['English'];
+  }
+
+  static Future<void> setMusicLanguages(List<String> languages) async {
+    await _prefs?.setStringList(_musicLanguagesKey, languages);
+    await _prefs?.setBool(_hasSelectedLanguagesKey, true);
+  }
+
+  static bool hasSelectedLanguages() {
+    return _prefs?.getBool(_hasSelectedLanguagesKey) ?? false;
+  }
 }

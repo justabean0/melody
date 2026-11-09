@@ -8,8 +8,23 @@ import '../../services/innertube_version_manager.dart';
 import '../../services/stream_resolver_service.dart';
 import '../../services/update_service.dart';
 import '../components/album_card.dart';
+import '../components/language_selection_dialog.dart';
 import '../components/song_tile.dart';
 import '../components/update_dialog.dart';
+
+class _TrendingCategory {
+  final String title;
+  final String subtitle;
+  final String imageUrl;
+  final String query;
+
+  const _TrendingCategory({
+    required this.title,
+    required this.subtitle,
+    required this.imageUrl,
+    required this.query,
+  });
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -38,6 +53,21 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _loadFeed();
     _checkAppUpdateSilently();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkFirstTimeLanguageSetup();
+    });
+  }
+
+  Future<void> _checkFirstTimeLanguageSetup() async {
+    if (!DatabaseService.hasSelectedLanguages()) {
+      LanguageSelectionDialog.show(
+        context,
+        isDismissible: false,
+        onSaved: (selected) {
+          _loadFeed(_activeMood);
+        },
+      );
+    }
   }
 
   Future<void> _checkAppUpdateSilently() async {
@@ -63,7 +93,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadFeed([String mood = 'All']) async {
     setState(() => _isLoading = true);
     try {
-      final songs = await InnerTubeService.getQuickPicks();
+      final songs = await InnerTubeService.getQuickPicks(mood: mood);
       setState(() {
         _quickPicks = songs;
         _isLoading = false;
@@ -78,6 +108,120 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {
       setState(() => _isLoading = false);
     }
+  }
+
+  List<_TrendingCategory> _getTrendingCategories() {
+    final languages = DatabaseService.getMusicLanguages();
+    final categories = <_TrendingCategory>[];
+
+    for (final lang in languages) {
+      switch (lang) {
+        case 'Hindi':
+          categories.add(const _TrendingCategory(
+            title: 'Top 50 India',
+            subtitle: 'Bollywood & Hindi Hits',
+            imageUrl: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300',
+            query: 'Top 50 Hindi Songs 2026',
+          ));
+          categories.add(const _TrendingCategory(
+            title: 'Desi Indie & Pop',
+            subtitle: 'Indian Indie Charts',
+            imageUrl: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=300',
+            query: 'Trending Hindi Indie Hits',
+          ));
+          break;
+        case 'Punjabi':
+          categories.add(const _TrendingCategory(
+            title: 'Punjabi Hot 50',
+            subtitle: 'Bhangra & Pop Hits',
+            imageUrl: 'https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300',
+            query: 'Top Punjabi Songs 2026',
+          ));
+          break;
+        case 'Spanish':
+          categories.add(const _TrendingCategory(
+            title: 'Viva Latino',
+            subtitle: 'Reggaeton & Latin Pop',
+            imageUrl: 'https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=300',
+            query: 'Top Spanish Hits 2026',
+          ));
+          break;
+        case 'Korean':
+          categories.add(const _TrendingCategory(
+            title: 'K-Pop Daebak',
+            subtitle: 'Top K-Pop Idol Hits',
+            imageUrl: 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=300',
+            query: 'Top K-Pop Songs 2026',
+          ));
+          break;
+        case 'Bengali':
+          categories.add(const _TrendingCategory(
+            title: 'Bangla Top Hits',
+            subtitle: 'Tollywood & Bangla Folk',
+            imageUrl: 'https://images.unsplash.com/photo-1487180144351-b8472da7d491?w=300',
+            query: 'Top Bengali Songs 2026',
+          ));
+          break;
+        case 'Tamil':
+          categories.add(const _TrendingCategory(
+            title: 'Kollywood Beats',
+            subtitle: 'Tamil Chartbusters',
+            imageUrl: 'https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=300',
+            query: 'Top Tamil Songs 2026',
+          ));
+          break;
+        case 'Telugu':
+          categories.add(const _TrendingCategory(
+            title: 'Tollywood Top 50',
+            subtitle: 'Telugu Mass Melodies',
+            imageUrl: 'https://images.unsplash.com/photo-1511379938547-c1f69419868d?w=300',
+            query: 'Top Telugu Songs 2026',
+          ));
+          break;
+        case 'Malayalam':
+          categories.add(const _TrendingCategory(
+            title: 'Mollywood Melodies',
+            subtitle: 'Malayalam Hits & Indie',
+            imageUrl: 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?w=300',
+            query: 'Top Malayalam Songs 2026',
+          ));
+          break;
+        case 'Japanese':
+          categories.add(const _TrendingCategory(
+            title: 'J-Pop & Anime',
+            subtitle: 'Tokyo Top Charts',
+            imageUrl: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=300',
+            query: 'Top J-Pop Anime Songs 2026',
+          ));
+          break;
+        case 'English':
+        default:
+          categories.add(const _TrendingCategory(
+            title: 'Global Top 50',
+            subtitle: 'International Hits',
+            imageUrl: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300',
+            query: 'Global Top 50 Hits 2026',
+          ));
+          categories.add(const _TrendingCategory(
+            title: 'Today’s Hot Hits',
+            subtitle: 'Viral Pop & Hip-Hop',
+            imageUrl: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300',
+            query: 'Top Billboard Hits 2026',
+          ));
+          break;
+      }
+    }
+
+    if (categories.isEmpty) {
+      categories.add(const _TrendingCategory(
+        title: 'Global Top 50',
+        subtitle: 'International Hits',
+        imageUrl: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300',
+        query: 'Global Top 50 Hits 2026',
+      ));
+    }
+
+    return categories;
   }
 
   @override
@@ -114,6 +258,21 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Music Languages',
+            icon: const Icon(Icons.translate_rounded),
+            onPressed: () {
+              LanguageSelectionDialog.show(
+                context,
+                isDismissible: true,
+                onSaved: (selected) {
+                  _loadFeed(_activeMood);
+                },
+              );
+            },
+          ),
+        ],
       ),
       body: RefreshIndicator(
         onRefresh: () => _loadFeed(_activeMood),
@@ -166,6 +325,67 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       );
                     },
+                  ),
+
+                  // Active Music Languages Selector Bar
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+                    child: Row(
+                      children: [
+                        Icon(Icons.language, size: 16, color: colorScheme.primary),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              children: [
+                                ...DatabaseService.getMusicLanguages().map((lang) {
+                                  return Container(
+                                    margin: const EdgeInsets.only(right: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: colorScheme.primaryContainer.withAlpha(150),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Text(
+                                      lang,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: colorScheme.onPrimaryContainer,
+                                      ),
+                                    ),
+                                  );
+                                }),
+                              ],
+                            ),
+                          ),
+                        ),
+                        InkWell(
+                          onTap: () {
+                            LanguageSelectionDialog.show(
+                              context,
+                              isDismissible: true,
+                              onSaved: (selected) {
+                                _loadFeed(_activeMood);
+                              },
+                            );
+                          },
+                          borderRadius: BorderRadius.circular(8),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            child: Text(
+                              'Change',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: colorScheme.primary,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
 
                   // Moods & Genres Filters
@@ -225,7 +445,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   const SizedBox(height: 20),
 
-                  // Section 2: Recommended Albums & Playlists
+                  // Section 2: Recommended Albums & Playlists (Personalized by Languages)
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
                     child: Text(
@@ -238,33 +458,35 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   SizedBox(
                     height: 220,
-                    child: ListView(
+                    child: ListView.builder(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                      children: [
-                        MediaCard(
-                          title: 'Global Top 50',
-                          subtitle: 'YouTube Music',
-                          imageUrl: 'https://picsum.photos/seed/yt50/300/300',
-                          onTap: () {
-                            if (_quickPicks.isNotEmpty) {
-                              playback.playSong(_quickPicks.first, contextQueue: _quickPicks);
-                            }
-                          },
-                        ),
-                        MediaCard(
-                          title: 'Lo-Fi Chill Beats',
-                          subtitle: 'Focus & Study',
-                          imageUrl: 'https://picsum.photos/seed/lofi/300/300',
-                          onTap: () {},
-                        ),
-                        MediaCard(
-                          title: 'Pop Rewind',
-                          subtitle: 'Chartbusters',
-                          imageUrl: 'https://picsum.photos/seed/pop/300/300',
-                          onTap: () {},
-                        ),
-                      ],
+                      itemCount: _getTrendingCategories().length,
+                      itemBuilder: (context, index) {
+                        final cat = _getTrendingCategories()[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 12.0),
+                          child: MediaCard(
+                            title: cat.title,
+                            subtitle: cat.subtitle,
+                            imageUrl: cat.imageUrl,
+                            onTap: () async {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('Playing ${cat.title}...'),
+                                  duration: const Duration(seconds: 1),
+                                ),
+                              );
+                              try {
+                                final results = await InnerTubeService.search(cat.query);
+                                if (results.songs.isNotEmpty && mounted) {
+                                  playback.playSong(results.songs.first, contextQueue: results.songs);
+                                }
+                              } catch (_) {}
+                            },
+                          ),
+                        );
+                      },
                     ),
                   ),
 

@@ -5,6 +5,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import '../models/song.dart';
 import '../models/search_result.dart';
 import 'anti_bot_service.dart';
+import 'database_service.dart';
 
 class InnerTubeService {
   static const String _baseUrl = 'https://music.youtube.com/youtubei/v1';
@@ -249,16 +250,41 @@ class InnerTubeService {
     }
   }
 
-  /// Fetch Quick Picks / Home feed songs
-  static Future<List<Song>> getQuickPicks() async {
-    const trendingQueries = [
-      'Top Music Hits 2026',
-      'Trending Global Songs',
-      'Lo-Fi Beats Chill',
-    ];
+  /// Fetch Quick Picks / Home feed songs personalized by chosen music languages and mood
+  static Future<List<Song>> getQuickPicks({List<String>? languages, String mood = 'All'}) async {
+    final activeLanguages = (languages != null && languages.isNotEmpty)
+        ? languages
+        : DatabaseService.getMusicLanguages();
+
+    final trendingQueries = <String>[];
+    for (final lang in activeLanguages) {
+      if (mood == 'All') {
+        trendingQueries.add('Trending $lang Songs 2026');
+        trendingQueries.add('Top $lang Music Hits');
+      } else if (mood == 'Chill') {
+        trendingQueries.add('$lang Lo-Fi Chill Acoustic Songs');
+      } else if (mood == 'Workout') {
+        trendingQueries.add('$lang High Energy Workout Music');
+      } else if (mood == 'Focus') {
+        trendingQueries.add('$lang Focus Study Instrumental Music');
+      } else if (mood == 'Party') {
+        trendingQueries.add('$lang Party Club Dance Hits');
+      } else if (mood == 'Romance') {
+        trendingQueries.add('$lang Romantic Love Songs 2026');
+      } else if (mood == 'Sleep') {
+        trendingQueries.add('$lang Calm Ambient Sleeping Music');
+      } else {
+        trendingQueries.add('$lang $mood Songs 2026');
+      }
+    }
+
+    if (trendingQueries.isEmpty) {
+      trendingQueries.add('Top Music Hits 2026');
+      trendingQueries.add('Trending Global Songs');
+    }
 
     final songs = <Song>[];
-    for (final q in trendingQueries) {
+    for (final q in trendingQueries.take(4)) {
       try {
         final res = await _ytExplode.search.search(q);
         for (final item in res.take(6)) {

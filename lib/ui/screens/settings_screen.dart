@@ -4,6 +4,7 @@ import '../../providers/theme_provider.dart';
 import '../../services/database_service.dart';
 import '../../services/innertube_version_manager.dart';
 import '../../services/update_service.dart';
+import '../components/language_selection_dialog.dart';
 import '../components/update_dialog.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -360,6 +361,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (val) {
               setState(() => _skipSilence = val);
               DatabaseService.setSkipSilence(val);
+            },
+          ),
+
+          const Divider(),
+
+          // Section: Content & Recommendations
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text(
+              'Content & Recommendations',
+              style: TextStyle(
+                color: colorScheme.primary,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.translate_rounded),
+            title: const Text('Music Languages'),
+            subtitle: Text(
+              DatabaseService.getMusicLanguages().join(', '),
+              style: TextStyle(color: theme.textTheme.bodyMedium?.color?.withAlpha(180)),
+            ),
+            trailing: const Icon(Icons.arrow_forward_ios, size: 14),
+            onTap: () {
+              LanguageSelectionDialog.show(
+                context,
+                isDismissible: true,
+                onSaved: (selected) {
+                  setState(() {});
+                },
+              );
             },
           ),
 
