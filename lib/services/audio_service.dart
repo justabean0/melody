@@ -96,13 +96,17 @@ class MelodyAudioService {
     });
 
     _player.onPositionChanged.listen((pos) {
-      _position = pos;
-      _positionChangeController.add(pos);
+      if (!_isLoading) {
+        _position = pos;
+        _positionChangeController.add(pos);
+      }
     });
 
     _player.onDurationChanged.listen((dur) {
-      _duration = dur;
-      _stateChangeController.add(null);
+      if (dur > Duration.zero) {
+        _duration = dur;
+        _stateChangeController.add(null);
+      }
     });
 
     _player.onPlayerComplete.listen((_) {
@@ -148,10 +152,20 @@ class MelodyAudioService {
 
   Future<void> _playCurrent() async {
     if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
+
+    // 1. Immediately cut off old audio so it stops playing right away
+    await _player.stop();
+
     _currentSong = _queue[_currentIndex];
-    _songChangeController.add(_currentSong);
-    _isLoading = true;
+
+    // 2. Immediately reset position and initialize duration to current song metadata
     _position = Duration.zero;
+    _duration = Duration(seconds: _currentSong!.duration);
+    _isLoading = true;
+
+    // 3. Immediately broadcast to UI so all sliders and timestamps reset instantly
+    _positionChangeController.add(Duration.zero);
+    _songChangeController.add(_currentSong);
     _stateChangeController.add(null);
 
     // Save to local history
@@ -168,8 +182,6 @@ class MelodyAudioService {
 
       // 2. Local Disk Cache & 5s Head Proxy mapping
       String playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, streamUrl);
-
-      await _player.stop();
 
       try {
         if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {

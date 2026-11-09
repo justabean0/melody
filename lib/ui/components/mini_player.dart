@@ -21,10 +21,10 @@ class MiniPlayer extends StatelessWidget {
     final isLiked = library.isLiked(song.id);
 
     // Progress percentage
-    final double progress = (playback.duration.inMilliseconds > 0)
-        ? (playback.position.inMilliseconds / playback.duration.inMilliseconds)
-            .clamp(0.0, 1.0)
-        : 0.0;
+    final double progress = (playback.isLoading || playback.duration.inMilliseconds <= 0)
+        ? 0.0
+        : (playback.position.inMilliseconds / playback.duration.inMilliseconds)
+            .clamp(0.0, 1.0);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),

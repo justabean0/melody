@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/search_result.dart';
 import '../services/innertube_service.dart';
+import '../services/stream_resolver_service.dart';
 
 class SearchProvider extends ChangeNotifier {
   String _query = '';
@@ -52,6 +53,14 @@ class SearchProvider extends ChangeNotifier {
 
     try {
       _results = await InnerTubeService.search(query, filter: _filter);
+
+      // Speculative Stream Pre-warming:
+      // Instantly pre-resolve and pre-cache the 5s audio head for the top 2 results in background
+      if (_results.songs.isNotEmpty) {
+        for (final song in _results.songs.take(2)) {
+          StreamResolverService.preWarm(song.id, songTitle: song.title, artist: song.artist);
+        }
+      }
     } catch (_) {
       _results = const SearchResult();
     } finally {

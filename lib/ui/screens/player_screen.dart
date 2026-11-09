@@ -18,6 +18,7 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   double _dragValue = -1.0;
+  String? _activeSongId;
 
   @override
   void initState() {
@@ -44,6 +45,11 @@ class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSt
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final library = context.watch<LibraryProvider>();
+
+    if (song != null && song.id != _activeSongId) {
+      _activeSongId = song.id;
+      _dragValue = -1.0;
+    }
 
     if (song == null) {
       return Scaffold(
@@ -107,10 +113,15 @@ class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSt
     ColorScheme colorScheme,
   ) {
     final song = playback.currentSong!;
-    final totalDuration = playback.duration.inMilliseconds.toDouble();
+    final accurateDuration = playback.duration > Duration.zero
+        ? playback.duration
+        : Duration(seconds: song.duration);
+    final totalDuration = accurateDuration.inMilliseconds.toDouble();
     final currentPos = _dragValue >= 0.0
         ? _dragValue
-        : playback.position.inMilliseconds.toDouble().clamp(0.0, totalDuration > 0 ? totalDuration : 1.0);
+        : (playback.isLoading
+            ? 0.0
+            : playback.position.inMilliseconds.toDouble().clamp(0.0, totalDuration > 0 ? totalDuration : 1.0));
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24.0),
@@ -217,14 +228,14 @@ class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSt
                       _formatDuration(
                         _dragValue >= 0.0
                             ? Duration(milliseconds: _dragValue.toInt())
-                            : playback.position,
+                            : (playback.isLoading ? Duration.zero : playback.position),
                       ),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: colorScheme.onSurfaceVariant,
                       ),
                     ),
                     Text(
-                      _formatDuration(playback.duration),
+                      _formatDuration(accurateDuration),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: colorScheme.onSurfaceVariant,
                       ),
