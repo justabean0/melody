@@ -19,8 +19,8 @@ class AudioCacheService {
   /// Default head chunk size: 128 KB (~6-8 seconds of 128kbps AAC / Opus)
   static const int headChunkSize = 131072;
 
-  /// Max head files to keep on disk (~3.8 MB total)
-  static const int maxCachedHeads = 30;
+  /// Max head files to keep on disk (~12.8 MB total for 100 songs)
+  static const int maxCachedHeads = 100;
 
   static int get proxyPort => _port;
   static bool get isProxyRunning => _proxyServer != null;
@@ -28,7 +28,7 @@ class AudioCacheService {
   /// Initializes the 5-second head disk cache directory and embedded loopback proxy
   static Future<void> init() async {
     try {
-      final baseDir = await getTemporaryDirectory();
+      final baseDir = await getApplicationSupportDirectory();
       _headsDir = Directory('${baseDir.path}/melody_heads');
 
       if (!await _headsDir!.exists()) {
@@ -137,7 +137,7 @@ class AudioCacheService {
     }
   }
 
-  /// Pre-caches the first 5-8 seconds (~128 KB) of an upcoming track to disk
+  /// Pre-caches the first 5-8 seconds (~128 KB) of an upcoming or played track to disk
   static Future<void> prefetchHead(String videoId, String remoteUrl) async {
     if (_headsDir == null) return;
     try {
@@ -145,6 +145,9 @@ class AudioCacheService {
       final metaFile = File('${_headsDir!.path}/$videoId.meta');
 
       if (await headFile.exists() && await metaFile.exists()) {
+        try {
+          await headFile.setLastModified(DateTime.now());
+        } catch (_) {}
         return; // Already cached
       }
 
@@ -178,6 +181,11 @@ class AudioCacheService {
     } catch (e) {
       debugPrint('AudioCacheService: Head prefetch skipped for $videoId: $e');
     }
+  }
+
+  /// Ensures the 5-second head for any played or listened-to song is cached on disk.
+  static void ensureHeadCached(String videoId, String remoteUrl) {
+    unawaited(prefetchHead(videoId, remoteUrl));
   }
 
   /// Prunes old 5s heads if cached count exceeds maxCachedHeads

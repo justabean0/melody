@@ -83,7 +83,7 @@ void main() {
 
     test('Audio head size constant is strictly 128 KB (~5-8s of audio)', () {
       expect(AudioCacheService.headChunkSize, equals(131072)); // 128 KB
-      expect(AudioCacheService.maxCachedHeads, equals(30));
+      expect(AudioCacheService.maxCachedHeads, equals(100));
     });
   });
 }
