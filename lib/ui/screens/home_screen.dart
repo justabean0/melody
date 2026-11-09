@@ -59,7 +59,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _checkFirstTimeLanguageSetup() async {
-    if (!DatabaseService.hasSelectedLanguages()) {
+    if (!DatabaseService.hasCompletedLanguageOnboarding()) {
       LanguageSelectionDialog.show(
         context,
         isDismissible: false,
@@ -91,22 +91,41 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadFeed([String mood = 'All']) async {
-    setState(() => _isLoading = true);
-    try {
-      final songs = await InnerTubeService.getQuickPicks(mood: mood);
+    final activeLangs = DatabaseService.getMusicLanguages();
+    final cacheKey = '$mood:${activeLangs.join(",")}';
+
+    // 1. Instant display from cache (0ms perceived latency)
+    final cached = DatabaseService.getCachedFeed(cacheKey);
+    if (cached.isNotEmpty) {
       setState(() {
-        _quickPicks = songs;
+        _quickPicks = cached;
         _isLoading = false;
       });
+    } else if (_quickPicks.isEmpty) {
+      setState(() => _isLoading = true);
+    }
 
-      // Pre-warm top recommendations in the background for zero-delay instant playback
-      if (songs.isNotEmpty) {
+    // 2. Fetch fresh personalized feed concurrently
+    try {
+      final songs = await InnerTubeService.getQuickPicks(
+        mood: mood,
+        forceRefresh: true,
+      );
+      if (mounted && songs.isNotEmpty) {
+        setState(() {
+          _quickPicks = songs;
+          _isLoading = false;
+        });
+
+        // Pre-warm top recommendations in the background for zero-delay instant playback
         for (final s in songs.take(2)) {
           StreamResolverService.preWarm(s.id, songTitle: s.title, artist: s.artist);
         }
       }
     } catch (_) {
-      setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 

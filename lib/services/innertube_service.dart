@@ -11,6 +11,7 @@ class InnerTubeService {
   static const String _baseUrl = 'https://music.youtube.com/youtubei/v1';
   static final http.Client _client = http.Client();
   static final yt.YoutubeExplode _ytExplode = yt.YoutubeExplode();
+  static final Map<String, List<Song>> _quickPicksMemoryCache = {};
 
   static const Map<String, String> _headers = {
     'Content-Type': 'application/json',
@@ -250,44 +251,73 @@ class InnerTubeService {
     }
   }
 
-  /// Fetch Quick Picks / Home feed songs personalized by chosen music languages and mood
-  static Future<List<Song>> getQuickPicks({List<String>? languages, String mood = 'All'}) async {
+  /// Fetch Quick Picks / Home feed songs personalized by chosen music languages and mood.
+  /// Uses memory and persistent caching for instant (0ms) loading and runs queries in parallel.
+  static Future<List<Song>> getQuickPicks({
+    List<String>? languages,
+    String mood = 'All',
+    bool forceRefresh = false,
+  }) async {
     final activeLanguages = (languages != null && languages.isNotEmpty)
         ? languages
         : DatabaseService.getMusicLanguages();
 
-    final trendingQueries = <String>[];
-    for (final lang in activeLanguages) {
-      if (mood == 'All') {
-        trendingQueries.add('Trending $lang Songs 2026');
-        trendingQueries.add('Top $lang Music Hits');
-      } else if (mood == 'Chill') {
-        trendingQueries.add('$lang Lo-Fi Chill Acoustic Songs');
-      } else if (mood == 'Workout') {
-        trendingQueries.add('$lang High Energy Workout Music');
-      } else if (mood == 'Focus') {
-        trendingQueries.add('$lang Focus Study Instrumental Music');
-      } else if (mood == 'Party') {
-        trendingQueries.add('$lang Party Club Dance Hits');
-      } else if (mood == 'Romance') {
-        trendingQueries.add('$lang Romantic Love Songs 2026');
-      } else if (mood == 'Sleep') {
-        trendingQueries.add('$lang Calm Ambient Sleeping Music');
-      } else {
-        trendingQueries.add('$lang $mood Songs 2026');
+    final cacheKey = '$mood:${activeLanguages.join(",")}';
+
+    // 1. Fast cache hit: return immediately if available
+    if (!forceRefresh) {
+      if (_quickPicksMemoryCache.containsKey(cacheKey) &&
+          _quickPicksMemoryCache[cacheKey]!.isNotEmpty) {
+        return _quickPicksMemoryCache[cacheKey]!;
+      }
+      final diskCached = DatabaseService.getCachedFeed(cacheKey);
+      if (diskCached.isNotEmpty) {
+        _quickPicksMemoryCache[cacheKey] = diskCached;
+        return diskCached;
       }
     }
 
-    if (trendingQueries.isEmpty) {
-      trendingQueries.add('Top Music Hits 2026');
-      trendingQueries.add('Trending Global Songs');
+    // 2. Build concise, high-yield queries based on active languages
+    final queries = <String>[];
+    if (activeLanguages.length == 1) {
+      final lang = activeLanguages.first;
+      if (mood == 'All') {
+        queries.add('Top $lang Music Hits 2026');
+        queries.add('Trending $lang Songs');
+      } else {
+        queries.add('$lang $mood Songs 2026');
+        queries.add('Top $lang $mood Hits');
+      }
+    } else {
+      // Multiple languages: take 1 top query per language (up to 3 queries total)
+      for (final lang in activeLanguages.take(3)) {
+        if (mood == 'All') {
+          queries.add('Top $lang Music Hits 2026');
+        } else {
+          queries.add('$lang $mood Songs 2026');
+        }
+      }
     }
 
-    final songs = <Song>[];
-    for (final q in trendingQueries.take(4)) {
+    if (queries.isEmpty) {
+      queries.add('Top Music Hits 2026');
+      queries.add('Trending Global Songs');
+    }
+
+    // 3. Execute searches concurrently in parallel with strict per-query timeout
+    final queryTasks = queries.map((q) async {
       try {
-        final res = await _ytExplode.search.search(q);
-        for (final item in res.take(6)) {
+        if (AntiBotService.isSafeModeActive) {
+          final res = await _searchViaSafeProxy(q);
+          return res.songs.take(8).toList();
+        }
+
+        final res = await _ytExplode.search
+            .search(q)
+            .timeout(const Duration(milliseconds: 2500));
+
+        final songs = <Song>[];
+        for (final item in res.take(8)) {
           songs.add(Song(
             id: item.id.value,
             title: item.title,
@@ -296,12 +326,43 @@ class InnerTubeService {
             thumbnailUrl: 'https://i.ytimg.com/vi/${item.id.value}/hqdefault.jpg',
           ));
         }
-      } catch (_) {}
+        return songs;
+      } catch (e) {
+        debugPrint('Direct quick picks query "$q" failed or timed out: $e. Using safe proxy fallback...');
+        try {
+          final safeRes = await _searchViaSafeProxy(q);
+          return safeRes.songs.take(8).toList();
+        } catch (_) {
+          return <Song>[];
+        }
+      }
+    });
+
+    final queryResults = await Future.wait(queryTasks);
+
+    // 4. Interleave results so each selected language is fairly represented
+    final mergedSongs = <Song>[];
+    final maxCount = queryResults.fold<int>(0, (max, l) => l.length > max ? l.length : max);
+    for (int i = 0; i < maxCount; i++) {
+      for (final list in queryResults) {
+        if (i < list.length) {
+          mergedSongs.add(list[i]);
+        }
+      }
     }
 
-    if (songs.isNotEmpty) {
+    if (mergedSongs.isNotEmpty) {
       final seen = <String>{};
-      return songs.where((s) => seen.add(s.id)).toList();
+      final uniqueSongs = mergedSongs.where((s) => seen.add(s.id)).toList();
+      _quickPicksMemoryCache[cacheKey] = uniqueSongs;
+      await DatabaseService.saveCachedFeed(cacheKey, uniqueSongs);
+      return uniqueSongs;
+    }
+
+    // 5. Fallback to cached feed if present, else safe defaults
+    final diskFallback = DatabaseService.getCachedFeed(cacheKey);
+    if (diskFallback.isNotEmpty) {
+      return diskFallback;
     }
 
     return [

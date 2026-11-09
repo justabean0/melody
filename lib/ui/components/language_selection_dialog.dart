@@ -5,13 +5,11 @@ class MusicLanguage {
   final String name;
   final String nativeName;
   final String subtitle;
-  final String flag;
 
   const MusicLanguage({
     required this.name,
     required this.nativeName,
     required this.subtitle,
-    required this.flag,
   });
 }
 
@@ -54,97 +52,81 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
       name: 'Hindi',
       nativeName: 'हिंदी',
       subtitle: 'Bollywood, Indie & Pop',
-      flag: '🇮🇳',
     ),
     MusicLanguage(
       name: 'English',
       nativeName: 'English',
       subtitle: 'Global Hits, Pop & Hip-Hop',
-      flag: '🌐',
     ),
     MusicLanguage(
       name: 'Punjabi',
       nativeName: 'ਪੰਜਾਬੀ',
       subtitle: 'Punjabi Pop, Hip-Hop & Folk',
-      flag: '🌾',
     ),
     MusicLanguage(
       name: 'Spanish',
       nativeName: 'Español',
       subtitle: 'Reggaeton, Latin Pop & Bachata',
-      flag: '🇪🇸',
     ),
     MusicLanguage(
       name: 'Korean',
       nativeName: '한국어',
       subtitle: 'K-Pop, K-Drama OST & R&B',
-      flag: '🇰🇷',
     ),
     MusicLanguage(
       name: 'Bengali',
       nativeName: 'বাংলা',
       subtitle: 'Tollywood, Rabindra Sangeet & Folk',
-      flag: '🌸',
     ),
     MusicLanguage(
       name: 'Tamil',
       nativeName: 'தமிழ்',
       subtitle: 'Kollywood & Carnatic Beats',
-      flag: '🪕',
     ),
     MusicLanguage(
       name: 'Telugu',
       nativeName: 'తెలుగు',
       subtitle: 'Tollywood Blockbusters & Melodies',
-      flag: '🎭',
     ),
     MusicLanguage(
       name: 'Malayalam',
       nativeName: 'മലയാളം',
       subtitle: 'Mollywood Indie & Melodies',
-      flag: '🌴',
     ),
     MusicLanguage(
       name: 'Kannada',
       nativeName: 'ಕನ್ನಡ',
       subtitle: 'Sandalwood Hits & Pop',
-      flag: '☕',
     ),
     MusicLanguage(
       name: 'Bhojpuri',
       nativeName: 'भोजपुरी',
       subtitle: 'Bhojpuri Hits & Desi Folk',
-      flag: '🎉',
     ),
     MusicLanguage(
       name: 'Marathi',
       nativeName: 'मराठी',
       subtitle: 'Marathi Pop & Folk Hits',
-      flag: '🏰',
     ),
     MusicLanguage(
       name: 'Japanese',
       nativeName: '日本語',
       subtitle: 'J-Pop, Anime OST & City Pop',
-      flag: '🇯🇵',
     ),
     MusicLanguage(
       name: 'French',
       nativeName: 'Français',
       subtitle: 'French Pop, Chanson & Rap',
-      flag: '🇫🇷',
     ),
     MusicLanguage(
       name: 'Arabic',
       nativeName: 'العربية',
       subtitle: 'Arabic Pop, Tarab & Khaleeji',
-      flag: '🌙',
     ),
     MusicLanguage(
       name: 'Urdu',
       nativeName: 'اردو',
       subtitle: 'Ghazals, Sufi & Coke Studio',
-      flag: '✨',
     ),
   ];
 
@@ -180,6 +162,7 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
   Future<void> _saveAndApply() async {
     final list = _selected.toList();
     await DatabaseService.setMusicLanguages(list);
+    await DatabaseService.markLanguageOnboardingCompleted();
     widget.onSaved?.call(list);
     if (mounted) {
       Navigator.of(context).pop();
@@ -235,7 +218,7 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
                         Text(
                           widget.isDismissible
                               ? 'Music Languages'
-                              : 'Welcome to Melody!',
+                              : 'Welcome to Melody',
                           style: theme.textTheme.titleLarge?.copyWith(
                             fontWeight: FontWeight.bold,
                             letterSpacing: -0.5,
@@ -243,7 +226,7 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Choose the languages you listen to for personalized Quick Picks & Trending music.',
+                          'Choose your preferred languages for personalized Quick Picks and Trending music.',
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: theme.textTheme.bodyMedium?.color?.withAlpha(190),
                             height: 1.25,
@@ -282,7 +265,7 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
 
               const SizedBox(height: 12),
 
-              // Scrollable Grid of Languages
+              // Scrollable Grid of Languages (Plain Text Only, No Emojis)
               Flexible(
                 child: filtered.isEmpty
                     ? Center(
@@ -301,7 +284,7 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
                         itemCount: filtered.length,
                         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: 2,
-                          childAspectRatio: 2.1,
+                          childAspectRatio: 2.3,
                           crossAxisSpacing: 10,
                           mainAxisSpacing: 10,
                         ),
@@ -329,11 +312,6 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
                               ),
                               child: Row(
                                 children: [
-                                  Text(
-                                    lang.flag,
-                                    style: const TextStyle(fontSize: 22),
-                                  ),
-                                  const SizedBox(width: 8),
                                   Expanded(
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -346,27 +324,35 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
                                                 lang.name,
                                                 style: theme.textTheme.titleSmall?.copyWith(
                                                   fontWeight: FontWeight.bold,
+                                                  fontSize: 13.5,
                                                 ),
                                                 overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              '(${lang.nativeName})',
-                                              style: TextStyle(
-                                                fontSize: 10,
-                                                color: colorScheme.primary,
-                                                fontWeight: FontWeight.w600,
+                                            if (lang.nativeName != lang.name) ...[
+                                              const SizedBox(width: 4),
+                                              Flexible(
+                                                child: Text(
+                                                  '(${lang.nativeName})',
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: isSelected
+                                                        ? colorScheme.primary
+                                                        : colorScheme.onSurfaceVariant.withAlpha(200),
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
                                               ),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
+                                            ],
                                           ],
                                         ),
+                                        const SizedBox(height: 2),
                                         Text(
                                           lang.subtitle,
                                           style: theme.textTheme.bodySmall?.copyWith(
                                             fontSize: 9.5,
-                                            color: theme.textTheme.bodySmall?.color?.withAlpha(180),
+                                            color: theme.textTheme.bodySmall?.color?.withAlpha(170),
                                           ),
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
@@ -374,12 +360,25 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
                                       ],
                                     ),
                                   ),
-                                  if (isSelected)
-                                    Icon(
-                                      Icons.check_circle_rounded,
-                                      size: 18,
-                                      color: colorScheme.primary,
+                                  const SizedBox(width: 6),
+                                  AnimatedContainer(
+                                    duration: const Duration(milliseconds: 150),
+                                    width: 20,
+                                    height: 20,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: isSelected ? colorScheme.primary : Colors.transparent,
+                                      border: Border.all(
+                                        color: isSelected
+                                            ? colorScheme.primary
+                                            : colorScheme.outline.withAlpha(120),
+                                        width: 1.5,
+                                      ),
                                     ),
+                                    child: isSelected
+                                        ? const Icon(Icons.check, size: 14, color: Colors.white)
+                                        : null,
+                                  ),
                                 ],
                               ),
                             ),

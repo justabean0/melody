@@ -17,6 +17,7 @@ class DatabaseService {
   static const String _lastUpdateCheckKey = 'melody_last_update_check';
   static const String _musicLanguagesKey = 'melody_music_languages';
   static const String _hasSelectedLanguagesKey = 'melody_has_selected_languages';
+  static const String _languagePromptCompletedKey = 'melody_language_onboarding_v2_completed';
 
   static SharedPreferences? _prefs;
 
@@ -187,9 +188,37 @@ class DatabaseService {
   static Future<void> setMusicLanguages(List<String> languages) async {
     await _prefs?.setStringList(_musicLanguagesKey, languages);
     await _prefs?.setBool(_hasSelectedLanguagesKey, true);
+    await _prefs?.setBool(_languagePromptCompletedKey, true);
   }
 
   static bool hasSelectedLanguages() {
     return _prefs?.getBool(_hasSelectedLanguagesKey) ?? false;
+  }
+
+  static bool hasCompletedLanguageOnboarding() {
+    return _prefs?.getBool(_languagePromptCompletedKey) ?? false;
+  }
+
+  static Future<void> markLanguageOnboardingCompleted() async {
+    await _prefs?.setBool(_languagePromptCompletedKey, true);
+  }
+
+  // --- Cached Feed (Instant Stale-While-Revalidate Home Display) ---
+  static List<Song> getCachedFeed(String cacheKey) {
+    final raw = _prefs?.getString('melody_feed_cache_$cacheKey');
+    if (raw == null) return [];
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      return list.map((item) => Song.fromJson(item as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Future<void> saveCachedFeed(String cacheKey, List<Song> songs) async {
+    try {
+      final jsonStr = jsonEncode(songs.map((s) => s.toJson()).toList());
+      await _prefs?.setString('melody_feed_cache_$cacheKey', jsonStr);
+    } catch (_) {}
   }
 }
