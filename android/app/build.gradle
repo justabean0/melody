@@ -56,6 +56,13 @@ android {
             minifyEnabled = false
             shrinkResources = false
         }
+        debug {
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.release
+            } else {
+                signingConfig = signingConfigs.debug
+            }
+        }
     }
 }
 
