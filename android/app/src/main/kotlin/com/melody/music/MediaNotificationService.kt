@@ -12,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -36,8 +37,14 @@ class MediaNotificationService : Service() {
         const val EXTRA_ARTIST = "extra_artist"
         const val EXTRA_IS_PLAYING = "extra_is_playing"
         const val EXTRA_THUMBNAIL_URL = "extra_thumbnail_url"
+        const val EXTRA_DURATION_MS = "extra_duration_ms"
+        const val EXTRA_POSITION_MS = "extra_position_ms"
     }
 
+    private var currentTitle: String = "Melody"
+    private var currentArtist: String = "Playing music"
+    private var currentDurationMs: Long = 0L
+    private var currentPositionMs: Long = 0L
     private var currentIsPlaying: Boolean = false
     private var mediaSession: MediaSessionCompat? = null
     private var currentThumbnailUrl: String? = null
@@ -68,6 +75,12 @@ class MediaNotificationService : Service() {
 
                 override fun onSkipToPrevious() {
                     MainActivity.sendPlaybackAction(ACTION_PREV)
+                }
+
+                override fun onSeekTo(pos: Long) {
+                    MainActivity.sendPlaybackAction("seek:$pos")
+                    currentPositionMs = pos
+                    updatePlaybackState(currentIsPlaying, pos)
                 }
 
                 override fun onStop() {
@@ -111,33 +124,52 @@ class MediaNotificationService : Service() {
                     stopPlaybackService()
                     return START_NOT_STICKY
                 }
-                ACTION_PLAY, ACTION_PAUSE, ACTION_NEXT, ACTION_PREV -> {
+                ACTION_PLAY -> {
+                    currentIsPlaying = true
+                    updatePlaybackState(true, currentPositionMs)
+                    MainActivity.sendPlaybackAction(action)
+                    return START_STICKY
+                }
+                ACTION_PAUSE -> {
+                    currentIsPlaying = false
+                    updatePlaybackState(false, currentPositionMs)
+                    MainActivity.sendPlaybackAction(action)
+                    return START_STICKY
+                }
+                ACTION_NEXT, ACTION_PREV -> {
                     MainActivity.sendPlaybackAction(action)
                     return START_STICKY
                 }
             }
         }
 
-        val title = intent.getStringExtra(EXTRA_TITLE) ?: "Melody"
-        val artist = intent.getStringExtra(EXTRA_ARTIST) ?: "Playing music"
-        val isPlaying = intent.getBooleanExtra(EXTRA_IS_PLAYING, true)
+        val title = intent.getStringExtra(EXTRA_TITLE) ?: currentTitle
+        val artist = intent.getStringExtra(EXTRA_ARTIST) ?: currentArtist
+        val isPlaying = intent.getBooleanExtra(EXTRA_IS_PLAYING, currentIsPlaying)
         val thumbnailUrl = intent.getStringExtra(EXTRA_THUMBNAIL_URL)
+        val durationMs = intent.getLongExtra(EXTRA_DURATION_MS, currentDurationMs)
+        val positionMs = intent.getLongExtra(EXTRA_POSITION_MS, currentPositionMs)
+
+        currentTitle = title
+        currentArtist = artist
         currentIsPlaying = isPlaying
+        currentDurationMs = durationMs
+        currentPositionMs = positionMs
 
         // Ensure MediaSession is initialized and active
         if (mediaSession == null) {
             initMediaSession()
         }
 
-        // Update PlaybackStateCompat
-        updatePlaybackState(isPlaying)
+        // Update PlaybackStateCompat with accurate position and elapsed time
+        updatePlaybackState(isPlaying, positionMs)
 
         // Check if artwork needs to be fetched
         if (thumbnailUrl != null && thumbnailUrl != currentThumbnailUrl) {
             currentThumbnailUrl = thumbnailUrl
-            fetchArtworkAsync(thumbnailUrl, title, artist, isPlaying)
+            fetchArtworkAsync(thumbnailUrl, title, artist, durationMs, isPlaying)
         } else {
-            updateMetadata(title, artist, currentArtwork)
+            updateMetadata(title, artist, currentArtwork, durationMs)
         }
 
         val notification = buildNotification(title, artist, isPlaying, currentArtwork)
@@ -157,28 +189,38 @@ class MediaNotificationService : Service() {
         return START_STICKY
     }
 
-    private fun updatePlaybackState(isPlaying: Boolean) {
+    private fun updatePlaybackState(isPlaying: Boolean, positionMs: Long) {
         val state = if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
         val actions = PlaybackStateCompat.ACTION_PLAY or
                 PlaybackStateCompat.ACTION_PAUSE or
                 PlaybackStateCompat.ACTION_PLAY_PAUSE or
                 PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
                 PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                PlaybackStateCompat.ACTION_SEEK_TO or
                 PlaybackStateCompat.ACTION_STOP
 
         val playbackState = PlaybackStateCompat.Builder()
             .setActions(actions)
-            .setState(state, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+            .setState(
+                state,
+                positionMs,
+                if (isPlaying) 1.0f else 0.0f,
+                SystemClock.elapsedRealtime()
+            )
             .build()
 
         mediaSession?.setPlaybackState(playbackState)
     }
 
-    private fun updateMetadata(title: String, artist: String, artwork: Bitmap?) {
+    private fun updateMetadata(title: String, artist: String, artwork: Bitmap?, durationMs: Long) {
         val metaBuilder = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, "Melody Music")
+
+        if (durationMs > 0L) {
+            metaBuilder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationMs)
+        }
 
         if (artwork != null) {
             metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork)
@@ -187,7 +229,7 @@ class MediaNotificationService : Service() {
         mediaSession?.setMetadata(metaBuilder.build())
     }
 
-    private fun fetchArtworkAsync(urlStr: String, title: String, artist: String, isPlaying: Boolean) {
+    private fun fetchArtworkAsync(urlStr: String, title: String, artist: String, durationMs: Long, isPlaying: Boolean) {
         thread {
             try {
                 val url = URL(urlStr)
@@ -200,7 +242,7 @@ class MediaNotificationService : Service() {
                 val bitmap = BitmapFactory.decodeStream(input)
                 currentArtwork = bitmap
 
-                updateMetadata(title, artist, bitmap)
+                updateMetadata(title, artist, bitmap, durationMs)
 
                 // Re-post notification with loaded artwork
                 val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

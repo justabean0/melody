@@ -75,6 +75,12 @@ class MelodyAudioService {
     const MethodChannel('com.melody.music/playback').setMethodCallHandler((call) async {
       if (call.method == 'onNotificationAction') {
         final action = call.arguments as String?;
+        if (action == null) return;
+        if (action.startsWith('seek:')) {
+          final ms = int.tryParse(action.substring(5)) ?? 0;
+          await seek(Duration(milliseconds: ms));
+          return;
+        }
         switch (action) {
           case 'playPause':
             await togglePlayPause();
@@ -105,6 +111,7 @@ class MelodyAudioService {
     _player.onDurationChanged.listen((dur) {
       if (dur > Duration.zero) {
         _duration = dur;
+        _updateNotification();
         _stateChangeController.add(null);
       }
     });
@@ -122,11 +129,16 @@ class MelodyAudioService {
       return;
     }
     try {
+      final durMs = _duration.inMilliseconds > 0
+          ? _duration.inMilliseconds
+          : (_currentSong!.duration * 1000);
       const MethodChannel('com.melody.music/playback').invokeMethod('showNotification', {
         'title': _currentSong!.title,
         'artist': _currentSong!.artist,
         'isPlaying': _isPlaying,
         'thumbnailUrl': _currentSong!.thumbnailUrl,
+        'durationMs': durMs,
+        'positionMs': _position.inMilliseconds,
       });
     } catch (_) {}
   }
@@ -163,6 +175,9 @@ class MelodyAudioService {
     _position = Duration.zero;
     _duration = Duration(seconds: _currentSong!.duration);
     _isLoading = true;
+
+    // Update notification immediately with new song info and duration
+    _updateNotification();
 
     // 3. Immediately broadcast to UI so all sliders and timestamps reset instantly
     _positionChangeController.add(Duration.zero);
@@ -258,6 +273,7 @@ class MelodyAudioService {
       _playCurrent();
     } else {
       _isPlaying = false;
+      _updateNotification();
       _stateChangeController.add(null);
     }
   }
@@ -295,6 +311,7 @@ class MelodyAudioService {
   Future<void> seek(Duration position) async {
     _position = position;
     await _player.seek(position);
+    _updateNotification();
     _stateChangeController.add(null);
   }
 
@@ -346,6 +363,7 @@ class MelodyAudioService {
         _player.stop();
         _currentSong = null;
         _currentIndex = -1;
+        _updateNotification();
       }
     }
     _stateChangeController.add(null);

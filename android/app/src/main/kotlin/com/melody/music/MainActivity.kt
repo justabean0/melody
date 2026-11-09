@@ -18,10 +18,11 @@ class MainActivity: FlutterActivity() {
         private var playbackChannel: MethodChannel? = null
 
         fun sendPlaybackAction(action: String) {
-            val flutterAction = when (action) {
-                MediaNotificationService.ACTION_PLAY, MediaNotificationService.ACTION_PAUSE -> "playPause"
-                MediaNotificationService.ACTION_NEXT -> "next"
-                MediaNotificationService.ACTION_PREV -> "prev"
+            val flutterAction = when {
+                action == MediaNotificationService.ACTION_PLAY || action == MediaNotificationService.ACTION_PAUSE -> "playPause"
+                action == MediaNotificationService.ACTION_NEXT -> "next"
+                action == MediaNotificationService.ACTION_PREV -> "prev"
+                action.startsWith("seek:") -> action
                 else -> return
             }
             playbackChannel?.invokeMethod("onNotificationAction", flutterAction)
@@ -105,11 +106,15 @@ class MainActivity: FlutterActivity() {
                     val artist = call.argument<String>("artist") ?: "Playing music"
                     val isPlaying = call.argument<Boolean>("isPlaying") ?: true
                     val thumbnailUrl = call.argument<String>("thumbnailUrl")
+                    val durationMs = call.argument<Number>("durationMs")?.toLong() ?: 0L
+                    val positionMs = call.argument<Number>("positionMs")?.toLong() ?: 0L
 
                     val intent = Intent(this, MediaNotificationService::class.java).apply {
                         putExtra(MediaNotificationService.EXTRA_TITLE, title)
                         putExtra(MediaNotificationService.EXTRA_ARTIST, artist)
                         putExtra(MediaNotificationService.EXTRA_IS_PLAYING, isPlaying)
+                        putExtra(MediaNotificationService.EXTRA_DURATION_MS, durationMs)
+                        putExtra(MediaNotificationService.EXTRA_POSITION_MS, positionMs)
                         if (!thumbnailUrl.isNullOrEmpty()) {
                             putExtra(MediaNotificationService.EXTRA_THUMBNAIL_URL, thumbnailUrl)
                         }
