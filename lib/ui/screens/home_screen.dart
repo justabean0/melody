@@ -5,7 +5,6 @@ import '../../providers/playback_provider.dart';
 import '../../services/database_service.dart';
 import '../../services/innertube_service.dart';
 import '../../services/innertube_version_manager.dart';
-import '../../services/recommendation_service.dart';
 import '../../services/stream_resolver_service.dart';
 import '../../services/update_service.dart';
 import '../components/album_card.dart';
@@ -244,60 +243,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return categories;
   }
 
-  Widget _buildPersonalizedGenreBanner(ThemeData theme) {
-    final taste = RecommendationService.getUserTasteProfile();
-    if (!taste.hasHistory) return const SizedBox.shrink();
-
-    final dominant = taste.dominantGenre;
-    final topArtist = taste.topArtists.isNotEmpty ? taste.topArtists.first : '';
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.primaryContainer.withAlpha(70),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: theme.colorScheme.primary.withAlpha(50)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primary.withAlpha(180),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Recommended For Your Taste',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                  ),
-                ),
-                Text(
-                  topArtist.isNotEmpty
-                      ? 'Tailored to your love for $dominant & $topArtist'
-                      : 'Tailored to your love for $dominant tracks',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.textTheme.bodySmall?.color?.withAlpha(180),
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -401,67 +346,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     },
                   ),
 
-                  // Active Music Languages Selector Bar
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-                    child: Row(
-                      children: [
-                        Icon(Icons.language, size: 16, color: colorScheme.primary),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Row(
-                              children: [
-                                ...DatabaseService.getMusicLanguages().map((lang) {
-                                  return Container(
-                                    margin: const EdgeInsets.only(right: 6),
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: colorScheme.primaryContainer.withAlpha(150),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Text(
-                                      lang,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                        color: colorScheme.onPrimaryContainer,
-                                      ),
-                                    ),
-                                  );
-                                }),
-                              ],
-                            ),
-                          ),
-                        ),
-                        InkWell(
-                          onTap: () {
-                            LanguageSelectionDialog.show(
-                              context,
-                              isDismissible: true,
-                              onSaved: (selected) {
-                                _loadFeed(_activeMood);
-                              },
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(8),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            child: Text(
-                              'Change',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                color: colorScheme.primary,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
                   // Moods & Genres Filters
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
@@ -486,9 +370,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
 
                   const SizedBox(height: 12),
-
-                  // Personalized Taste Banner (dynamically shown when user listens to genres)
-                  _buildPersonalizedGenreBanner(theme),
 
                   // Section 1: Quick Picks (Melody signature feature)
                   Padding(
