@@ -32,6 +32,7 @@ class MediaNotificationService : Service() {
         const val ACTION_NEXT = "com.melody.music.ACTION_NEXT"
         const val ACTION_PREV = "com.melody.music.ACTION_PREV"
         const val ACTION_STOP = "com.melody.music.ACTION_STOP"
+        const val ACTION_DISMISS = "com.melody.music.ACTION_DISMISS"
 
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_ARTIST = "extra_artist"
@@ -69,7 +70,7 @@ class MediaNotificationService : Service() {
                     val notif = buildNotification(currentTitle, currentArtist, true, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     manager.notify(NOTIFICATION_ID, notif)
-                    MainActivity.sendPlaybackAction(ACTION_PLAY)
+                    MelodyApplication.sendPlaybackAction(ACTION_PLAY)
                 }
 
                 override fun onPause() {
@@ -79,25 +80,30 @@ class MediaNotificationService : Service() {
                     val notif = buildNotification(currentTitle, currentArtist, false, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     manager.notify(NOTIFICATION_ID, notif)
-                    MainActivity.sendPlaybackAction(ACTION_PAUSE)
+                    MelodyApplication.sendPlaybackAction(ACTION_PAUSE)
                 }
 
                 override fun onSkipToNext() {
-                    MainActivity.sendPlaybackAction(ACTION_NEXT)
+                    MelodyApplication.sendPlaybackAction(ACTION_NEXT)
                 }
 
                 override fun onSkipToPrevious() {
-                    MainActivity.sendPlaybackAction(ACTION_PREV)
+                    MelodyApplication.sendPlaybackAction(ACTION_PREV)
                 }
 
                 override fun onSeekTo(pos: Long) {
-                    MainActivity.sendPlaybackAction("seek:$pos")
+                    MelodyApplication.sendPlaybackAction("seek:$pos")
                     currentPositionMs = pos
                     updatePlaybackState(currentIsPlaying, pos)
                 }
 
                 override fun onStop() {
-                    MainActivity.sendPlaybackAction(ACTION_STOP)
+                    android.util.Log.d("MelodyMedia", "MediaSessionCompat.Callback.onStop triggered")
+                    MelodyApplication.sendPlaybackAction(ACTION_STOP)
+                    stopPlaybackService()
+                    if (!MelodyApplication.isActivityAlive) {
+                        MelodyApplication.destroyEngineAndExit()
+                    }
                 }
             })
             isActive = true
@@ -105,10 +111,10 @@ class MediaNotificationService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Keep foreground service alive when app is cleared from recent apps if playing
-        if (!currentIsPlaying) {
-            stopPlaybackService()
-        }
+        // When the user swipes away MainActivity from Recent Apps tray:
+        // Keep foreground service and audio playback actively alive in background!
+        // Audio will only stop when the user dismisses the notification bar or stops playback.
+        android.util.Log.d("MelodyMedia", "onTaskRemoved: app swiped from recents. Service and engine remain alive. currentIsPlaying=$currentIsPlaying")
         super.onTaskRemoved(rootIntent)
     }
 
@@ -120,6 +126,8 @@ class MediaNotificationService : Service() {
                 @Suppress("DEPRECATION")
                 stopForeground(true)
             }
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.cancel(NOTIFICATION_ID)
             mediaSession?.isActive = false
             mediaSession?.release()
             mediaSession = null
@@ -135,7 +143,18 @@ class MediaNotificationService : Service() {
         if (action != null) {
             when (action) {
                 ACTION_STOP -> {
+                    android.util.Log.d("MelodyMedia", "ACTION_STOP received (from Dart hideNotification)")
                     stopPlaybackService()
+                    return START_NOT_STICKY
+                }
+                ACTION_DISMISS -> {
+                    android.util.Log.d("MelodyMedia", "ACTION_DISMISS received (notification dismissed by user)")
+                    MelodyApplication.sendPlaybackAction(ACTION_STOP)
+                    stopPlaybackService()
+                    if (!MelodyApplication.isActivityAlive) {
+                        // User dismissed notification AND app is not in recent apps -> terminate completely
+                        MelodyApplication.destroyEngineAndExit()
+                    }
                     return START_NOT_STICKY
                 }
                 ACTION_PLAY -> {
@@ -144,7 +163,7 @@ class MediaNotificationService : Service() {
                     val notif = buildNotification(currentTitle, currentArtist, true, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     manager.notify(NOTIFICATION_ID, notif)
-                    MainActivity.sendPlaybackAction(action)
+                    MelodyApplication.sendPlaybackAction(action)
                     return START_STICKY
                 }
                 ACTION_PAUSE -> {
@@ -153,11 +172,11 @@ class MediaNotificationService : Service() {
                     val notif = buildNotification(currentTitle, currentArtist, false, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     manager.notify(NOTIFICATION_ID, notif)
-                    MainActivity.sendPlaybackAction(action)
+                    MelodyApplication.sendPlaybackAction(action)
                     return START_STICKY
                 }
                 ACTION_NEXT, ACTION_PREV -> {
-                    MainActivity.sendPlaybackAction(action)
+                    MelodyApplication.sendPlaybackAction(action)
                     return START_STICKY
                 }
             }
@@ -308,6 +327,9 @@ class MediaNotificationService : Service() {
         val stopIntent = Intent(this, MediaNotificationService::class.java).apply { action = ACTION_STOP }
         val stopPending = PendingIntent.getService(this, 4, stopIntent, flags)
 
+        val dismissIntent = Intent(this, MediaNotificationService::class.java).apply { action = ACTION_DISMISS }
+        val dismissPending = PendingIntent.getService(this, 5, dismissIntent, flags)
+
         val mediaStyle = MediaStyle()
             .setShowActionsInCompactView(0, 1, 2)
         mediaSession?.sessionToken?.let {
@@ -319,6 +341,7 @@ class MediaNotificationService : Service() {
             .setContentTitle(title)
             .setContentText(artist)
             .setContentIntent(openPendingIntent)
+            .setDeleteIntent(dismissPending)
             .setOngoing(isPlaying)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)

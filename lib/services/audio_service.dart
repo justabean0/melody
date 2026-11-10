@@ -89,6 +89,9 @@ class MelodyAudioService {
           case 'pause':
             await pause();
             break;
+          case 'stop':
+            await stop();
+            break;
           case 'playPause':
             await togglePlayPause();
             break;
@@ -331,6 +334,16 @@ class MelodyAudioService {
       await _player.pause();
     } catch (_) {}
     _isPlaying = false;
+    _updateNotification();
+    _stateChangeController.add(null);
+  }
+
+  Future<void> stop() async {
+    try {
+      await _player.stop();
+    } catch (_) {}
+    _isPlaying = false;
+    _position = Duration.zero;
     _updateNotification();
     _stateChangeController.add(null);
   }
