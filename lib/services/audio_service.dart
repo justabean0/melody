@@ -276,6 +276,15 @@ class MelodyAudioService {
   }
 
   void _handleTrackEnded() {
+    // Detect premature track completion (e.g. Invidious proxy dropped connection early on a long 17-minute track)
+    if (_currentSong != null &&
+        _duration > const Duration(seconds: 30) &&
+        _position < _duration - const Duration(seconds: 15)) {
+      debugPrint('AudioService: Premature track end at $_position of $_duration. Resuming stream seamlessly...');
+      unawaited(_recoverStreamAtPosition(_position));
+      return;
+    }
+
     if (_loopMode == MelodyLoopMode.one) {
       _player.seek(Duration.zero);
       _player.resume();
@@ -358,9 +367,45 @@ class MelodyAudioService {
 
   Future<void> seek(Duration position) async {
     _position = position;
-    await _player.seek(position);
     _updateNotification();
     _stateChangeController.add(null);
+
+    try {
+      await _player.seek(position);
+    } catch (e) {
+      debugPrint('AudioService: Seek error ($e). Re-resolving stream and resuming at $position...');
+      await _recoverStreamAtPosition(position);
+    }
+  }
+
+  Future<void> _recoverStreamAtPosition(Duration position) async {
+    if (_currentSong == null) return;
+    try {
+      _isLoading = true;
+      _stateChangeController.add(null);
+
+      StreamResolverService.invalidateCache(_currentSong!.id);
+      final freshStreamUrl = await StreamResolverService.resolveAudioStreamUrl(
+        _currentSong!.id,
+        songTitle: _currentSong!.title,
+        artist: _currentSong!.artist,
+        optimistic: false,
+      );
+
+      final playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, freshStreamUrl);
+      if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
+        await _player.play(DeviceFileSource(playableUrl), position: position);
+      } else {
+        await _player.play(UrlSource(playableUrl), position: position);
+      }
+      _isPlaying = true;
+      _updateNotification();
+    } catch (err) {
+      debugPrint('AudioService: Recovery at position failed: $err');
+    } finally {
+      _isLoading = false;
+      _stateChangeController.add(null);
+    }
   }
 
   void toggleShuffle() {

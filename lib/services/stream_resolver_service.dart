@@ -41,7 +41,7 @@ class StreamResolverService {
 
   /// Helper to record stream URL in cache with expiration
   static void _saveToCache(String videoId, String url) {
-    DateTime expiresAt = DateTime.now().add(const Duration(hours: 4));
+    DateTime expiresAt = DateTime.now().add(const Duration(minutes: 20));
     try {
       final uri = Uri.parse(url);
       final expireParam = uri.queryParameters['expire'];

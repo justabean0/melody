@@ -70,21 +70,27 @@ class _MainScaffoldState extends State<MainScaffold> {
     return Scaffold(
       body: Stack(
         children: [
-          IndexedStack(
-            index: _currentIndex,
-            children: _screens,
+          RepaintBoundary(
+            child: IndexedStack(
+              index: _currentIndex,
+              children: _screens,
+            ),
           ),
           const Positioned(
             left: 0,
             right: 0,
             bottom: 0,
-            child: MiniPlayer(),
+            child: RepaintBoundary(
+              child: MiniPlayer(),
+            ),
           ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
+        animationDuration: const Duration(milliseconds: 180),
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) {
+          if (_currentIndex == index) return;
           setState(() {
             _currentIndex = index;
           });

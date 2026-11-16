@@ -81,57 +81,160 @@ class _SearchScreenState extends State<SearchScreen> {
             ),
           ),
 
-          // Search Suggestions (while typing)
-          if (!search.hasSearched && search.suggestions.isNotEmpty)
+          // Search Suggestions & Search History (while typing or when idle)
+          if (!search.hasSearched)
             Expanded(
-              child: ListView.builder(
-                itemCount: search.suggestions.length,
-                itemBuilder: (ctx, index) {
-                  final suggestion = search.suggestions[index];
-                  return ListTile(
-                    leading: const Icon(Icons.search_rounded),
-                    title: Text(suggestion),
-                    trailing: const Icon(Icons.north_west, size: 18),
-                    onTap: () {
-                      _controller.text = suggestion;
-                      search.performSearch(suggestion);
-                    },
-                  );
-                },
-              ),
+              child: _buildSearchSuggestionsOrHistory(context, search, theme, colorScheme),
             )
           else if (search.isLoading)
             const Expanded(
               child: Center(child: CircularProgressIndicator()),
             )
-          else if (search.hasSearched)
-            Expanded(
-              child: _buildSearchResults(context, search, playback, theme, colorScheme),
-            )
           else
             Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.search_rounded,
-                      size: 80,
-                      color: colorScheme.onSurfaceVariant.withAlpha(80),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Search YouTube Music with Melody',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              child: _buildSearchResults(context, search, playback, theme, colorScheme),
             ),
         ],
       ),
+    );
+  }
+
+  Widget _buildSearchSuggestionsOrHistory(
+    BuildContext context,
+    SearchProvider search,
+    ThemeData theme,
+    ColorScheme colorScheme,
+  ) {
+    final queryText = _controller.text.trim();
+    final matchingHistory = search.getMatchingHistory(queryText);
+    final suggestions = search.suggestions;
+
+    // 1. Idle state: User has not typed anything
+    if (queryText.isEmpty) {
+      if (search.history.isEmpty) {
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.search_rounded,
+                size: 80,
+                color: colorScheme.onSurfaceVariant.withAlpha(80),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Search YouTube Music with Melody',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+
+      // Show persistent Search History with distinct history icons
+      return ListView(
+        padding: const EdgeInsets.only(bottom: 120),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Recent Searches',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.primary,
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => search.clearHistory(),
+                  child: const Text('Clear all', style: TextStyle(fontSize: 12)),
+                ),
+              ],
+            ),
+          ),
+          ...search.history.map((item) => ListTile(
+                leading: Icon(
+                  Icons.history_rounded,
+                  color: colorScheme.primary,
+                ),
+                title: Text(item),
+                trailing: IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: 'Remove',
+                  onPressed: () => search.removeFromHistory(item),
+                ),
+                onTap: () {
+                  _controller.text = item;
+                  search.performSearch(item);
+                },
+              )),
+        ],
+      );
+    }
+
+    // 2. Active typing: Interleave matching history with fresh online suggestions
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 120),
+      children: [
+        // Matching search history entries (Distinct history icon)
+        if (matchingHistory.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 2),
+            child: Text(
+              'From History',
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: colorScheme.primary,
+                fontSize: 11,
+              ),
+            ),
+          ),
+          ...matchingHistory.take(4).map((item) => ListTile(
+                leading: Icon(
+                  Icons.history_rounded,
+                  color: colorScheme.primary,
+                ),
+                title: Text(item),
+                trailing: IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: () => search.removeFromHistory(item),
+                ),
+                onTap: () {
+                  _controller.text = item;
+                  search.performSearch(item);
+                },
+              )),
+        ],
+
+        // Online suggestions (Magnifying glass icon)
+        if (suggestions.isNotEmpty) ...[
+          if (matchingHistory.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 2),
+              child: Text(
+                'Suggestions',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: colorScheme.onSurfaceVariant,
+                  fontSize: 11,
+                ),
+              ),
+            ),
+          ...suggestions.map((suggestion) => ListTile(
+                leading: const Icon(Icons.search_rounded),
+                title: Text(suggestion),
+                trailing: const Icon(Icons.north_west, size: 18),
+                onTap: () {
+                  _controller.text = suggestion;
+                  search.performSearch(suggestion);
+                },
+              )),
+        ],
+      ],
     );
   }
 

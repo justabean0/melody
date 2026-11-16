@@ -172,6 +172,31 @@ class InnerTubeService {
     } catch (e) {
       debugPrint('InnerTubeService safe proxy search error: $e');
     }
+
+    // Resilient fallback to YoutubeExplode if safe proxy times out or encounters network error
+    try {
+      final ytResults = await _ytExplode.search.search(query).timeout(const Duration(seconds: 4));
+      final songs = <Song>[];
+      for (final item in ytResults.take(25)) {
+        final song = Song(
+          id: item.id.value,
+          title: item.title,
+          artist: item.author,
+          duration: item.duration?.inSeconds ?? 0,
+          thumbnailUrl: 'https://i.ytimg.com/vi/${item.id.value}/hqdefault.jpg',
+          isVideo: false,
+        );
+        songs.add(song);
+      }
+      return SearchResult(
+        songs: songs,
+        videos: const [],
+        albums: const [],
+        artists: const [],
+        playlists: const [],
+      );
+    } catch (_) {}
+
     return const SearchResult();
   }
 

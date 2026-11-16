@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'stream_resolver_service.dart';
 
 /// Local 5-Second Audio Head Cache & Embedded Loopback Proxy
 ///
@@ -97,7 +98,7 @@ class AudioCacheService {
         // Stream the remaining audio chunks from the remote server
         if (headBytes.length < totalLength) {
           final remoteReq = http.Request('GET', remoteUri)
-            ..headers[HttpHeaders.rangeHeader] = 'bytes=${headBytes.length}-$totalLength'
+            ..headers[HttpHeaders.rangeHeader] = 'bytes=${headBytes.length}-'
             ..headers['User-Agent'] =
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -119,11 +120,39 @@ class AudioCacheService {
       forwardReq.headers['User-Agent'] =
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-      final remoteRes = await _httpClient.send(forwardReq);
+      http.StreamedResponse remoteRes = await _httpClient.send(forwardReq);
+
+      // Automatic Stream Re-Resolution on Seek/Stream Expiration (e.g. 502/403 on long 17-minute tracks)
+      if (remoteRes.statusCode >= 400 && id.isNotEmpty) {
+        debugPrint('AudioCacheService: Proxy request failed (${remoteRes.statusCode}). Re-resolving fresh stream for $id...');
+        StreamResolverService.invalidateCache(id);
+        try {
+          final freshUrl = await StreamResolverService.resolveAudioStreamUrl(
+            id,
+            optimistic: false,
+          );
+          final freshUri = Uri.parse(freshUrl);
+          final retryReq = http.Request('GET', freshUri);
+          if (incomingRange != null) {
+            retryReq.headers[HttpHeaders.rangeHeader] = incomingRange;
+          }
+          retryReq.headers['User-Agent'] = forwardReq.headers['User-Agent']!;
+          final retryRes = await _httpClient.send(retryReq);
+          if (retryRes.statusCode < 400) {
+            remoteRes = retryRes;
+          }
+        } catch (e) {
+          debugPrint('AudioCacheService: Re-resolve stream error: $e');
+        }
+      }
+
       response.statusCode = remoteRes.statusCode;
 
       remoteRes.headers.forEach((name, value) {
-        if (name.toLowerCase() != 'content-encoding') {
+        final lower = name.toLowerCase();
+        if (lower != 'content-encoding' &&
+            lower != 'transfer-encoding' &&
+            lower != 'connection') {
           response.headers.set(name, value);
         }
       });
@@ -159,20 +188,26 @@ class AudioCacheService {
 
       final streamedRes = await _httpClient.send(req).timeout(const Duration(seconds: 4));
       if (streamedRes.statusCode == HttpStatus.ok || streamedRes.statusCode == HttpStatus.partialContent) {
+        // Extract exact content-length from URL parameter 'clen' if present (embedded by YouTube/Invidious)
+        int totalLength = int.tryParse(uri.queryParameters['clen'] ?? '') ?? 0;
+
         final contentRange = streamedRes.headers['content-range'] ?? '';
-        int totalLength = 0;
-        if (contentRange.contains('/')) {
+        if (totalLength == 0 && contentRange.contains('/')) {
           totalLength = int.tryParse(contentRange.split('/').last) ?? 0;
         }
         if (totalLength == 0) {
-          totalLength = streamedRes.contentLength ?? (headChunkSize * 20);
+          totalLength = streamedRes.contentLength ?? 0;
+        }
+        // Generous fallback (~32 MB) for long tracks (15-30 mins) so seeking is never clipped by small estimates
+        if (totalLength == 0) {
+          totalLength = headChunkSize * 250;
         }
 
         final bytes = await streamedRes.stream.toBytes();
         if (bytes.isNotEmpty) {
           await headFile.writeAsBytes(bytes, flush: true);
           await metaFile.writeAsString(totalLength.toString(), flush: true);
-          debugPrint('AudioCacheService: Pre-cached 5s head for $videoId (${bytes.length} bytes)');
+          debugPrint('AudioCacheService: Pre-cached 5s head for $videoId (${bytes.length} bytes, total: $totalLength)');
 
           // Keep head cache compact
           await _pruneHeadsCache();

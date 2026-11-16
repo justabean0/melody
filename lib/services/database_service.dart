@@ -18,6 +18,7 @@ class DatabaseService {
   static const String _musicLanguagesKey = 'melody_music_languages';
   static const String _hasSelectedLanguagesKey = 'melody_has_selected_languages';
   static const String _languagePromptCompletedKey = 'melody_language_onboarding_v2_completed';
+  static const String _searchHistoryKey = 'melody_search_history';
 
   static SharedPreferences? _prefs;
 
@@ -220,5 +221,33 @@ class DatabaseService {
       final jsonStr = jsonEncode(songs.map((s) => s.toJson()).toList());
       await _prefs?.setString('melody_feed_cache_$cacheKey', jsonStr);
     } catch (_) {}
+  }
+
+  // --- Search History ---
+  static List<String> getSearchHistory() {
+    return _prefs?.getStringList(_searchHistoryKey) ?? [];
+  }
+
+  static Future<void> addSearchHistory(String query) async {
+    final clean = query.trim();
+    if (clean.isEmpty) return;
+
+    final list = getSearchHistory();
+    list.removeWhere((item) => item.toLowerCase() == clean.toLowerCase());
+    list.insert(0, clean);
+    if (list.length > 25) {
+      list.removeRange(25, list.length);
+    }
+    await _prefs?.setStringList(_searchHistoryKey, list);
+  }
+
+  static Future<void> removeSearchHistory(String query) async {
+    final list = getSearchHistory();
+    list.removeWhere((item) => item.toLowerCase() == query.trim().toLowerCase());
+    await _prefs?.setStringList(_searchHistoryKey, list);
+  }
+
+  static Future<void> clearSearchHistory() async {
+    await _prefs?.remove(_searchHistoryKey);
   }
 }
