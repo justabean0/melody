@@ -13,6 +13,8 @@ class InnerTubeService {
   static final http.Client _client = http.Client();
   static final yt.YoutubeExplode _ytExplode = yt.YoutubeExplode();
   static final Map<String, List<Song>> _quickPicksMemoryCache = {};
+  static final Map<String, DateTime> _quickPicksCacheTimestamp = {};
+  static const Duration _cacheTtl = Duration(minutes: 3);
 
   static const Map<String, String> _headers = {
     'Content-Type': 'application/json',
@@ -265,15 +267,20 @@ class InnerTubeService {
 
     final cacheKey = '$mood:${activeLanguages.join(",")}';
 
-    // 1. Fast cache hit: return immediately if available
+    // 1. Fast cache hit: return immediately if available and within 3-minute TTL
     if (!forceRefresh) {
-      if (_quickPicksMemoryCache.containsKey(cacheKey) &&
+      final cachedAt = _quickPicksCacheTimestamp[cacheKey];
+      final isFresh = cachedAt != null && DateTime.now().difference(cachedAt) < _cacheTtl;
+
+      if (isFresh &&
+          _quickPicksMemoryCache.containsKey(cacheKey) &&
           _quickPicksMemoryCache[cacheKey]!.isNotEmpty) {
         return _quickPicksMemoryCache[cacheKey]!;
       }
       final diskCached = DatabaseService.getCachedFeed(cacheKey);
       if (diskCached.isNotEmpty) {
         _quickPicksMemoryCache[cacheKey] = diskCached;
+        _quickPicksCacheTimestamp[cacheKey] = DateTime.now();
         return diskCached;
       }
     }
@@ -286,6 +293,7 @@ class InnerTubeService {
 
     if (songs.isNotEmpty) {
       _quickPicksMemoryCache[cacheKey] = songs;
+      _quickPicksCacheTimestamp[cacheKey] = DateTime.now();
       await DatabaseService.saveCachedFeed(cacheKey, songs);
       return songs;
     }

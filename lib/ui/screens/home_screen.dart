@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../models/song.dart';
@@ -36,6 +37,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   List<Song> _quickPicks = [];
   bool _isLoading = true;
+  bool _isReloading = false;
+  Timer? _preWarmTimer;
   String _activeMood = 'All';
 
   final List<String> _moods = [
@@ -51,11 +54,17 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _loadFeed();
+    _loadFeed('All', false);
     _checkAppUpdateSilently();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkFirstTimeLanguageSetup();
     });
+  }
+
+  @override
+  void dispose() {
+    _preWarmTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _checkFirstTimeLanguageSetup() async {
@@ -64,7 +73,7 @@ class _HomeScreenState extends State<HomeScreen> {
         context,
         isDismissible: false,
         onSaved: (selected) {
-          _loadFeed(_activeMood);
+          _loadFeed(_activeMood, true);
         },
       );
     }
@@ -90,7 +99,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _loadFeed([String mood = 'All']) async {
+  Future<void> _loadFeed([String mood = 'All', bool isUserRefresh = false]) async {
+    if (_isReloading) {
+      debugPrint('Feed reload dropped: concurrent reload in-flight');
+      return;
+    }
+    _isReloading = true;
+
     final activeLangs = DatabaseService.getMusicLanguages();
     final cacheKey = '$mood:${activeLangs.join(",")}';
 
@@ -105,11 +120,17 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _isLoading = true);
     }
 
-    // 2. Fetch fresh personalized feed concurrently
+    // 2. Fetch fresh personalized feed concurrently with strict 3.8s timeout guard
     try {
       final songs = await InnerTubeService.getQuickPicks(
         mood: mood,
-        forceRefresh: true,
+        forceRefresh: isUserRefresh || cached.isEmpty,
+      ).timeout(
+        const Duration(milliseconds: 3800),
+        onTimeout: () {
+          debugPrint('Feed network request timed out - falling back to cache');
+          return cached.isNotEmpty ? cached : _quickPicks;
+        },
       );
       if (mounted && songs.isNotEmpty) {
         setState(() {
@@ -117,14 +138,25 @@ class _HomeScreenState extends State<HomeScreen> {
           _isLoading = false;
         });
 
-        // Pre-warm top recommendations in the background for zero-delay instant playback
-        for (final s in songs.take(2)) {
-          StreamResolverService.preWarm(s.id, songTitle: s.title, artist: s.artist);
-        }
+        // 3. Decoupled pre-warm: Delayed by 1.5s so network is not contested during feed render
+        _preWarmTimer?.cancel();
+        _preWarmTimer = Timer(const Duration(milliseconds: 1500), () {
+          if (!mounted) return;
+          for (final s in songs.take(2)) {
+            StreamResolverService.preWarm(s.id, songTitle: s.title, artist: s.artist);
+          }
+        });
       }
     } catch (_) {
+      // Ignore network errors and keep cached view
+    } finally {
       if (mounted) {
-        setState(() => _isLoading = false);
+        setState(() {
+          _isLoading = false;
+          _isReloading = false;
+        });
+      } else {
+        _isReloading = false;
       }
     }
   }
@@ -286,7 +318,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 context,
                 isDismissible: true,
                 onSaved: (selected) {
-                  _loadFeed(_activeMood);
+                  _loadFeed(_activeMood, true);
                 },
               );
             },
@@ -294,7 +326,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: () => _loadFeed(_activeMood),
+        onRefresh: () => _loadFeed(_activeMood, true),
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
             : ListView(
@@ -361,7 +393,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             showCheckmark: false,
                             onSelected: (val) {
                               setState(() => _activeMood = mood);
-                              _loadFeed(mood);
+                              _loadFeed(mood, false);
                             },
                           ),
                         );
@@ -408,8 +440,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
 
-                  // Quick picks list
-                  ..._quickPicks.take(5).map((song) => SongTile(
+                  // Quick picks list (Top 8 blended trending & personalized single songs)
+                  ..._quickPicks.take(8).map((song) => SongTile(
                         song: song,
                       )),
 
@@ -460,22 +492,22 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 20),
-
-                  // Section 3: More Recommendations
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
-                    child: Text(
-                      'More For You',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
+                  // Section 3: More Recommendations (if extra tracks available)
+                  if (_quickPicks.length > 8) ...[
+                    const SizedBox(height: 20),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
+                      child: Text(
+                        'More For You',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
-                  ),
-
-                  ..._quickPicks.skip(5).map((song) => SongTile(
-                        song: song,
-                      )),
+                    ..._quickPicks.skip(8).map((song) => SongTile(
+                          song: song,
+                        )),
+                  ],
                 ],
               ),
       ),

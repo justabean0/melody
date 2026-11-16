@@ -142,4 +142,102 @@ void main() {
       expect(taste.topArtists, contains('Arijit Singh'));
     });
   });
+
+  group('RecommendationService Slot-Based Interleaved Blending Tests', () {
+    test('Guarantees trending songs in Slots 1-2 & 5-6 and personalized in Slots 3-4 & 7-8', () {
+      final trendingPool = List.generate(
+        6,
+        (i) => Song(
+          id: 'trend_$i',
+          title: 'Trending Hit $i',
+          artist: 'Global Star $i',
+          duration: 200,
+          thumbnailUrl: '',
+        ),
+      );
+
+      final personalizedPool = List.generate(
+        6,
+        (i) => Song(
+          id: 'pers_$i',
+          title: 'Personalized Pick $i',
+          artist: 'Favorite Artist $i',
+          duration: 210,
+          thumbnailUrl: '',
+        ),
+      );
+
+      final blended = RecommendationService.blendIntoSlots(
+        trendingPool: trendingPool,
+        personalizedPool: personalizedPool,
+      );
+
+      expect(blended.length, greaterThanOrEqualTo(8));
+
+      // Slot 1 & 2: Trending singles
+      expect(blended[0].id, equals('trend_0'));
+      expect(blended[1].id, equals('trend_1'));
+
+      // Slot 3 & 4: Personalized recommendations
+      expect(blended[2].id, equals('pers_0'));
+      expect(blended[3].id, equals('pers_1'));
+
+      // Slot 5 & 6: Trending singles
+      expect(blended[4].id, equals('trend_2'));
+      expect(blended[5].id, equals('trend_3'));
+
+      // Slot 7 & 8: Personalized recommendations
+      expect(blended[6].id, equals('pers_2'));
+      expect(blended[7].id, equals('pers_3'));
+    });
+
+    test('Deduplicates song IDs that appear in both trending and personalized pools', () {
+      final trending = [
+        const Song(id: 'overlap_1', title: 'Shared Song', artist: 'Artist', duration: 180, thumbnailUrl: ''),
+        const Song(id: 'trend_unique', title: 'Trend Only', artist: 'Artist', duration: 180, thumbnailUrl: ''),
+      ];
+
+      final personalized = [
+        const Song(id: 'overlap_1', title: 'Shared Song', artist: 'Artist', duration: 180, thumbnailUrl: ''),
+        const Song(id: 'pers_unique', title: 'Personalized Only', artist: 'Artist', duration: 180, thumbnailUrl: ''),
+      ];
+
+      final blended = RecommendationService.blendIntoSlots(
+        trendingPool: trending,
+        personalizedPool: personalized,
+      );
+
+      final ids = blended.map((s) => s.id).toList();
+      expect(ids.where((id) => id == 'overlap_1').length, equals(1));
+      expect(ids, contains('trend_unique'));
+      expect(ids, contains('pers_unique'));
+    });
+
+    test('Gracefully serves trending singles when personalized pool is empty (fresh user)', () {
+      final trending = List.generate(
+        5,
+        (i) => Song(
+          id: 'fresh_trend_$i',
+          title: 'Hit $i',
+          artist: 'Artist $i',
+          duration: 190,
+          thumbnailUrl: '',
+        ),
+      );
+
+      final blended = RecommendationService.blendIntoSlots(
+        trendingPool: trending,
+        personalizedPool: const [],
+      );
+
+      expect(blended.length, greaterThanOrEqualTo(5));
+      expect(blended.take(5).map((s) => s.id), equals([
+        'fresh_trend_0',
+        'fresh_trend_1',
+        'fresh_trend_2',
+        'fresh_trend_3',
+        'fresh_trend_4',
+      ]));
+    });
+  });
 }

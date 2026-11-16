@@ -196,7 +196,7 @@ class RecommendationService {
     // Try companion proxy first (super fast and resilient against bot checks)
     try {
       final uri = Uri.parse('https://yt.chocolatemoo53.com/api/v1/videos/${recentSong.id}');
-      final res = await _httpClient.get(uri).timeout(const Duration(milliseconds: 2500));
+      final res = await _httpClient.get(uri).timeout(const Duration(milliseconds: 1800));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final recs = data['recommendedVideos'] as List<dynamic>?;
@@ -226,23 +226,59 @@ class RecommendationService {
     return related;
   }
 
+  /// Searches targeted single tracks for a given language and genre
+  static Future<List<Song>> getGenreTracks(String language, String genre) async {
+    final genreQuery = '$language $genre official song 2026';
+    try {
+      final uri = Uri.parse(
+        'https://yt.chocolatemoo53.com/api/v1/search?q=${Uri.encodeComponent(genreQuery)}&type=video',
+      );
+      final res = await _httpClient.get(uri).timeout(const Duration(milliseconds: 1800));
+      if (res.statusCode == 200) {
+        final items = jsonDecode(res.body) as List<dynamic>;
+        final list = <Song>[];
+        for (final item in items.take(8)) {
+          final vid = item['videoId'] as String?;
+          final title = item['title'] as String?;
+          final author = item['author'] as String? ?? 'Unknown';
+          final dur = item['lengthSeconds'] as int? ?? 0;
+          if (vid != null && title != null) {
+            final s = Song(
+              id: vid,
+              title: title,
+              artist: author,
+              duration: dur,
+              thumbnailUrl: 'https://i.ytimg.com/vi/$vid/hqdefault.jpg',
+            );
+            if (isSingleSong(s)) {
+              list.add(s);
+            }
+          }
+        }
+        return list;
+      }
+    } catch (_) {}
+    return <Song>[];
+  }
+
   /// Searches for trending SINGLE songs for specific languages and mood
   static Future<List<Song>> searchTrendingSinglesForLanguages(
     List<String> languages, {
     String mood = 'All',
   }) async {
     final queries = <String>[];
-    for (final lang in languages.take(3)) {
+    for (final lang in languages.take(2)) {
       if (mood == 'All') {
-        queries.add('$lang latest hit single song 2026');
-        queries.add('$lang trending single songs official');
+        queries.add('$lang top hits official music video 2026');
+        queries.add('$lang trending songs official audio 2026');
       } else {
-        queries.add('$lang $mood single song 2026');
+        queries.add('$lang $mood official song 2026');
       }
     }
 
     if (queries.isEmpty) {
-      queries.add('trending single songs 2026 official');
+      queries.add('top hits official music video 2026');
+      queries.add('trending songs official audio 2026');
     }
 
     final queryTasks = queries.take(3).map((q) async {
@@ -250,7 +286,7 @@ class RecommendationService {
         final uri = Uri.parse(
           'https://yt.chocolatemoo53.com/api/v1/search?q=${Uri.encodeComponent(q)}&type=video',
         );
-        final res = await _httpClient.get(uri).timeout(const Duration(milliseconds: 2500));
+        final res = await _httpClient.get(uri).timeout(const Duration(milliseconds: 1800));
         if (res.statusCode == 200) {
           final items = jsonDecode(res.body) as List<dynamic>;
           final list = <Song>[];
@@ -272,7 +308,7 @@ class RecommendationService {
               list.add(s);
             }
           }
-          return list.take(8).toList();
+          return list.take(10).toList();
         }
       } catch (_) {}
 
@@ -280,7 +316,7 @@ class RecommendationService {
       try {
         final results = await _ytExplode.search
             .search(q)
-            .timeout(const Duration(milliseconds: 2500));
+            .timeout(const Duration(milliseconds: 1800));
         final list = <Song>[];
         for (final item in results) {
           final s = Song(
@@ -294,7 +330,7 @@ class RecommendationService {
             list.add(s);
           }
         }
-        return list.take(8).toList();
+        return list.take(10).toList();
       } catch (_) {
         return <Song>[];
       }
@@ -313,7 +349,108 @@ class RecommendationService {
     return merged.where((s) => seen.add(s.id)).toList();
   }
 
+  /// Default high-quality fallback singles (all strictly single songs under 5 minutes)
+  static const List<Song> defaultFallbackSingles = [
+    Song(
+      id: 'dQw4w9WgXcQ',
+      title: 'Never Gonna Give You Up',
+      artist: 'Rick Astley',
+      duration: 213,
+      thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+    ),
+    Song(
+      id: 'kJQP7kiw5Fk',
+      title: 'Despacito',
+      artist: 'Luis Fonsi ft. Daddy Yankee',
+      duration: 282,
+      thumbnailUrl: 'https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg',
+    ),
+    Song(
+      id: 'JGwWNGJdvx8',
+      title: 'Shape of You',
+      artist: 'Ed Sheeran',
+      duration: 233,
+      thumbnailUrl: 'https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg',
+    ),
+    Song(
+      id: 'k2qgadSvNyU',
+      title: 'Dua Lipa - New Rules',
+      artist: 'Dua Lipa',
+      duration: 225,
+      thumbnailUrl: 'https://i.ytimg.com/vi/k2qgadSvNyU/hqdefault.jpg',
+    ),
+  ];
+
+  /// Interleaves trending singles and personalized songs into dedicated slots
+  /// ensuring trending songs are always represented and never crowded out.
+  static List<Song> blendIntoSlots({
+    required List<Song> trendingPool,
+    required List<Song> personalizedPool,
+  }) {
+    final blended = <Song>[];
+    final usedIds = <String>{};
+
+    void tryAdd(Song song) {
+      if (usedIds.add(song.id)) {
+        blended.add(song);
+      }
+    }
+
+    int trendIdx = 0;
+    int persIdx = 0;
+
+    void takeTrending(int count) {
+      int taken = 0;
+      while (taken < count && trendIdx < trendingPool.length) {
+        final s = trendingPool[trendIdx++];
+        if (!usedIds.contains(s.id)) {
+          tryAdd(s);
+          taken++;
+        }
+      }
+    }
+
+    void takePersonalized(int count) {
+      int taken = 0;
+      while (taken < count && persIdx < personalizedPool.length) {
+        final s = personalizedPool[persIdx++];
+        if (!usedIds.contains(s.id)) {
+          tryAdd(s);
+          taken++;
+        }
+      }
+    }
+
+    // Slot 1 & 2: Guaranteed fresh trending singles
+    takeTrending(2);
+
+    // Slot 3 & 4: Top personalized genre/artist recommendations
+    takePersonalized(2);
+
+    // Slot 5 & 6: Additional viral trending hits
+    takeTrending(2);
+
+    // Slot 7 & 8: Deep personalized recommendations
+    takePersonalized(2);
+
+    // Remaining slots: Alternating between trending and personalized
+    while (trendIdx < trendingPool.length || persIdx < personalizedPool.length) {
+      takeTrending(1);
+      takePersonalized(1);
+    }
+
+    if (blended.length >= 3) {
+      return blended;
+    }
+
+    for (final fallback in defaultFallbackSingles) {
+      tryAdd(fallback);
+    }
+    return blended;
+  }
+
   /// Core Recommendation Algorithm: blends trending single songs with genre and artist recommendations
+  /// using Slot-Based Interleaving so trending songs are guaranteed in Quick Picks.
   static Future<List<Song>> getPersonalizedQuickPicks({
     List<String>? languages,
     String mood = 'All',
@@ -323,57 +460,48 @@ class RecommendationService {
         : DatabaseService.getMusicLanguages();
 
     final tasteProfile = getUserTasteProfile();
-    final candidatePool = <Song>[];
 
-    // 1. If user has listening history, fetch recommendations for the last listened song & top genre
+    // 1. Parallel Candidate Sourcing: Run Task 1 (Trending Singles), Task 2 (Related Tracks),
+    // and Task 3 (User Dominant Genre) concurrently in parallel with Future.wait()
+    final tasks = <Future<List<Song>>>[];
+
+    // Task 1: Language trending chart singles
+    tasks.add(searchTrendingSinglesForLanguages(activeLanguages, mood: mood));
+
+    // Task 2 & 3: Related tracks and dominant genre tracks if history exists
     if (tasteProfile.hasHistory) {
       final history = DatabaseService.getHistory();
       if (history.isNotEmpty) {
-        final recentSong = history.first;
-        final relatedTracks = await getRelatedTracksForRecentSong(recentSong);
-        candidatePool.addAll(relatedTracks);
+        tasks.add(getRelatedTracksForRecentSong(history.first));
+      } else {
+        tasks.add(Future.value(<Song>[]));
       }
 
-      // Also search 1 targeted query for user's top genre in their selected language
       final topGenre = tasteProfile.dominantGenre;
-      final lang = activeLanguages.first;
-      final genreQuery = '$lang $topGenre single song 2026';
-      try {
-        final uri = Uri.parse(
-          'https://yt.chocolatemoo53.com/api/v1/search?q=${Uri.encodeComponent(genreQuery)}&type=video',
-        );
-        final res = await _httpClient.get(uri).timeout(const Duration(milliseconds: 2500));
-        if (res.statusCode == 200) {
-          final items = jsonDecode(res.body) as List<dynamic>;
-          for (final item in items.take(6)) {
-            final vid = item['videoId'] as String?;
-            final title = item['title'] as String?;
-            final author = item['author'] as String? ?? 'Unknown';
-            final dur = item['lengthSeconds'] as int? ?? 0;
-            if (vid != null && title != null) {
-              final s = Song(
-                id: vid,
-                title: title,
-                artist: author,
-                duration: dur,
-                thumbnailUrl: 'https://i.ytimg.com/vi/$vid/hqdefault.jpg',
-              );
-              if (isSingleSong(s)) {
-                candidatePool.add(s);
-              }
-            }
-          }
-        }
-      } catch (_) {}
+      final lang = activeLanguages.isNotEmpty ? activeLanguages.first : 'English';
+      tasks.add(getGenreTracks(lang, topGenre));
+    } else {
+      tasks.add(Future.value(<Song>[]));
+      tasks.add(Future.value(<Song>[]));
     }
 
-    // 2. Fetch language trending singles (guaranteed single tracks)
-    final trendingSingles = await searchTrendingSinglesForLanguages(activeLanguages, mood: mood);
-    candidatePool.addAll(trendingSingles);
+    final taskResults = await Future.wait(tasks);
+    final trendingResults = taskResults[0];
+    final relatedResults = taskResults[1];
+    final genreResults = taskResults[2];
 
-    // 3. Score, re-rank, and filter candidate songs
-    final scored = <Song, double>{};
-    for (final song in candidatePool) {
+    // 2. Separate into Trending Pool vs. Personalized Pool
+    final trendingPool = <Song>[];
+    final seenTrending = <String>{};
+    for (final s in trendingResults) {
+      if (isSingleSong(s) && seenTrending.add(s.id)) {
+        trendingPool.add(s);
+      }
+    }
+
+    final personalizedCandidates = [...relatedResults, ...genreResults];
+    final personalizedScored = <Song, double>{};
+    for (final song in personalizedCandidates) {
       if (!isSingleSong(song)) continue;
 
       double score = 50.0;
@@ -392,55 +520,29 @@ class RecommendationService {
         }
       }
 
-      // Slight fatigue penalty if song is already in listening history (-20)
+      // Fatigue penalty if song is already in listening history (-20)
       if (tasteProfile.listenedSongIds.contains(song.id)) {
         score -= 20.0;
       }
 
-      scored[song] = score;
+      personalizedScored[song] = score;
     }
 
-    // Sort descending by calculated recommendation score
-    final sorted = scored.keys.toList()
-      ..sort((a, b) => scored[b]!.compareTo(scored[a]!));
+    final sortedPersonalized = personalizedScored.keys.toList()
+      ..sort((a, b) => personalizedScored[b]!.compareTo(personalizedScored[a]!));
 
-    final seen = <String>{};
-    final uniqueSingles = sorted.where((s) => seen.add(s.id)).toList();
-
-    if (uniqueSingles.isNotEmpty) {
-      return uniqueSingles;
+    final personalizedPool = <Song>[];
+    final seenPersonalized = <String>{};
+    for (final s in sortedPersonalized) {
+      if (seenPersonalized.add(s.id)) {
+        personalizedPool.add(s);
+      }
     }
 
-    // Safe fallback single tracks (all strictly single songs under 5 minutes)
-    return [
-      const Song(
-        id: 'dQw4w9WgXcQ',
-        title: 'Never Gonna Give You Up',
-        artist: 'Rick Astley',
-        duration: 213,
-        thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
-      ),
-      const Song(
-        id: 'kJQP7kiw5Fk',
-        title: 'Despacito',
-        artist: 'Luis Fonsi ft. Daddy Yankee',
-        duration: 282,
-        thumbnailUrl: 'https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg',
-      ),
-      const Song(
-        id: 'JGwWNGJdvx8',
-        title: 'Shape of You',
-        artist: 'Ed Sheeran',
-        duration: 233,
-        thumbnailUrl: 'https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg',
-      ),
-      const Song(
-        id: 'k2qgadSvNyU',
-        title: 'Dua Lipa - New Rules',
-        artist: 'Dua Lipa',
-        duration: 225,
-        thumbnailUrl: 'https://i.ytimg.com/vi/k2qgadSvNyU/hqdefault.jpg',
-      ),
-    ];
+    // 3. Slot-based interleaved blending
+    return blendIntoSlots(
+      trendingPool: trendingPool,
+      personalizedPool: personalizedPool,
+    );
   }
 }
