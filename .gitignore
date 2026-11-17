@@ -34,6 +34,7 @@ migrate_working_dir/
 /build/
 
 # Symbolication related
+*.apk
 app.*.symbols
 
 # Obfuscation related
