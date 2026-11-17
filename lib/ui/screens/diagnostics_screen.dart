@@ -13,6 +13,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   LogLevel? _selectedFilter;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  bool _isUploading = false;
 
   @override
   void dispose() {
@@ -29,7 +30,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           children: [
             Icon(Icons.check_circle_outline, color: Colors.white),
             SizedBox(width: 8),
-            Expanded(child: Text('Diagnostic logs copied to clipboard! Paste them in the chat.')),
+            Expanded(child: Text('Diagnostic logs copied to clipboard!')),
           ],
         ),
         backgroundColor: Colors.green.shade700,
@@ -38,6 +39,112 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         duration: const Duration(seconds: 4),
       ),
     );
+  }
+
+  Future<void> _shareLogFile() async {
+    final success = await LogService.shareLogFile();
+    if (!mounted) return;
+    if (!success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open share sheet. Please try Copy or Upload.')),
+      );
+    }
+  }
+
+  Future<void> _saveToDownloads() async {
+    final path = await LogService.saveLogToDownloads();
+    if (!mounted) return;
+    if (path != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.download_done_rounded, color: Colors.white),
+              const SizedBox(width: 8),
+              Expanded(child: Text('Saved log file to $path')),
+            ],
+          ),
+          backgroundColor: Colors.green.shade700,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to save to Downloads.')),
+      );
+    }
+  }
+
+  Future<void> _uploadAndShowLink() async {
+    setState(() => _isUploading = true);
+    final url = await LogService.uploadLogToCloud();
+    if (!mounted) return;
+    setState(() => _isUploading = false);
+
+    if (url != null) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.cloud_done_rounded, color: Colors.green),
+              SizedBox(width: 8),
+              Text('Log Uploaded'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Your crash log was securely uploaded. You can download the file from this link on your PC or share it:',
+                style: TextStyle(fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: SelectableText(
+                  url,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.blueAccent),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton.icon(
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Copy Link'),
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: url));
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Download URL copied to clipboard!')),
+                );
+              },
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not upload log to cloud. Check internet or use Share File.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   void _confirmClear() {
@@ -76,9 +183,14 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         title: const Text('Diagnostics & Logs', style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
-            icon: const Icon(Icons.copy_rounded),
-            tooltip: 'Copy all logs to clipboard',
-            onPressed: _copyToClipboard,
+            icon: const Icon(Icons.share_rounded),
+            tooltip: 'Send / Share Log File',
+            onPressed: _shareLogFile,
+          ),
+          IconButton(
+            icon: const Icon(Icons.download_rounded),
+            tooltip: 'Save to Downloads',
+            onPressed: _saveToDownloads,
           ),
           IconButton(
             icon: const Icon(Icons.delete_outline_rounded),
@@ -176,7 +288,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 ),
               ),
 
-              // System info banner
+              // Info banner
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
                 child: Container(
@@ -191,7 +303,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Auto-records network, audio proxy, seeking, and playback state.',
+                          'You can send or upload the log file below to download it on your PC.',
                           style: TextStyle(fontSize: 11, color: theme.textTheme.bodySmall?.color),
                         ),
                       ),
@@ -236,15 +348,75 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       ),
       bottomNavigationBar: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-          child: FilledButton.icon(
-            onPressed: _copyToClipboard,
-            icon: const Icon(Icons.copy_all_rounded),
-            label: const Text('Copy Diagnostics & Logs to Clipboard'),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  // Send / Share Log File Button
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _shareLogFile,
+                      icon: const Icon(Icons.share_rounded, size: 18),
+                      label: const Text('Send / Share File'),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Upload to Cloud & Get Download Link
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: _isUploading ? null : _uploadAndShowLink,
+                      icon: _isUploading
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.cloud_upload_rounded, size: 18),
+                      label: Text(_isUploading ? 'Uploading...' : 'Get Download Link'),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              // Secondary row: Copy to Clipboard & Save to Downloads
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _copyToClipboard,
+                      icon: const Icon(Icons.copy_rounded, size: 16),
+                      label: const Text('Copy to Clipboard', style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _saveToDownloads,
+                      icon: const Icon(Icons.download_rounded, size: 16),
+                      label: const Text('Save to Downloads', style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
       ),
@@ -319,7 +491,6 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
 
     return InkWell(
       onTap: () {
-        // Show full entry details dialog on tap
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(

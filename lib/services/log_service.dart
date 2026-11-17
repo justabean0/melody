@@ -1,5 +1,9 @@
 import 'dart:collection';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'innertube_version_manager.dart';
 
 enum LogLevel { info, warning, error, debug }
@@ -182,5 +186,102 @@ class LogService {
     }
     sb.writeln('========================================');
     return sb.toString();
+  }
+
+  static const _platform = MethodChannel('com.melody.music/diagnostics');
+
+  /// Opens the native Android share sheet with a generated .txt crash log
+  /// allowing sharing via Google Drive, Email, WhatsApp, QuickShare, etc.
+  static Future<bool> shareLogFile({String? userNotes}) async {
+    try {
+      final content = exportAllLogs(userNotes: userNotes);
+      final tempDir = await getTemporaryDirectory();
+      final now = DateTime.now();
+      final ts = '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_'
+          '${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
+      final file = File('${tempDir.path}/melody_crash_log_$ts.txt');
+      await file.writeAsString(content);
+
+      if (Platform.isAndroid) {
+        await _platform.invokeMethod('shareLogFile', {
+          'filePath': file.path,
+          'title': 'Melody Crash Log ($ts)',
+        });
+        return true;
+      }
+      return false;
+    } catch (e) {
+      error('Failed to share log file: $e', tag: 'LogService');
+      return false;
+    }
+  }
+
+  /// Saves the crash log directly to the device's public Downloads directory
+  static Future<String?> saveLogToDownloads({String? userNotes}) async {
+    try {
+      final content = exportAllLogs(userNotes: userNotes);
+      final now = DateTime.now();
+      final ts = '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_'
+          '${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
+      final fileName = 'melody_crash_log_$ts.txt';
+
+      if (Platform.isAndroid) {
+        final result = await _platform.invokeMethod<String>('saveToDownloads', {
+          'content': content,
+          'fileName': fileName,
+        });
+        return result ?? 'Downloads/$fileName';
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        final file = File('${dir.path}/$fileName');
+        await file.writeAsString(content);
+        return file.path;
+      }
+    } catch (e) {
+      error('Failed to save log to Downloads: $e', tag: 'LogService');
+      return null;
+    }
+  }
+
+  /// Uploads the diagnostic log to an instant web paste link (e.g. paste.rs / dpaste.org)
+  /// so the user can download or share the raw text file from any browser on PC or phone.
+  static Future<String?> uploadLogToCloud({String? userNotes}) async {
+    final content = exportAllLogs(userNotes: userNotes);
+
+    // 1. Try paste.rs (instant raw text file)
+    try {
+      final res = await http.post(
+        Uri.parse('https://paste.rs'),
+        headers: {'Content-Type': 'text/plain'},
+        body: content,
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        final url = res.body.trim();
+        if (url.startsWith('http')) return url;
+      }
+    } catch (_) {}
+
+    // 2. Fallback to dpaste.org
+    try {
+      final res = await http.post(
+        Uri.parse('https://dpaste.org/api/'),
+        body: {
+          'content': content,
+          'format': 'url',
+          'expiry_days': '14',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        final url = res.body.trim();
+        if (url.startsWith('http')) {
+          // Add /raw for direct download
+          return url.endsWith('/raw') ? url : '$url/raw';
+        }
+      }
+    } catch (_) {}
+
+    return null;
   }
 }

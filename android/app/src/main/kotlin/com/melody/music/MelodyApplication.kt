@@ -2,13 +2,16 @@ package com.melody.music
 
 import android.app.Activity
 import android.app.Application
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.provider.MediaStore
 import androidx.core.content.FileProvider
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
@@ -22,6 +25,7 @@ class MelodyApplication : Application() {
         const val CACHED_ENGINE_ID = "melody_cached_engine"
         const val PLAYBACK_CHANNEL = "com.melody.music/playback"
         const val UPDATER_CHANNEL = "com.melody.music/updater"
+        const val DIAGNOSTICS_CHANNEL = "com.melody.music/diagnostics"
 
         var flutterEngine: FlutterEngine? = null
             private set
@@ -31,6 +35,8 @@ class MelodyApplication : Application() {
         var isActivityAlive: Boolean = false
             private set
         var isActivityInForeground: Boolean = false
+            private set
+        var currentActivity: Activity? = null
             private set
 
         private val mainHandler = Handler(Looper.getMainLooper())
@@ -76,14 +82,18 @@ class MelodyApplication : Application() {
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
                 aliveCount++
                 isActivityAlive = aliveCount > 0
+                currentActivity = activity
                 android.util.Log.d("MelodyMedia", "Activity created. isActivityAlive=$isActivityAlive (aliveCount=$aliveCount)")
             }
 
-            override fun onActivityStarted(activity: Activity) {}
+            override fun onActivityStarted(activity: Activity) {
+                currentActivity = activity
+            }
 
             override fun onActivityResumed(activity: Activity) {
                 resumedCount++
                 isActivityInForeground = resumedCount > 0
+                currentActivity = activity
             }
 
             override fun onActivityPaused(activity: Activity) {
@@ -91,13 +101,20 @@ class MelodyApplication : Application() {
                 isActivityInForeground = resumedCount > 0
             }
 
-            override fun onActivityStopped(activity: Activity) {}
+            override fun onActivityStopped(activity: Activity) {
+                if (currentActivity == activity) {
+                    currentActivity = null
+                }
+            }
 
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
 
             override fun onActivityDestroyed(activity: Activity) {
                 aliveCount--
                 isActivityAlive = aliveCount > 0
+                if (currentActivity == activity) {
+                    currentActivity = null
+                }
                 android.util.Log.d("MelodyMedia", "Activity destroyed. isActivityAlive=$isActivityAlive (aliveCount=$aliveCount)")
             }
         })
@@ -210,6 +227,83 @@ class MelodyApplication : Application() {
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("INSTALL_ERROR", e.message, null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // 7. Setup Diagnostics Channel (Share & Save Crash Logs)
+        MethodChannel(engine.dartExecutor.binaryMessenger, DIAGNOSTICS_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "shareLogFile" -> {
+                    val filePath = call.argument<String>("filePath")
+                    val title = call.argument<String>("title") ?: "Melody Diagnostic Log"
+                    if (filePath.isNullOrEmpty()) {
+                        result.error("INVALID_PATH", "File path cannot be null or empty", null)
+                        return@setMethodCallHandler
+                    }
+
+                    try {
+                        val file = File(filePath)
+                        if (!file.exists()) {
+                            result.error("FILE_NOT_FOUND", "Log file does not exist at $filePath", null)
+                            return@setMethodCallHandler
+                        }
+
+                        val uri = FileProvider.getUriForFile(
+                            this,
+                            "$packageName.fileprovider",
+                            file
+                        )
+
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            putExtra(Intent.EXTRA_SUBJECT, title)
+                            putExtra(Intent.EXTRA_TEXT, "Attached Melody Diagnostic Log ($title)")
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+
+                        val chooser = Intent.createChooser(shareIntent, title).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        val targetContext = currentActivity ?: this
+                        targetContext.startActivity(chooser)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("SHARE_ERROR", e.message, null)
+                    }
+                }
+                "saveToDownloads" -> {
+                    val content = call.argument<String>("content") ?: ""
+                    val fileName = call.argument<String>("fileName") ?: "melody_crash_log.txt"
+
+                    try {
+                        val savedPath: String
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            val values = ContentValues().apply {
+                                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                                put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                            }
+                            val resolver = contentResolver
+                            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                                ?: throw Exception("Failed to create MediaStore entry in Downloads")
+                            resolver.openOutputStream(uri)?.use { os ->
+                                os.write(content.toByteArray(Charsets.UTF_8))
+                            }
+                            savedPath = "Downloads/$fileName"
+                        } else {
+                            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                            if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                            val file = File(downloadsDir, fileName)
+                            file.writeText(content, Charsets.UTF_8)
+                            savedPath = file.absolutePath
+                        }
+                        result.success(savedPath)
+                    } catch (e: Exception) {
+                        result.error("SAVE_ERROR", e.message, null)
                     }
                 }
                 else -> result.notImplemented()
