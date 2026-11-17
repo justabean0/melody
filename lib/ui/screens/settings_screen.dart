@@ -3,9 +3,11 @@ import 'package:provider/provider.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/database_service.dart';
 import '../../services/innertube_version_manager.dart';
+import '../../services/log_service.dart';
 import '../../services/update_service.dart';
 import '../components/language_selection_dialog.dart';
 import '../components/update_dialog.dart';
+import 'diagnostics_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -515,7 +517,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(),
 
-          // Section 6: About Melody
+          // Section 6: Diagnostics & System Logs
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text(
+              'Diagnostics & Debugging',
+              style: TextStyle(
+                color: colorScheme.primary,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.bug_report_outlined),
+            title: const Text('Diagnostics & System Logs'),
+            subtitle: const Text('Inspect runtime logs, copy error reports, and monitor streaming'),
+            trailing: ValueListenableBuilder<int>(
+              valueListenable: LogService.logCountNotifier,
+              builder: (context, _, __) {
+                final errCount = LogService.errorCount;
+                if (errCount > 0) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withAlpha(40),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.redAccent, width: 1),
+                    ),
+                    child: Text(
+                      '$errCount error${errCount > 1 ? "s" : ""}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Colors.redAccent,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  );
+                }
+                return const Icon(Icons.chevron_right);
+              },
+            ),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const DiagnosticsScreen()),
+              );
+            },
+          ),
+
+          const Divider(),
+
+          // Section 7: About Melody
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: Text(

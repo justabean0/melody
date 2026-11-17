@@ -6,6 +6,7 @@ import 'providers/theme_provider.dart';
 import 'providers/search_provider.dart';
 import 'services/audio_cache_service.dart';
 import 'services/database_service.dart';
+import 'services/log_service.dart';
 import 'ui/components/mini_player.dart';
 import 'ui/screens/home_screen.dart';
 import 'ui/screens/search_screen.dart';
@@ -14,6 +15,7 @@ import 'ui/screens/settings_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  LogService.init();
   await DatabaseService.init();
   await AudioCacheService.init();
 
