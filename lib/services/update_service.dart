@@ -52,11 +52,34 @@ class UpdateService {
     return appVersion;
   }
 
+  /// Checks whether the running app build is a Debug variant
+  static Future<bool> isDebugBuild() async {
+    if (kDebugMode) return true;
+    if (Platform.isAndroid) {
+      try {
+        final res = await _channel.invokeMethod<Map<dynamic, dynamic>>('getAppVersion');
+        if (res != null) {
+          final isDebug = res['isDebug'] as bool? ?? false;
+          final pkg = res['packageName'] as String? ?? '';
+          final vName = res['versionName'] as String? ?? '';
+          return isDebug || pkg.endsWith('.debug') || vName.contains('debug');
+        }
+      } catch (_) {}
+    }
+    return false;
+  }
+
   /// Compares semantic versions (e.g., '1.0.1' > '1.0.0')
   static bool isNewerVersion(String current, String remote) {
     try {
-      final cleanCurrent = current.replaceFirst(RegExp(r'^[vV]'), '').split('+')[0];
-      final cleanRemote = remote.replaceFirst(RegExp(r'^[vV]'), '').split('+')[0];
+      final cleanCurrent = current
+          .replaceFirst(RegExp(r'^[vV]'), '')
+          .split('+')[0]
+          .split('-')[0];
+      final cleanRemote = remote
+          .replaceFirst(RegExp(r'^[vV]'), '')
+          .split('+')[0]
+          .split('-')[0];
 
       final currentParts = cleanCurrent.split('.').map((e) => int.tryParse(e) ?? 0).toList();
       final remoteParts = cleanRemote.split('.').map((e) => int.tryParse(e) ?? 0).toList();
@@ -94,6 +117,28 @@ class UpdateService {
     return null;
   }
 
+  /// Filters release assets strictly separating release vs debug APKs
+  @visibleForTesting
+  static String? selectTargetApkAsset(List<dynamic> assets, {required bool isDebug}) {
+    String? releaseApkUrl;
+    String? debugApkUrl;
+
+    for (final asset in assets) {
+      if (asset is! Map<String, dynamic>) continue;
+      final name = (asset['name'] as String? ?? '').toLowerCase();
+      final url = asset['browser_download_url'] as String? ?? '';
+      if (!name.endsWith('.apk') || url.isEmpty) continue;
+
+      if (name.contains('debug')) {
+        debugApkUrl ??= url;
+      } else {
+        releaseApkUrl ??= url;
+      }
+    }
+
+    return isDebug ? debugApkUrl : releaseApkUrl;
+  }
+
   /// Checks for an available update from the configured source URL
   static Future<UpdateInfo?> checkForUpdate({String? customSourceUrl}) async {
     final rawSource = customSourceUrl ?? DatabaseService.getUpdateSource();
@@ -125,6 +170,8 @@ class UpdateService {
       int? apkSize;
       String releaseName = '';
 
+      final isDebug = await isDebugBuild();
+
       // 1. GitHub Releases API format
       if (data is Map<String, dynamic> && data.containsKey('tag_name')) {
         remoteVer = (data['tag_name'] as String? ?? '').replaceFirst(RegExp(r'^[vV]'), '');
@@ -132,23 +179,37 @@ class UpdateService {
         changelog = data['body'] as String? ?? 'Bug fixes and performance improvements.';
 
         final assets = data['assets'] as List<dynamic>? ?? [];
-        for (final asset in assets) {
-          final name = (asset['name'] as String? ?? '').toLowerCase();
-          final url = asset['browser_download_url'] as String? ?? '';
-          if (name.endsWith('.apk') && url.isNotEmpty) {
-            downloadUrl = url;
-            apkSize = asset['size'] as int?;
-            break;
-          }
+        final targetUrl = selectTargetApkAsset(assets, isDebug: isDebug);
+
+        if (targetUrl == null) {
+          debugPrint('Update check: Running ${isDebug ? "Debug" : "Release"} build, but no matching APK found in release assets.');
+          return null;
         }
+
+        downloadUrl = targetUrl;
+        final matchedAsset = assets.cast<Map<String, dynamic>?>().firstWhere(
+              (a) => a?['browser_download_url'] == targetUrl,
+              orElse: () => null,
+            );
+        apkSize = matchedAsset?['size'] as int?;
       }
       // 2. Custom JSON Manifest format
       else if (data is Map<String, dynamic>) {
         remoteVer = (data['version'] as String? ?? '').replaceFirst(RegExp(r'^[vV]'), '');
         releaseName = data['releaseName'] as String? ?? 'v$remoteVer';
         changelog = data['changelog'] as String? ?? 'New version available.';
-        downloadUrl = data['downloadUrl'] as String? ?? '';
-        apkSize = data['apkSize'] as int?;
+
+        if (isDebug) {
+          downloadUrl = (data['debugDownloadUrl'] as String? ?? '').isNotEmpty
+              ? (data['debugDownloadUrl'] as String)
+              : '';
+          apkSize = data['debugApkSize'] as int?;
+        } else {
+          downloadUrl = (data['releaseDownloadUrl'] as String? ?? '').isNotEmpty
+              ? (data['releaseDownloadUrl'] as String)
+              : (data['downloadUrl'] as String? ?? '');
+          apkSize = data['releaseApkSize'] as int? ?? data['apkSize'] as int?;
+        }
       }
 
       if (remoteVer.isEmpty || downloadUrl.isEmpty) {

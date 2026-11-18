@@ -189,9 +189,12 @@ class MelodyApplication : Application() {
                             @Suppress("DEPRECATION")
                             pInfo.versionCode.toLong()
                         }
+                        val isDebug = packageName.endsWith(".debug")
                         result.success(mapOf(
                             "versionName" to versionName,
-                            "versionCode" to versionCode
+                            "versionCode" to versionCode,
+                            "packageName" to packageName,
+                            "isDebug" to isDebug
                         ))
                     } catch (e: Exception) {
                         result.error("VERSION_ERROR", e.message, null)
