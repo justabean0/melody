@@ -20,6 +20,9 @@ class StreamResolverService {
   static final http.Client _httpClient = http.Client();
   static final yt.YoutubeExplode _ytExplode = yt.YoutubeExplode();
 
+  @visibleForTesting
+  static http.Client? clientOverride;
+
   /// In-memory LRU Stream URL Cache with TTL (typically 4-6 hours)
   static final Map<String, CachedStream> _streamCache = {};
 
@@ -31,6 +34,12 @@ class StreamResolverService {
     if (val is num) return val.toInt();
     if (val is String) return int.tryParse(val) ?? 0;
     return 0;
+  }
+
+  /// Clears in-memory stream cache
+  @visibleForTesting
+  static void clearCache() {
+    _streamCache.clear();
   }
 
   /// Invalidates a cached stream if playback encounters a 403 or error
@@ -59,19 +68,20 @@ class StreamResolverService {
 
   /// Probes an audio stream URL using streaming HTTP headers to ensure
   /// it is not geo-restricted and can be read without downloading the entire body.
-  static Future<bool> _probeStream(String url) async {
+  static Future<bool> _probeStream(String url, {http.Client? client}) async {
     try {
       final uri = Uri.parse(url);
       if (uri.queryParameters.containsKey('gcr')) {
         return false;
       }
 
+      final httpClient = client ?? clientOverride ?? _httpClient;
       final request = http.Request('GET', uri)
         ..headers['Range'] = 'bytes=0-1'
         ..headers['User-Agent'] =
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-      final streamedResponse = await _httpClient.send(request).timeout(
+      final streamedResponse = await httpClient.send(request).timeout(
         const Duration(milliseconds: 1800),
       );
 
@@ -85,8 +95,9 @@ class StreamResolverService {
 
   /// 1. HYBRID FAST PATH: Direct InnerTube player API (200-400ms)
   /// If Google detects bot, flags LOGIN_REQUIRED, or requires cipher, returns null to fall back safely.
-  static Future<String?> _tryInnerTubeFastPath(String videoId) async {
+  static Future<String?> _tryInnerTubeFastPath(String videoId, {http.Client? client}) async {
     try {
+      final httpClient = client ?? clientOverride ?? _httpClient;
       final profile = InnerTubeVersionManager.currentProfile;
       final url = Uri.parse('https://www.youtube.com/youtubei/v1/player');
       final body = jsonEncode({
@@ -96,7 +107,7 @@ class StreamResolverService {
         'videoId': videoId,
       });
 
-      final res = await _httpClient.post(
+      final res = await httpClient.post(
         url,
         headers: {
           'Content-Type': 'application/json',
@@ -164,10 +175,12 @@ class StreamResolverService {
     String videoId, {
     Duration timeout = const Duration(seconds: 5),
     bool optimistic = false,
+    http.Client? client,
   }) async {
     try {
+      final httpClient = client ?? clientOverride ?? _httpClient;
       final url = Uri.parse('$instance/api/v1/videos/$videoId?local=true');
-      final response = await _httpClient.get(url).timeout(timeout);
+      final response = await httpClient.get(url).timeout(timeout);
 
       if (response.statusCode != 200) return null;
 
@@ -207,7 +220,7 @@ class StreamResolverService {
       // Probe top candidates to guarantee playback without 403 Access Denied errors
       for (final candidate in allCandidates.take(2)) {
         final streamUrl = candidate['url'] as String;
-        if (await _probeStream(streamUrl)) {
+        if (await _probeStream(streamUrl, client: httpClient)) {
           return streamUrl;
         }
       }
@@ -217,7 +230,7 @@ class StreamResolverService {
       if (formatStreams != null && formatStreams.isNotEmpty) {
         for (final fs in formatStreams.take(2)) {
           final streamUrl = fs['url'] as String?;
-          if (streamUrl != null && await _probeStream(streamUrl)) {
+          if (streamUrl != null && await _probeStream(streamUrl, client: httpClient)) {
             return streamUrl;
           }
         }
@@ -233,10 +246,12 @@ class StreamResolverService {
     String originalVideoId,
     String songTitle, {
     Duration timeout = const Duration(seconds: 8),
+    http.Client? client,
   }) async {
     try {
+      final httpClient = client ?? clientOverride ?? _httpClient;
       final searchUrl = Uri.parse('$instance/api/v1/search?q=$query&type=video');
-      final sRes = await _httpClient.get(searchUrl).timeout(timeout);
+      final sRes = await httpClient.get(searchUrl).timeout(timeout);
 
       if (sRes.statusCode == 200) {
         final items = jsonDecode(sRes.body) as List<dynamic>;
@@ -249,6 +264,7 @@ class StreamResolverService {
             altVideoId,
             timeout: const Duration(seconds: 5),
             optimistic: false,
+            client: httpClient,
           );
           if (altAudioUrl != null) {
             debugPrint('Resolved working alternative stream for "$songTitle": $altVideoId via $instance');
@@ -263,7 +279,11 @@ class StreamResolverService {
   /// CONCURRENT FAST RACING SOLVER:
   /// Races direct InnerTube (< 300ms) and Companion Proxy (< 600ms) in parallel.
   /// Whichever resolves first wins immediately, completely eliminating sequential timeout delays.
-  static Future<String?> _raceFastSolvers(String videoId, {bool optimistic = true}) async {
+  static Future<String?> _raceFastSolvers(
+    String videoId, {
+    bool optimistic = true,
+    http.Client? client,
+  }) async {
     final completer = Completer<String?>();
     int pending = 2;
 
@@ -281,7 +301,7 @@ class StreamResolverService {
 
     // 1. Direct InnerTube fast path
     if (!AntiBotService.isSafeModeActive) {
-      _tryInnerTubeFastPath(videoId)
+      _tryInnerTubeFastPath(videoId, client: client)
           .then((u) => handleWinner(u, 'InnerTube'))
           .catchError((_) => handleWinner(null, 'InnerTube'));
     } else {
@@ -294,6 +314,7 @@ class StreamResolverService {
       videoId,
       timeout: const Duration(seconds: 4),
       optimistic: optimistic,
+      client: client,
     ).then((u) => handleWinner(u, 'CompanionProxy')).catchError((_) => handleWinner(null, 'CompanionProxy'));
 
     return completer.future;
@@ -309,7 +330,10 @@ class StreamResolverService {
     String? songTitle,
     String? artist,
     bool optimistic = true,
+    http.Client? client,
   }) async {
+    final effectiveClient = client ?? clientOverride ?? _httpClient;
+
     // 1. STREAM URL CACHE: Instant 0ms return if cached and unexpired
     final cached = _streamCache[videoId];
     if (cached != null && !cached.isExpired) {
@@ -318,32 +342,34 @@ class StreamResolverService {
     }
 
     // 2. CONCURRENT FAST SOLVER RACE: InnerTube & Companion Proxy simultaneously
-    final racedUrl = await _raceFastSolvers(videoId, optimistic: optimistic);
+    final racedUrl = await _raceFastSolvers(videoId, optimistic: optimistic, client: effectiveClient);
     if (racedUrl != null) {
       _saveToCache(videoId, racedUrl);
       return racedUrl;
     }
 
     // 3. FAST LOCAL CLIENT: YoutubeExplode direct streams
-    try {
-      final manifest = await _ytExplode.videos.streamsClient
-          .getManifest(yt.VideoId(videoId))
-          .timeout(const Duration(seconds: 3));
-      final mp4Streams = manifest.audioOnly
-          .where((s) => s.container.name.toLowerCase() == 'mp4')
-          .toList();
+    if (client == null && clientOverride == null) {
+      try {
+        final manifest = await _ytExplode.videos.streamsClient
+            .getManifest(yt.VideoId(videoId))
+            .timeout(const Duration(seconds: 3));
+        final mp4Streams = manifest.audioOnly
+            .where((s) => s.container.name.toLowerCase() == 'mp4')
+            .toList();
 
-      final candidates = mp4Streams.isNotEmpty ? mp4Streams : manifest.audioOnly.toList();
-      for (final s in candidates.sortByBitrate().reversed) {
-        final streamUrl = s.url.toString();
-        if (optimistic || await _probeStream(streamUrl)) {
-          debugPrint('Resolved direct audio stream for $videoId via YoutubeExplode fallback');
-          _saveToCache(videoId, streamUrl);
-          return streamUrl;
+        final candidates = mp4Streams.isNotEmpty ? mp4Streams : manifest.audioOnly.toList();
+        for (final s in candidates.sortByBitrate().reversed) {
+          final streamUrl = s.url.toString();
+          if (optimistic || await _probeStream(streamUrl, client: effectiveClient)) {
+            debugPrint('Resolved direct audio stream for $videoId via YoutubeExplode fallback');
+            _saveToCache(videoId, streamUrl);
+            return streamUrl;
+          }
         }
+      } catch (e) {
+        debugPrint('YoutubeExplode fallback skipped ($e). Trying alternative track match...');
       }
-    } catch (e) {
-      debugPrint('YoutubeExplode fallback skipped ($e). Trying alternative track match...');
     }
 
     // 4. SMART ALTERNATIVE TRACK SEARCH:
@@ -358,6 +384,7 @@ class StreamResolverService {
         videoId,
         songTitle,
         timeout: const Duration(seconds: 4),
+        client: effectiveClient,
       );
       if (primaryAlt != null) {
         _saveToCache(videoId, primaryAlt);
@@ -370,7 +397,7 @@ class StreamResolverService {
 
   /// Speculatively pre-resolves a stream and pre-caches its 5-second head
   /// in the background, turning subsequent taps into instant 0ms playback.
-  static void preWarm(String videoId, {String? songTitle, String? artist}) {
+  static void preWarm(String videoId, {String? songTitle, String? artist, http.Client? client}) {
     if (_streamCache.containsKey(videoId) && !_streamCache[videoId]!.isExpired) return;
     unawaited(() async {
       try {
@@ -379,6 +406,7 @@ class StreamResolverService {
           songTitle: songTitle,
           artist: artist,
           optimistic: true,
+          client: client,
         );
         await AudioCacheService.prefetchHead(videoId, url);
         debugPrint('⚡ Pre-warmed audio stream & head cache for $videoId');
@@ -388,6 +416,7 @@ class StreamResolverService {
 
   static void dispose() {
     _httpClient.close();
+    clientOverride?.close();
     _ytExplode.close();
   }
 }

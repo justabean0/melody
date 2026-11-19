@@ -1,59 +1,145 @@
-import 'dart:io';
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:melody/services/anti_bot_service.dart';
 import 'package:melody/services/stream_resolver_service.dart';
 
-class _RealHttpOverrides extends HttpOverrides {}
-
 void main() {
-  HttpOverrides.global = _RealHttpOverrides();
-
   setUp(() {
     AntiBotService.reset();
+    StreamResolverService.clearCache();
+    StreamResolverService.clientOverride = null;
   });
 
-  group('StreamResolverService Tests', () {
-    test('Resolves audio stream with active probe validation for standard track', () async {
+  tearDown(() {
+    StreamResolverService.clientOverride = null;
+    StreamResolverService.clearCache();
+  });
+
+  group('StreamResolverService Hermetic Tests', () {
+    test('In-memory cache hit avoids repeat HTTP calls', () async {
+      int requestCount = 0;
+      final mockClient = MockClient((request) async {
+        requestCount++;
+        if (request.url.toString().contains('youtubei/v1/player')) {
+          return http.Response(
+            jsonEncode({
+              'playabilityStatus': {'status': 'OK'},
+              'streamingData': {
+                'adaptiveFormats': [
+                  {
+                    'mimeType': 'audio/mp4; codecs="mp4a.40.2"',
+                    'bitrate': 131072,
+                    'url': 'https://rr1.googlevideo.com/videoplayback?id=cached_track',
+                  }
+                ]
+              }
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 404);
+      });
+
+      final firstUrl = await StreamResolverService.resolveAudioStreamUrl(
+        'test_video_cache',
+        client: mockClient,
+      );
+      expect(firstUrl, 'https://rr1.googlevideo.com/videoplayback?id=cached_track');
+      final requestsAfterFirst = requestCount;
+      expect(requestsAfterFirst, greaterThan(0));
+
+      final secondUrl = await StreamResolverService.resolveAudioStreamUrl(
+        'test_video_cache',
+        client: mockClient,
+      );
+      expect(secondUrl, firstUrl);
+      expect(requestCount, equals(requestsAfterFirst));
+    });
+
+    test('Direct InnerTube success resolves without needing proxy', () async {
+      final mockClient = MockClient((request) async {
+        if (request.url.toString().contains('youtubei/v1/player')) {
+          return http.Response(
+            jsonEncode({
+              'playabilityStatus': {'status': 'OK'},
+              'streamingData': {
+                'adaptiveFormats': [
+                  {
+                    'mimeType': 'audio/mp4; codecs="mp4a.40.2"',
+                    'bitrate': 160000,
+                    'url': 'https://rr2.googlevideo.com/videoplayback?id=innertube_direct',
+                  }
+                ]
+              }
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 404);
+      });
+
       final url = await StreamResolverService.resolveAudioStreamUrl(
-        'dQw4w9WgXcQ',
-        songTitle: 'Never Gonna Give You Up',
-        artist: 'Rick Astley',
+        'direct_video_123',
+        client: mockClient,
       );
 
-      expect(url, isNotEmpty);
-      expect(url.startsWith('https://'), isTrue);
-    }, timeout: const Timeout(Duration(seconds: 60)));
+      expect(url, 'https://rr2.googlevideo.com/videoplayback?id=innertube_direct');
+    });
 
-    test('Resolves audio stream with geoblock fallback for restricted track', () async {
+    test('Invidious proxy fallback when direct InnerTube fails', () async {
+      final mockClient = MockClient((request) async {
+        final uriStr = request.url.toString();
+        if (uriStr.contains('youtubei/v1/player')) {
+          return http.Response(
+            jsonEncode({
+              'playabilityStatus': {'status': 'LOGIN_REQUIRED'},
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (uriStr.contains('/api/v1/videos/fallback_video')) {
+          return http.Response(
+            jsonEncode({
+              'adaptiveFormats': [
+                {
+                  'type': 'audio/mp4; codecs="mp4a.40.2"',
+                  'bitrate': 128000,
+                  'url': 'https://yt.chocolatemoo53.com/videoplayback?id=invidious_proxy',
+                }
+              ]
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('Not found', 404);
+      });
+
       final url = await StreamResolverService.resolveAudioStreamUrl(
-        'kJQP7kiw5Fk',
-        songTitle: 'Despacito',
-        artist: 'Luis Fonsi',
+        'fallback_video',
+        client: mockClient,
       );
 
-      expect(url, isNotEmpty);
-      expect(url.startsWith('https://'), isTrue);
-    }, timeout: const Timeout(Duration(seconds: 60)));
+      expect(url, 'https://yt.chocolatemoo53.com/videoplayback?id=invidious_proxy');
+    });
 
-    test('Resolves audio stream with alternative matching for Mayabono Biharini', () async {
-      final url = await StreamResolverService.resolveAudioStreamUrl(
-        '5xPad9wg1B4',
-        songTitle: 'Mayabono Biharini',
-        artist: 'Somlata',
+    test('Graceful error handling when all tiers fail', () async {
+      final mockClient = MockClient((request) async {
+        return http.Response('Server error', 500);
+      });
+
+      expect(
+        () => StreamResolverService.resolveAudioStreamUrl(
+          'unplayable_video_id',
+          client: mockClient,
+        ),
+        throwsA(isA<Exception>()),
       );
-
-      expect(url, isNotEmpty);
-      expect(url.startsWith('https://'), isTrue);
-    }, timeout: const Timeout(Duration(seconds: 60)));
-
-    test('Stream URL Cache returns instantly (0ms) on repeated requests', () async {
-      final sw = Stopwatch()..start();
-      // Second request for Mayabono Biharini must hit memory cache instantly
-      final cachedUrl = await StreamResolverService.resolveAudioStreamUrl('5xPad9wg1B4');
-      sw.stop();
-
-      expect(cachedUrl, isNotEmpty);
-      expect(sw.elapsedMilliseconds, lessThan(20)); // Sub-20ms cache hit
     });
   });
 }

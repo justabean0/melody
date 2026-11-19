@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:melody/services/update_service.dart';
 
@@ -89,6 +90,21 @@ void main() {
       ];
       final selected = UpdateService.selectTargetApkAsset(releaseOnlyAssets, isDebug: true);
       expect(selected, isNull);
+    });
+  });
+
+  group('UpdateService Pubspec Version Sync Tests', () {
+    test('Fallback constants match pubspec.yaml version and build number', () {
+      final pubspecFile = File('pubspec.yaml');
+      expect(pubspecFile.existsSync(), isTrue);
+      final content = pubspecFile.readAsStringSync();
+      final match = RegExp(r'^version:\s*([0-9.]+)\+([0-9]+)', multiLine: true).firstMatch(content);
+      expect(match, isNotNull, reason: 'version string should be found in pubspec.yaml');
+      final expectedVersion = match!.group(1);
+      final expectedBuild = int.parse(match.group(2)!);
+
+      expect(UpdateService.appVersion, equals(expectedVersion));
+      expect(UpdateService.appBuildNumber, equals(expectedBuild));
     });
   });
 }
