@@ -1,11 +1,16 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:melody/services/anti_bot_service.dart';
 import 'package:melody/services/stream_resolver_service.dart';
 
 class _RealHttpOverrides extends HttpOverrides {}
 
 void main() {
   HttpOverrides.global = _RealHttpOverrides();
+
+  setUp(() {
+    AntiBotService.reset();
+  });
 
   group('StreamResolverService Tests', () {
     test('Resolves audio stream with active probe validation for standard track', () async {

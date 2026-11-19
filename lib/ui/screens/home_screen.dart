@@ -5,7 +5,6 @@ import '../../models/song.dart';
 import '../../providers/playback_provider.dart';
 import '../../services/database_service.dart';
 import '../../services/innertube_service.dart';
-import '../../services/innertube_version_manager.dart';
 import '../../services/stream_resolver_service.dart';
 import '../../services/update_service.dart';
 import '../components/album_card.dart';
@@ -332,52 +331,6 @@ class _HomeScreenState extends State<HomeScreen> {
             : ListView(
                 padding: const EdgeInsets.only(bottom: 120),
                 children: [
-                  // Outdated Client Version Notification Banner
-                  ValueListenableBuilder<bool>(
-                    valueListenable: InnerTubeVersionManager.onOutdatedStatusChanged,
-                    builder: (context, isOutdated, _) {
-                      if (!isOutdated && !InnerTubeVersionManager.isOutdatedWarningActive) {
-                        return const SizedBox.shrink();
-                      }
-                      return Container(
-                        margin: const EdgeInsets.fromLTRB(16, 8, 16, 6),
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: Colors.amber.shade900.withAlpha(45),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.amber.shade600.withAlpha(140), width: 1),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 22),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    'InnerTube Client Version Outdated',
-                                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                                  ),
-                                  Text(
-                                    'YouTube rejected client version. Melody safely switched to companion proxy.',
-                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade300),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.close, size: 18),
-                              onPressed: () {
-                                InnerTubeVersionManager.dismissWarning();
-                              },
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-
                   // Moods & Genres Filters
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,

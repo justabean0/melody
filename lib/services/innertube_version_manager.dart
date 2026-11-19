@@ -111,22 +111,15 @@ class InnerTubeVersionManager {
     }
 
     if (responseBody != null) {
-      final playability = responseBody['playabilityStatus']?['status'] as String?;
       final reason =
           responseBody['playabilityStatus']?['reason'] as String? ?? '';
       final lowerReason = reason.toLowerCase();
 
-      if (lowerReason.contains('version') ||
-          lowerReason.contains('supported') ||
+      if (lowerReason.contains('client version') ||
+          lowerReason.contains('version is no longer supported') ||
           lowerReason.contains('update your app') ||
-          lowerReason.contains('deprecated')) {
+          lowerReason.contains('client_version_deprecated')) {
         _reportOutdated('YouTube deprecation message: "$reason"');
-        return true;
-      }
-
-      // YouTube flags outdated/bot-checked client versions with LOGIN_REQUIRED
-      if (playability == 'LOGIN_REQUIRED') {
-        _reportOutdated('Client rejected with LOGIN_REQUIRED (version may be deprecated)');
         return true;
       }
     }

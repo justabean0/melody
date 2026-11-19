@@ -103,7 +103,7 @@ class StreamResolverService {
           'User-Agent': profile.userAgent,
         },
         body: body,
-      ).timeout(const Duration(milliseconds: 1500));
+      ).timeout(const Duration(milliseconds: 2500));
 
       Map<String, dynamic>? data;
       try {

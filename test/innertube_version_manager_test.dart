@@ -50,7 +50,7 @@ void main() {
       ), isTrue);
     });
 
-    test('LOGIN_REQUIRED response triggers outdated alert', () {
+    test('LOGIN_REQUIRED response does NOT trigger client version outdated alert', () {
       final isOutdated = InnerTubeVersionManager.inspectResponseForOutdatedClient(
         statusCode: 200,
         responseBody: {
@@ -60,9 +60,8 @@ void main() {
         },
       );
 
-      expect(isOutdated, isTrue);
-      expect(InnerTubeVersionManager.isOutdatedWarningActive, isTrue);
-      expect(InnerTubeVersionManager.outdatedReason, contains('LOGIN_REQUIRED'));
+      expect(isOutdated, isFalse);
+      expect(InnerTubeVersionManager.isOutdatedWarningActive, isFalse);
     });
 
     test('Dismiss warning clears warning flag while preserving rotation state', () {
