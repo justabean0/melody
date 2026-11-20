@@ -2,8 +2,8 @@
 .SYNOPSIS
     Melody App Release & In-App Update Publisher
 .DESCRIPTION
-    Builds the production APK, stages and commits git changes, pushes to GitHub,
-    and publishes the release so all installed Melody apps receive in-app updates.
+    Builds production and debug APKs, validates version codes, stages and commits git changes,
+    pushes to GitHub, and publishes the release so all installed Melody apps receive in-app updates.
 #>
 
 param(
@@ -58,36 +58,101 @@ if (-not $Version) {
     $Version = $Version.Trim().TrimStart('v')
 }
 
-Write-Host "`nTarget Release Version: v${Version}" -ForegroundColor Green
+Write-Host "`nTarget Release Version: v${Version} (build $buildNum)" -ForegroundColor Green
 Write-Host "Changelog: $Changelog" -ForegroundColor Gray
 
-# 2. Compile Optimized Release APK
-Write-Host "`nCompiling optimized release APK..." -ForegroundColor Cyan
-& "d:\flutter\bin\flutter.bat" build apk --release
-
-$apkPath = "$ProjectDir\build\app\outputs\flutter-apk\app-release.apk"
-if (-not (Test-Path $apkPath)) {
-    Write-Error "Release APK was not found at $apkPath"
+# 2. Compile Release & Debug APKs
+Write-Host "`n[1/2] Compiling optimized release APK..." -ForegroundColor Cyan
+flutter build apk --release
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Failed to build release APK!"
     exit 1
 }
 
-$apkItem = Get-Item $apkPath
-$sizeMB = [math]::Round($apkItem.Length / 1MB, 2)
-Write-Host "`n[SUCCESS] Built release APK: $apkPath ($sizeMB MB)" -ForegroundColor Green
+$releaseApkPath = "$ProjectDir\build\app\outputs\flutter-apk\app-release.apk"
+if (-not (Test-Path $releaseApkPath)) {
+    Write-Error "Release APK was not found at $releaseApkPath"
+    exit 1
+}
+$releaseApkItem = Get-Item $releaseApkPath
+$releaseSizeMB = [math]::Round($releaseApkItem.Length / 1MB, 2)
+Write-Host "[SUCCESS] Built release APK: $releaseApkPath ($releaseSizeMB MB)" -ForegroundColor Green
 
-# 3. Generate version.json manifest
+Write-Host "`n[2/2] Compiling debug APK..." -ForegroundColor Cyan
+flutter build apk --debug
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Failed to build debug APK!"
+    exit 1
+}
+
+$rawDebugApkPath = "$ProjectDir\build\app\outputs\flutter-apk\app-debug.apk"
+$debugApkPath = "$ProjectDir\build\app\outputs\flutter-apk\melody-debug.apk"
+if (-not (Test-Path $rawDebugApkPath)) {
+    Write-Error "Debug APK was not found at $rawDebugApkPath"
+    exit 1
+}
+Copy-Item -Path $rawDebugApkPath -Destination $debugApkPath -Force
+$debugApkItem = Get-Item $debugApkPath
+$debugSizeMB = [math]::Round($debugApkItem.Length / 1MB, 2)
+Write-Host "[SUCCESS] Built debug APK: $debugApkPath ($debugSizeMB MB)" -ForegroundColor Green
+
+# 3. AAPT Verification of both APKs
+Write-Host "`nVerifying APK version metadata via aapt..." -ForegroundColor Cyan
+$aaptPath = $null
+if ($env:ANDROID_HOME -and (Test-Path "$env:ANDROID_HOME\build-tools")) {
+    $aaptPath = (Get-ChildItem -Path "$env:ANDROID_HOME\build-tools" -Filter aapt.exe -Recurse | Select-Object -ExpandProperty FullName -First 1)
+}
+if (-not $aaptPath -and (Test-Path "$env:LOCALAPPDATA\Android\Sdk\build-tools")) {
+    $aaptPath = (Get-ChildItem -Path "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Filter aapt.exe -Recurse | Select-Object -ExpandProperty FullName -First 1)
+}
+if (-not $aaptPath) {
+    $cmd = Get-Command aapt -ErrorAction SilentlyContinue
+    if ($cmd) { $aaptPath = $cmd.Source }
+}
+
+if (-not $aaptPath) {
+    Write-Error "aapt.exe could not be found in Android SDK build-tools to verify APK version metadata."
+    exit 1
+}
+
+function Verify-ApkMetadata {
+    param(
+        [string]$ApkFilePath,
+        [string]$ExpectedVersionName,
+        [string]$ExpectedVersionCode
+    )
+    $badging = & $aaptPath dump badging $ApkFilePath
+    $pkgLine = ($badging | Select-String "package: " | Select-Object -First 1).Line
+    $actualCode = ""
+    $actualName = ""
+    if ($pkgLine -match "versionCode='([^']+)'") { $actualCode = $matches[1] }
+    if ($pkgLine -match "versionName='([^']+)'") { $actualName = $matches[1] }
+
+    if ($actualCode -ne $ExpectedVersionCode -or $actualName -ne $ExpectedVersionName) {
+        Write-Error "Version mismatch in $ApkFilePath! Expected: $ExpectedVersionName+$ExpectedVersionCode, Found: $actualName+$actualCode"
+        exit 1
+    }
+    Write-Host "  Verified $ApkFilePath -> $actualName+$actualCode" -ForegroundColor Green
+}
+
+Verify-ApkMetadata -ApkFilePath $releaseApkPath -ExpectedVersionName "$Version" -ExpectedVersionCode "$buildNum"
+Verify-ApkMetadata -ApkFilePath $debugApkPath -ExpectedVersionName "$Version-debug" -ExpectedVersionCode "$buildNum"
+
+# 4. Generate version.json manifest
 $manifestObj = @{
     version = $Version
     releaseName = "Melody v${Version}"
     downloadUrl = "https://github.com/justabean0/melody/releases/download/v${Version}/app-release.apk"
+    debugDownloadUrl = "https://github.com/justabean0/melody/releases/download/v${Version}/melody-debug.apk"
     changelog = $Changelog
-    apkSize = $apkItem.Length
+    apkSize = $releaseApkItem.Length
+    debugApkSize = $debugApkItem.Length
 }
 $manifestPath = "$ProjectDir\build\version.json"
 $manifestObj | ConvertTo-Json -Depth 3 | Set-Content -Path $manifestPath -Encoding UTF8
-Write-Host "Generated update manifest at: $manifestPath" -ForegroundColor Cyan
+Write-Host "`nGenerated update manifest at: $manifestPath" -ForegroundColor Cyan
 
-# 4. Git Stage, Commit & Push
+# 5. Git Stage, Commit & Push
 Write-Host "`nUpdating Git repository..." -ForegroundColor Cyan
 $gitStatus = git status --porcelain
 if ($gitStatus) {
@@ -116,13 +181,13 @@ try {
     Write-Host "Note: Tag v${Version} already exists or could not be pushed." -ForegroundColor Yellow
 }
 
-# 5. Publish to GitHub Release
+# 6. Publish to GitHub Release
 $ghInstalled = Get-Command "gh" -ErrorAction SilentlyContinue
 if ($ghInstalled) {
     Write-Host "`nGitHub CLI detected. Creating GitHub Release..." -ForegroundColor Cyan
     try {
-        gh release create "v${Version}" "$apkPath" --title "Melody v${Version}" --notes "$Changelog"
-        Write-Host "`n[SUCCESS] Release published to GitHub! All installed Melody apps will now prompt users to update in-app." -ForegroundColor Green
+        gh release create "v${Version}" "$releaseApkPath" "$debugApkPath" --title "Melody v${Version}" --notes "$Changelog"
+        Write-Host "`n[SUCCESS] Release published to GitHub! Both release and debug APKs uploaded." -ForegroundColor Green
         exit 0
     } catch {
         Write-Host "GitHub CLI release creation failed. Falling back to browser..." -ForegroundColor Yellow
@@ -135,11 +200,11 @@ Write-Host "`nOpening GitHub release page in your browser..." -ForegroundColor Y
 Write-Host "URL: $newReleaseUrl" -ForegroundColor Cyan
 Start-Process $newReleaseUrl
 
-Write-Host "`nOpening File Explorer to your release APK..." -ForegroundColor Yellow
-Start-Process explorer.exe -ArgumentList "/select,$apkPath"
+Write-Host "`nOpening File Explorer to your release APKs..." -ForegroundColor Yellow
+Start-Process explorer.exe -ArgumentList "/select,$releaseApkPath"
 
-Write-Host "`nNext steps to publish in 5 seconds:" -ForegroundColor Green
+Write-Host "`nNext steps to publish:" -ForegroundColor Green
 Write-Host "1. In the opened GitHub webpage, verify Tag is 'v${Version}'."
-Write-Host "2. Drag and drop 'app-release.apk' from the opened folder into the 'Attach binaries' box."
+Write-Host "2. Drag and drop 'app-release.apk' and 'melody-debug.apk' into the 'Attach binaries' box."
 Write-Host "3. Click 'Publish release'!"
-Write-Host "`nOnce published, all Melody apps will detect and install the update automatically!" -ForegroundColor Green
+Write-Host "`nOnce published, all Melody apps will detect and install updates automatically!" -ForegroundColor Green

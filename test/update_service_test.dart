@@ -91,6 +91,27 @@ void main() {
       final selected = UpdateService.selectTargetApkAsset(releaseOnlyAssets, isDebug: true);
       expect(selected, isNull);
     });
+
+    test('Correctly separates app-release.apk and melody-debug.apk', () {
+      final dualAssets = [
+        {
+          'name': 'app-release.apk',
+          'browser_download_url': 'https://github.com/justabean0/melody/releases/download/v1.1.8/app-release.apk',
+          'size': 28320396,
+        },
+        {
+          'name': 'melody-debug.apk',
+          'browser_download_url': 'https://github.com/justabean0/melody/releases/download/v1.1.8/melody-debug.apk',
+          'size': 108678587,
+        },
+      ];
+
+      final releaseSelected = UpdateService.selectTargetApkAsset(dualAssets, isDebug: false);
+      expect(releaseSelected, 'https://github.com/justabean0/melody/releases/download/v1.1.8/app-release.apk');
+
+      final debugSelected = UpdateService.selectTargetApkAsset(dualAssets, isDebug: true);
+      expect(debugSelected, 'https://github.com/justabean0/melody/releases/download/v1.1.8/melody-debug.apk');
+    });
   });
 
   group('UpdateService Pubspec Version Sync Tests', () {
