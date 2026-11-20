@@ -78,6 +78,22 @@ if (Test-Path $updateServicePath) {
 Write-Host "`nTarget Release Version: v${Version} (build $buildNum)" -ForegroundColor Green
 Write-Host "Changelog: $Changelog" -ForegroundColor Gray
 
+# Run verification before building
+Write-Host "`nRunning code analysis..." -ForegroundColor Cyan
+flutter analyze
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Static analysis failed with errors!"
+    exit 1
+}
+
+Write-Host "`nRunning test suite..." -ForegroundColor Cyan
+flutter test
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Unit tests failed!"
+    exit 1
+}
+Write-Host "All tests and static analysis passed." -ForegroundColor Green
+
 # 2. Compile Standard Release & Diag Release APKs
 Write-Host "`n[1/2] Compiling standard release APK (flavor: standard)..." -ForegroundColor Cyan
 flutter build apk --release --flavor standard
@@ -178,7 +194,7 @@ Write-Host "`nGenerated update manifest at: $manifestPath" -ForegroundColor Cyan
 Write-Host "`nUpdating Git repository..." -ForegroundColor Cyan
 $gitStatus = git status --porcelain
 if ($gitStatus) {
-    git add .
+    git add android/ lib/ scripts/ test/ pubspec.yaml
     git commit -m "Release v${Version} - $Changelog"
     Write-Host "Committed changes to git." -ForegroundColor Green
 } else {
@@ -204,6 +220,9 @@ try {
 }
 
 # 6. Publish to GitHub Release
+if (Test-Path "C:\Program Files\GitHub CLI") {
+    $env:PATH = "C:\Program Files\GitHub CLI;$env:PATH"
+}
 $ghInstalled = Get-Command "gh" -ErrorAction SilentlyContinue
 if ($ghInstalled) {
     Write-Host "`nGitHub CLI detected. Creating GitHub Release..." -ForegroundColor Cyan
