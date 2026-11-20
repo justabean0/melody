@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/search_result.dart';
 import '../services/database_service.dart';
 import '../services/innertube_service.dart';
+import '../services/log_service.dart';
 import '../services/stream_resolver_service.dart';
 
 class SearchProvider extends ChangeNotifier {
@@ -70,6 +71,11 @@ class SearchProvider extends ChangeNotifier {
     _isLoading = true;
     _hasSearched = true;
     _suggestions = [];
+
+    LogService.recordBreadcrumb(
+      'Search performed: "$clean" (${_filter.name})',
+      category: 'search',
+    );
 
     // Save to persistent search history immediately
     await DatabaseService.addSearchHistory(clean);

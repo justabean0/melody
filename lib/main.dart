@@ -1,5 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'config/build_flags.dart';
 import 'providers/playback_provider.dart';
 import 'providers/library_provider.dart';
 import 'providers/theme_provider.dart';
@@ -16,6 +18,39 @@ import 'ui/screens/settings_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   LogService.init();
+
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    if (kIsDiagnosticsEnabled) {
+      LogService.recordBreadcrumb(
+        'Flutter error: ${details.summary}',
+        category: 'error',
+      );
+      LogService.error(
+        details.summary.toString(),
+        tag: 'FlutterError',
+        error: details.exceptionAsString(),
+        stackTrace: details.stack?.toString(),
+      );
+    }
+  };
+
+  PlatformDispatcher.instance.onError = (Object err, StackTrace stack) {
+    if (kIsDiagnosticsEnabled) {
+      LogService.recordBreadcrumb(
+        'Platform async error: $err',
+        category: 'error',
+      );
+      LogService.error(
+        'Uncaught async error: $err',
+        tag: 'PlatformError',
+        error: err.toString(),
+        stackTrace: stack.toString(),
+      );
+    }
+    return false;
+  };
+
   await DatabaseService.init();
   await AudioCacheService.init();
 
@@ -46,6 +81,9 @@ class MelodyApp extends StatelessWidget {
       theme: themeProvider.lightTheme,
       darkTheme: themeProvider.darkTheme,
       home: const MainScaffold(),
+      navigatorObservers: [
+        DiagnosticNavigatorObserver(),
+      ],
     );
   }
 }
@@ -93,6 +131,13 @@ class _MainScaffoldState extends State<MainScaffold> {
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) {
           if (_currentIndex == index) return;
+          const tabNames = ['Home', 'Search', 'Library', 'Settings'];
+          final fromTab = _currentIndex < tabNames.length ? tabNames[_currentIndex] : 'Tab $_currentIndex';
+          final toTab = index < tabNames.length ? tabNames[index] : 'Tab $index';
+          LogService.recordBreadcrumb(
+            'Tab switched from $fromTab to $toTab',
+            category: 'navigation',
+          );
           setState(() {
             _currentIndex = index;
           });

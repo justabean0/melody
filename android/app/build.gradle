@@ -46,9 +46,22 @@ android {
         }
     }
 
+    flavorDimensions = ["edition"]
+    productFlavors {
+        standard {
+            dimension = "edition"
+            resValue "string", "app_name", "Melody"
+        }
+        diag {
+            dimension = "edition"
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            resValue "string", "app_name", "Melody (Debug)"
+        }
+    }
+
     buildTypes {
         release {
-            resValue "string", "app_name", "Melody"
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.release
             } else {
@@ -58,9 +71,6 @@ android {
             shrinkResources = false
         }
         debug {
-            applicationIdSuffix ".debug"
-            versionNameSuffix "-debug"
-            resValue "string", "app_name", "Melody (Debug)"
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.release
             } else {

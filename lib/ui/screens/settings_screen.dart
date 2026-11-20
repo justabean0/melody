@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../config/build_flags.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/database_service.dart';
 import '../../services/innertube_version_manager.dart';
@@ -515,56 +516,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: _showInnerTubeDetailsDialog,
           ),
 
-          const Divider(),
+          if (kIsDiagnosticsEnabled) ...[
+            const Divider(),
 
-          // Section 6: Diagnostics & System Logs
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'Diagnostics & Debugging',
-              style: TextStyle(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
+            // Section 6: Diagnostics & System Logs
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text(
+                'Diagnostics & Debugging',
+                style: TextStyle(
+                  color: colorScheme.primary,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
+                ),
               ),
             ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.bug_report_outlined),
-            title: const Text('Diagnostics & System Logs'),
-            subtitle: const Text('Inspect runtime logs, copy error reports, and monitor streaming'),
-            trailing: ValueListenableBuilder<int>(
-              valueListenable: LogService.logCountNotifier,
-              builder: (context, _, __) {
-                final errCount = LogService.errorCount;
-                if (errCount > 0) {
-                  return Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: Colors.redAccent.withAlpha(40),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.redAccent, width: 1),
-                    ),
-                    child: Text(
-                      '$errCount error${errCount > 1 ? "s" : ""}',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Colors.redAccent,
-                        fontWeight: FontWeight.bold,
+            ListTile(
+              leading: const Icon(Icons.bug_report_outlined),
+              title: const Text('Diagnostics & System Logs'),
+              subtitle: const Text('Inspect runtime logs, copy error reports, and monitor streaming'),
+              trailing: ValueListenableBuilder<int>(
+                valueListenable: LogService.logCountNotifier,
+                builder: (context, _, __) {
+                  final errCount = LogService.errorCount;
+                  if (errCount > 0) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.redAccent.withAlpha(40),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.redAccent, width: 1),
                       ),
-                    ),
-                  );
-                }
-                return const Icon(Icons.chevron_right);
+                      child: Text(
+                        '$errCount error${errCount > 1 ? "s" : ""}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.redAccent,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    );
+                  }
+                  return const Icon(Icons.chevron_right);
+                },
+              ),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const DiagnosticsScreen()),
+                );
               },
             ),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const DiagnosticsScreen()),
-              );
-            },
-          ),
+          ],
 
           const Divider(),
 

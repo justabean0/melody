@@ -6,6 +6,7 @@ import '../models/song.dart';
 import 'anti_bot_service.dart';
 import 'audio_cache_service.dart';
 import 'database_service.dart';
+import 'log_service.dart';
 import 'stream_resolver_service.dart';
 
 enum MelodyLoopMode { off, all, one }
@@ -196,6 +197,10 @@ class MelodyAudioService {
 
     // Save to local history
     DatabaseService.addToHistory(_currentSong!);
+    LogService.recordBreadcrumb(
+      'Playback started: "${_currentSong!.title}" (${_currentSong!.id})',
+      category: 'playback',
+    );
 
     try {
       // 1. Resolve audio stream with instant cache check & hybrid fast path
@@ -243,6 +248,7 @@ class MelodyAudioService {
       _triggerNextTrackPrefetch();
       _updateNotification();
     } catch (e) {
+      LogService.recordBreadcrumb('Playback error for ${_currentSong?.id}: $e', category: 'playback');
       debugPrint('Playback error resolving audio: $e');
       _isPlaying = false;
       _updateNotification();
@@ -330,6 +336,7 @@ class MelodyAudioService {
         await _playCurrent();
       }
       _isPlaying = true;
+      LogService.recordBreadcrumb('Playback resumed at $_position', category: 'playback');
       _updateNotification();
       _stateChangeController.add(null);
     } catch (e) {
@@ -343,6 +350,7 @@ class MelodyAudioService {
       await _player.pause();
     } catch (_) {}
     _isPlaying = false;
+    LogService.recordBreadcrumb('Playback paused at $_position', category: 'playback');
     _updateNotification();
     _stateChangeController.add(null);
   }
@@ -353,6 +361,7 @@ class MelodyAudioService {
     } catch (_) {}
     _isPlaying = false;
     _position = Duration.zero;
+    LogService.recordBreadcrumb('Playback stopped', category: 'playback');
     _updateNotification();
     _stateChangeController.add(null);
   }
@@ -367,6 +376,7 @@ class MelodyAudioService {
 
   Future<void> seek(Duration position) async {
     _position = position;
+    LogService.recordBreadcrumb('Playback seek to $position', category: 'playback');
     _updateNotification();
     _stateChangeController.add(null);
 

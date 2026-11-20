@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../../config/build_flags.dart';
 import '../../services/log_service.dart';
 
 class DiagnosticsScreen extends StatefulWidget {
@@ -175,6 +176,15 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!kIsDiagnosticsEnabled) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Diagnostics')),
+        body: const Center(
+          child: Text('Diagnostics are disabled in standard release builds.'),
+        ),
+      );
+    }
+
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 

@@ -56,42 +56,61 @@ if (-not $Version) {
     }
 } else {
     $Version = $Version.Trim().TrimStart('v')
+    if ($Version -ne $currentVer) {
+        $buildNum++
+        $newVersionString = "version: $Version+$buildNum"
+        $pubspec = $pubspec -replace "version:\s*[0-9\.\+]+", $newVersionString
+        Set-Content -Path $pubspecPath -Value $pubspec -Encoding UTF8
+        Write-Host "Updated pubspec.yaml to $Version+$buildNum" -ForegroundColor Green
+    }
+}
+
+# Sync lib/services/update_service.dart constants to match pubspec.yaml
+$updateServicePath = "$ProjectDir\lib\services\update_service.dart"
+if (Test-Path $updateServicePath) {
+    $updateServiceContent = Get-Content $updateServicePath -Raw
+    $updateServiceContent = $updateServiceContent -replace "static const String appVersion = '[^']+';", "static const String appVersion = '$Version';"
+    $updateServiceContent = $updateServiceContent -replace "static const int appBuildNumber = \d+;", "static const int appBuildNumber = $buildNum;"
+    Set-Content -Path $updateServicePath -Value $updateServiceContent -Encoding UTF8
+    Write-Host "Synced update_service.dart constants to $Version+$buildNum" -ForegroundColor Green
 }
 
 Write-Host "`nTarget Release Version: v${Version} (build $buildNum)" -ForegroundColor Green
 Write-Host "Changelog: $Changelog" -ForegroundColor Gray
 
-# 2. Compile Release & Debug APKs
-Write-Host "`n[1/2] Compiling optimized release APK..." -ForegroundColor Cyan
-flutter build apk --release
+# 2. Compile Standard Release & Diag Release APKs
+Write-Host "`n[1/2] Compiling standard release APK (flavor: standard)..." -ForegroundColor Cyan
+flutter build apk --release --flavor standard
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Failed to build release APK!"
+    Write-Error "Failed to build standard release APK!"
     exit 1
 }
 
+$rawStandardApkPath = "$ProjectDir\build\app\outputs\flutter-apk\app-standard-release.apk"
 $releaseApkPath = "$ProjectDir\build\app\outputs\flutter-apk\app-release.apk"
-if (-not (Test-Path $releaseApkPath)) {
-    Write-Error "Release APK was not found at $releaseApkPath"
+if (-not (Test-Path $rawStandardApkPath)) {
+    Write-Error "Standard release APK was not found at $rawStandardApkPath"
     exit 1
 }
+Copy-Item -Path $rawStandardApkPath -Destination $releaseApkPath -Force
 $releaseApkItem = Get-Item $releaseApkPath
 $releaseSizeMB = [math]::Round($releaseApkItem.Length / 1MB, 2)
 Write-Host "[SUCCESS] Built release APK: $releaseApkPath ($releaseSizeMB MB)" -ForegroundColor Green
 
-Write-Host "`n[2/2] Compiling debug APK..." -ForegroundColor Cyan
-flutter build apk --debug
+Write-Host "`n[2/2] Compiling diag release APK (flavor: diag, ENABLE_DIAGNOSTICS=true)..." -ForegroundColor Cyan
+flutter build apk --release --flavor diag --dart-define=ENABLE_DIAGNOSTICS=true
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Failed to build debug APK!"
+    Write-Error "Failed to build diag release APK!"
     exit 1
 }
 
-$rawDebugApkPath = "$ProjectDir\build\app\outputs\flutter-apk\app-debug.apk"
+$rawDiagApkPath = "$ProjectDir\build\app\outputs\flutter-apk\app-diag-release.apk"
 $debugApkPath = "$ProjectDir\build\app\outputs\flutter-apk\melody-debug.apk"
-if (-not (Test-Path $rawDebugApkPath)) {
-    Write-Error "Debug APK was not found at $rawDebugApkPath"
+if (-not (Test-Path $rawDiagApkPath)) {
+    Write-Error "Diag release APK was not found at $rawDiagApkPath"
     exit 1
 }
-Copy-Item -Path $rawDebugApkPath -Destination $debugApkPath -Force
+Copy-Item -Path $rawDiagApkPath -Destination $debugApkPath -Force
 $debugApkItem = Get-Item $debugApkPath
 $debugSizeMB = [math]::Round($debugApkItem.Length / 1MB, 2)
 Write-Host "[SUCCESS] Built debug APK: $debugApkPath ($debugSizeMB MB)" -ForegroundColor Green
@@ -118,25 +137,28 @@ if (-not $aaptPath) {
 function Verify-ApkMetadata {
     param(
         [string]$ApkFilePath,
+        [string]$ExpectedPackageName,
         [string]$ExpectedVersionName,
         [string]$ExpectedVersionCode
     )
     $badging = & $aaptPath dump badging $ApkFilePath
     $pkgLine = ($badging | Select-String "package: " | Select-Object -First 1).Line
+    $actualPackage = ""
     $actualCode = ""
     $actualName = ""
+    if ($pkgLine -match "name='([^']+)'") { $actualPackage = $matches[1] }
     if ($pkgLine -match "versionCode='([^']+)'") { $actualCode = $matches[1] }
     if ($pkgLine -match "versionName='([^']+)'") { $actualName = $matches[1] }
 
-    if ($actualCode -ne $ExpectedVersionCode -or $actualName -ne $ExpectedVersionName) {
-        Write-Error "Version mismatch in $ApkFilePath! Expected: $ExpectedVersionName+$ExpectedVersionCode, Found: $actualName+$actualCode"
+    if ($actualPackage -ne $ExpectedPackageName -or $actualCode -ne $ExpectedVersionCode -or $actualName -ne $ExpectedVersionName) {
+        Write-Error "Metadata mismatch in $ApkFilePath! Expected: $ExpectedPackageName $ExpectedVersionName+$ExpectedVersionCode, Found: $actualPackage $actualName+$actualCode"
         exit 1
     }
-    Write-Host "  Verified $ApkFilePath -> $actualName+$actualCode" -ForegroundColor Green
+    Write-Host "  Verified $ApkFilePath -> $actualPackage $actualName+$actualCode" -ForegroundColor Green
 }
 
-Verify-ApkMetadata -ApkFilePath $releaseApkPath -ExpectedVersionName "$Version" -ExpectedVersionCode "$buildNum"
-Verify-ApkMetadata -ApkFilePath $debugApkPath -ExpectedVersionName "$Version-debug" -ExpectedVersionCode "$buildNum"
+Verify-ApkMetadata -ApkFilePath $releaseApkPath -ExpectedPackageName "com.melody.music" -ExpectedVersionName "$Version" -ExpectedVersionCode "$buildNum"
+Verify-ApkMetadata -ApkFilePath $debugApkPath -ExpectedPackageName "com.melody.music.debug" -ExpectedVersionName "$Version-debug" -ExpectedVersionCode "$buildNum"
 
 # 4. Generate version.json manifest
 $manifestObj = @{

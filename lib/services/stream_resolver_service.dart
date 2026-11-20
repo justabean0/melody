@@ -6,6 +6,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import 'anti_bot_service.dart';
 import 'audio_cache_service.dart';
 import 'innertube_version_manager.dart';
+import 'log_service.dart';
 
 class CachedStream {
   final String url;
@@ -130,6 +131,7 @@ class StreamResolverService {
 
       if (isOutdated) {
         debugPrint('InnerTube Fast Path: Outdated/rejected client version detected. Tripping anti-bot shield...');
+        LogService.warning('InnerTube Fast Path: Outdated client version rejected for $videoId', tag: 'StreamResolver');
         AntiBotService.tripOnBotDetected('Outdated client version rejected by YouTube');
         return null;
       }
@@ -157,14 +159,19 @@ class StreamResolverService {
           }
         } else {
           debugPrint('InnerTube Fast Path: Bot-check / login required ($playability). Tripping anti-bot shield & safe fallback...');
+          LogService.warning('InnerTube Fast Path: Bot-check / playability ($playability) for $videoId', tag: 'StreamResolver');
           AntiBotService.tripOnBotDetected(playability ?? 'STATUS_NOT_OK');
         }
       } else if (res.statusCode == 429) {
         debugPrint('InnerTube Fast Path: HTTP 429 rate limit. Tripping anti-bot shield...');
+        LogService.warning('InnerTube Fast Path: HTTP 429 rate limit for $videoId', tag: 'StreamResolver');
         AntiBotService.tripOnBotDetected('HTTP 429');
+      } else {
+        LogService.warning('InnerTube Fast Path: HTTP ${res.statusCode} for $videoId', tag: 'StreamResolver');
       }
     } catch (e) {
       debugPrint('InnerTube Fast Path: Skipped ($e). Falling back to safe path...');
+      LogService.warning('InnerTube Fast Path error for $videoId: $e', tag: 'StreamResolver');
     }
     return null;
   }
@@ -182,12 +189,18 @@ class StreamResolverService {
       final url = Uri.parse('$instance/api/v1/videos/$videoId?local=true');
       final response = await httpClient.get(url).timeout(timeout);
 
-      if (response.statusCode != 200) return null;
+      if (response.statusCode != 200) {
+        LogService.warning('Companion proxy HTTP ${response.statusCode} on $instance for $videoId', tag: 'StreamResolver');
+        return null;
+      }
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       final adaptive = data['adaptiveFormats'] as List<dynamic>?;
 
-      if (adaptive == null || adaptive.isEmpty) return null;
+      if (adaptive == null || adaptive.isEmpty) {
+        LogService.warning('Companion proxy empty adaptive formats on $instance for $videoId', tag: 'StreamResolver');
+        return null;
+      }
 
       final mp4Candidates = <Map<String, dynamic>>[];
       final otherCandidates = <Map<String, dynamic>>[];
@@ -235,7 +248,9 @@ class StreamResolverService {
           }
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      LogService.warning('Companion proxy error on $instance for $videoId: $e', tag: 'StreamResolver');
+    }
     return null;
   }
 
@@ -267,12 +282,17 @@ class StreamResolverService {
             client: httpClient,
           );
           if (altAudioUrl != null) {
+            LogService.recordBreadcrumb('Resolved alternative stream for "$songTitle": $altVideoId via $instance', category: 'stream');
             debugPrint('Resolved working alternative stream for "$songTitle": $altVideoId via $instance');
             return altAudioUrl;
           }
         }
+      } else {
+        LogService.warning('Alternative search returned HTTP ${sRes.statusCode} on $instance for $originalVideoId', tag: 'StreamResolver');
       }
-    } catch (_) {}
+    } catch (e) {
+      LogService.warning('Alternative search error on $instance for $originalVideoId: $e', tag: 'StreamResolver');
+    }
     return null;
   }
 
@@ -333,10 +353,15 @@ class StreamResolverService {
     http.Client? client,
   }) async {
     final effectiveClient = client ?? clientOverride ?? _httpClient;
+    LogService.recordBreadcrumb(
+      'Resolving stream for $videoId (optimistic: $optimistic)',
+      category: 'stream',
+    );
 
     // 1. STREAM URL CACHE: Instant 0ms return if cached and unexpired
     final cached = _streamCache[videoId];
     if (cached != null && !cached.isExpired) {
+      LogService.recordBreadcrumb('Stream cache HIT for $videoId', category: 'stream');
       debugPrint('StreamResolverService: Cache HIT for $videoId (0ms startup)');
       return cached.url;
     }
@@ -344,6 +369,7 @@ class StreamResolverService {
     // 2. CONCURRENT FAST SOLVER RACE: InnerTube & Companion Proxy simultaneously
     final racedUrl = await _raceFastSolvers(videoId, optimistic: optimistic, client: effectiveClient);
     if (racedUrl != null) {
+      LogService.recordBreadcrumb('Stream race WON for $videoId', category: 'stream');
       _saveToCache(videoId, racedUrl);
       return racedUrl;
     }
@@ -362,12 +388,14 @@ class StreamResolverService {
         for (final s in candidates.sortByBitrate().reversed) {
           final streamUrl = s.url.toString();
           if (optimistic || await _probeStream(streamUrl, client: effectiveClient)) {
+            LogService.recordBreadcrumb('Resolved direct audio stream for $videoId via YoutubeExplode', category: 'stream');
             debugPrint('Resolved direct audio stream for $videoId via YoutubeExplode fallback');
             _saveToCache(videoId, streamUrl);
             return streamUrl;
           }
         }
       } catch (e) {
+        LogService.warning('YoutubeExplode fallback skipped ($e) for $videoId', tag: 'StreamResolver');
         debugPrint('YoutubeExplode fallback skipped ($e). Trying alternative track match...');
       }
     }
@@ -376,6 +404,7 @@ class StreamResolverService {
     if (songTitle != null && songTitle.trim().isNotEmpty) {
       final cleanTitle = songTitle.replaceAll(RegExp(r'\([^)]*\)'), '').trim();
       final query = Uri.encodeComponent('$cleanTitle ${artist ?? ''}'.trim());
+      LogService.recordBreadcrumb('Direct streams unavailable for $videoId. Searching alternative for "$cleanTitle"...', category: 'stream');
       debugPrint('Direct stream for $videoId geoblocked or unavailable. Searching alternative for "$cleanTitle"...');
 
       final primaryAlt = await _searchAlternativeAudio(
@@ -392,6 +421,8 @@ class StreamResolverService {
       }
     }
 
+    LogService.recordBreadcrumb('Stream resolution completely failed for $videoId', category: 'stream');
+    LogService.error('Failed to resolve playable audio stream for video: $videoId', tag: 'StreamResolver');
     throw Exception('Failed to resolve playable audio stream for video: $videoId');
   }
 

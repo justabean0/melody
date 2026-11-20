@@ -1,9 +1,12 @@
 import 'dart:collection';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import '../config/build_flags.dart';
+import 'anti_bot_service.dart';
 import 'innertube_version_manager.dart';
 
 enum LogLevel { info, warning, error, debug }
@@ -47,11 +50,86 @@ class LogEntry {
   }
 }
 
+class Breadcrumb {
+  final DateTime timestamp;
+  final String category;
+  final String message;
+  final Map<String, dynamic>? data;
+
+  Breadcrumb({
+    required this.timestamp,
+    required this.category,
+    required this.message,
+    this.data,
+  });
+
+  String get formattedTime {
+    final h = timestamp.hour.toString().padLeft(2, '0');
+    final m = timestamp.minute.toString().padLeft(2, '0');
+    final s = timestamp.second.toString().padLeft(2, '0');
+    final ms = timestamp.millisecond.toString().padLeft(3, '0');
+    return '$h:$m:$s.$ms';
+  }
+
+  @override
+  String toString() {
+    final dataStr = (data != null && data!.isNotEmpty) ? ' | data: $data' : '';
+    return '[$formattedTime] [$category] $message$dataStr';
+  }
+}
+
+class DiagnosticNavigatorObserver extends NavigatorObserver {
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPush(route, previousRoute);
+    if (!LogService.isDiagnosticsEnabled) return;
+    final name = route.settings.name ?? route.runtimeType.toString();
+    final prevName = previousRoute?.settings.name ?? previousRoute?.runtimeType.toString();
+    LogService.recordBreadcrumb(
+      'Navigated to $name${prevName != null ? " from $prevName" : ""}',
+      category: 'navigation',
+    );
+  }
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPop(route, previousRoute);
+    if (!LogService.isDiagnosticsEnabled) return;
+    final name = route.settings.name ?? route.runtimeType.toString();
+    final prevName = previousRoute?.settings.name ?? previousRoute?.runtimeType.toString();
+    LogService.recordBreadcrumb(
+      'Popped $name${prevName != null ? ", returned to $prevName" : ""}',
+      category: 'navigation',
+    );
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
+    if (!LogService.isDiagnosticsEnabled) return;
+    final newName = newRoute?.settings.name ?? newRoute?.runtimeType.toString();
+    final oldName = oldRoute?.settings.name ?? oldRoute?.runtimeType.toString();
+    LogService.recordBreadcrumb(
+      'Replaced $oldName with $newName',
+      category: 'navigation',
+    );
+  }
+}
+
 class LogService {
   static const int maxLogs = 600;
+  static const int maxBreadcrumbs = 100;
+
   static final DoubleLinkedQueue<LogEntry> _logs = DoubleLinkedQueue<LogEntry>();
+  static final DoubleLinkedQueue<Breadcrumb> _breadcrumbs = DoubleLinkedQueue<Breadcrumb>();
   static final ValueNotifier<int> logCountNotifier = ValueNotifier<int>(0);
   static bool _initialized = false;
+
+  @visibleForTesting
+  static bool? debugOverrideDiagnosticsEnabled;
+
+  static bool get isDiagnosticsEnabled =>
+      debugOverrideDiagnosticsEnabled ?? kIsDiagnosticsEnabled;
 
   static void init() {
     if (_initialized) return;
@@ -60,7 +138,7 @@ class LogService {
     // Intercept debugPrint so standard Flutter logs flow into our diagnostic buffer
     final originalDebugPrint = debugPrint;
     debugPrint = (String? message, {int? wrapWidth}) {
-      if (message != null && message.trim().isNotEmpty) {
+      if (isDiagnosticsEnabled && message != null && message.trim().isNotEmpty) {
         log(message, tag: _detectTag(message));
       }
       originalDebugPrint(message, wrapWidth: wrapWidth);
@@ -74,26 +152,40 @@ class LogService {
       } else {
         FlutterError.presentError(details);
       }
-      error(
-        details.summary.toString(),
-        tag: 'FlutterError',
-        error: details.exceptionAsString(),
-        stackTrace: details.stack?.toString(),
-      );
+      if (isDiagnosticsEnabled) {
+        recordBreadcrumb(
+          'Flutter error: ${details.summary}',
+          category: 'error',
+        );
+        error(
+          details.summary.toString(),
+          tag: 'FlutterError',
+          error: details.exceptionAsString(),
+          stackTrace: details.stack?.toString(),
+        );
+      }
     };
 
     // Capture uncaught platform / async errors
     PlatformDispatcher.instance.onError = (Object err, StackTrace stack) {
-      error(
-        'Uncaught async error: $err',
-        tag: 'PlatformError',
-        error: err.toString(),
-        stackTrace: stack.toString(),
-      );
+      if (isDiagnosticsEnabled) {
+        recordBreadcrumb(
+          'Platform async error: $err',
+          category: 'error',
+        );
+        error(
+          'Uncaught async error: $err',
+          tag: 'PlatformError',
+          error: err.toString(),
+          stackTrace: stack.toString(),
+        );
+      }
       return false;
     };
 
-    info('LogService initialized. Real-time diagnostic logging active.', tag: 'LogService');
+    if (isDiagnosticsEnabled) {
+      info('LogService initialized. Real-time diagnostic logging active.', tag: 'LogService');
+    }
   }
 
   static String _detectTag(String msg) {
@@ -108,6 +200,7 @@ class LogService {
   }
 
   static void log(String message, {String tag = 'App', LogLevel level = LogLevel.info}) {
+    if (!isDiagnosticsEnabled) return;
     LogLevel detectedLevel = level;
     final lower = message.toLowerCase();
     if (message.contains('🛑') || lower.contains('error') || lower.contains('failed') || lower.contains('exception')) {
@@ -140,7 +233,25 @@ class LogService {
         stackTrace: stackTrace,
       ));
 
+  static void recordBreadcrumb(
+    String message, {
+    String category = 'action',
+    Map<String, dynamic>? data,
+  }) {
+    if (!isDiagnosticsEnabled) return;
+    if (_breadcrumbs.length >= maxBreadcrumbs) {
+      _breadcrumbs.removeFirst();
+    }
+    _breadcrumbs.addLast(Breadcrumb(
+      timestamp: DateTime.now(),
+      category: category,
+      message: message,
+      data: data,
+    ));
+  }
+
   static void _addEntry(LogEntry entry) {
+    if (!isDiagnosticsEnabled) return;
     if (_logs.length >= maxLogs) {
       _logs.removeFirst();
     }
@@ -149,20 +260,31 @@ class LogService {
   }
 
   static List<LogEntry> get logs => _logs.toList();
+  static List<Breadcrumb> get breadcrumbs => _breadcrumbs.toList();
 
   static int get errorCount => _logs.where((l) => l.level == LogLevel.error).length;
   static int get warningCount => _logs.where((l) => l.level == LogLevel.warning).length;
 
   static void clear() {
     _logs.clear();
+    _breadcrumbs.clear();
     logCountNotifier.value = 0;
   }
 
   static String getSystemSummary() {
     final activeProfile = InnerTubeVersionManager.currentProfile;
-    return 'Platform: Android/Flutter (${kDebugMode ? "DEBUG" : "RELEASE"} Mode)\n'
+    final modeStr = kEnableDiagnostics
+        ? "RELEASE (Diagnostics Enabled)"
+        : (kDebugMode ? "DEBUG" : "RELEASE (Standard)");
+    final antiBotStatus = AntiBotService.isSafeModeActive
+        ? "ACTIVE (${AntiBotService.activeReason ?? 'Cooldown'})"
+        : "Inactive";
+
+    return 'Platform: Android/Flutter ($modeStr)\n'
         'InnerTube Profile: ${activeProfile.clientName} v${activeProfile.clientVersion}\n'
         'InnerTube Status: ${InnerTubeVersionManager.isOutdatedWarningActive ? "Outdated Warning" : "Healthy"}\n'
+        'Anti-Bot Shield: $antiBotStatus\n'
+        'Breadcrumbs: ${_breadcrumbs.length} recorded\n'
         'Total Log Count: ${_logs.length} (Errors: $errorCount, Warnings: $warningCount)';
   }
 
@@ -175,6 +297,14 @@ class LogService {
     sb.writeln(getSystemSummary());
     if (userNotes != null && userNotes.trim().isNotEmpty) {
       sb.writeln('\nUser Notes: $userNotes');
+    }
+    sb.writeln('\n------------- BREADCRUMBS --------------');
+    if (_breadcrumbs.isEmpty) {
+      sb.writeln('No breadcrumbs recorded.');
+    } else {
+      for (final bc in _breadcrumbs) {
+        sb.writeln(bc.toString());
+      }
     }
     sb.writeln('\n---------------- LOGS ------------------');
     if (_logs.isEmpty) {
@@ -193,6 +323,7 @@ class LogService {
   /// Opens the native Android share sheet with a generated .txt crash log
   /// allowing sharing via Google Drive, Email, WhatsApp, QuickShare, etc.
   static Future<bool> shareLogFile({String? userNotes}) async {
+    if (!isDiagnosticsEnabled) return false;
     try {
       final content = exportAllLogs(userNotes: userNotes);
       final tempDir = await getTemporaryDirectory();
@@ -218,6 +349,7 @@ class LogService {
 
   /// Saves the crash log directly to the device's public Downloads directory
   static Future<String?> saveLogToDownloads({String? userNotes}) async {
+    if (!isDiagnosticsEnabled) return null;
     try {
       final content = exportAllLogs(userNotes: userNotes);
       final now = DateTime.now();
@@ -246,6 +378,7 @@ class LogService {
   /// Uploads the diagnostic log to an instant web paste link (e.g. paste.rs / dpaste.org)
   /// so the user can download or share the raw text file from any browser on PC or phone.
   static Future<String?> uploadLogToCloud({String? userNotes}) async {
+    if (!isDiagnosticsEnabled) return null;
     final content = exportAllLogs(userNotes: userNotes);
 
     // 1. Try paste.rs (instant raw text file)
