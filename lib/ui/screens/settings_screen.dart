@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../config/build_flags.dart';
 import '../../providers/theme_provider.dart';
+import '../../services/battery_service.dart';
 import '../../services/database_service.dart';
 import '../../services/innertube_version_manager.dart';
 import '../../services/log_service.dart';
@@ -17,7 +18,7 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObserver {
   late bool _normalize;
   late bool _skipSilence;
   late String _quality;
@@ -25,18 +26,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late String _updateSource;
   bool _isCheckingUpdate = false;
   String _currentVersion = '1.0.0';
+  bool _isBatteryUnrestricted = true;
+  bool _backgroundPlayback = true;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _normalize = DatabaseService.getNormalizeVolume();
     _skipSilence = DatabaseService.getSkipSilence();
     _quality = DatabaseService.getAudioQuality();
     _autoCheckUpdates = DatabaseService.getAutoCheckUpdates();
     _updateSource = DatabaseService.getUpdateSource();
+    DatabaseService.getBackgroundPlaybackEnabled().then((val) {
+      if (mounted) setState(() => _backgroundPlayback = val);
+    });
     UpdateService.getCurrentVersion().then((v) {
       if (mounted) setState(() => _currentVersion = v);
     });
+    _checkBatteryStatus();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkBatteryStatus();
+    }
+  }
+
+  Future<void> _checkBatteryStatus() async {
+    final status = await BatteryService.isIgnoringBatteryOptimizations();
+    if (mounted) {
+      setState(() => _isBatteryUnrestricted = status);
+    }
   }
 
   Future<void> _checkForUpdatesManually() async {
@@ -364,6 +392,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (val) {
               setState(() => _skipSilence = val);
               DatabaseService.setSkipSilence(val);
+            },
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.play_circle_outline_rounded),
+            title: const Text('Background Playback'),
+            subtitle: const Text('Keep audio playing when app is minimized or screen is off'),
+            value: _backgroundPlayback,
+            onChanged: (val) async {
+              setState(() => _backgroundPlayback = val);
+              await DatabaseService.setBackgroundPlaybackEnabled(val);
+            },
+          ),
+          SwitchListTile(
+            secondary: Icon(
+              _isBatteryUnrestricted
+                  ? Icons.battery_charging_full_rounded
+                  : Icons.battery_alert_rounded,
+              color: _isBatteryUnrestricted ? Colors.green : Colors.amber,
+            ),
+            title: const Text('Unrestricted Battery'),
+            subtitle: Text(
+              _isBatteryUnrestricted
+                  ? 'Unrestricted — background audio will not be killed by OS'
+                  : 'Optimized — tap to exempt Melody from battery throttling',
+              style: TextStyle(
+                color: _isBatteryUnrestricted ? Colors.green : Colors.amber.shade800,
+              ),
+            ),
+            value: _isBatteryUnrestricted,
+            onChanged: (val) async {
+              if (val) {
+                await BatteryService.requestIgnoreBatteryOptimizations();
+              } else {
+                await BatteryService.openBatteryOptimizationSettings();
+              }
+              await _checkBatteryStatus();
             },
           ),
 

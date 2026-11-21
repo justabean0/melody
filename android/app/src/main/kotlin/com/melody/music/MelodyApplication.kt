@@ -49,6 +49,7 @@ class MelodyApplication : Application() {
                 action == MediaNotificationService.ACTION_NEXT -> "next"
                 action == MediaNotificationService.ACTION_PREV -> "prev"
                 action == MediaNotificationService.ACTION_STOP -> "stop"
+                action == "idleTeardown" -> "idleTeardown"
                 action.startsWith("seek:") -> action
                 else -> return
             }
@@ -94,11 +95,13 @@ class MelodyApplication : Application() {
                 resumedCount++
                 isActivityInForeground = resumedCount > 0
                 currentActivity = activity
+                MediaNotificationService.activeInstance?.checkIdleTeardown()
             }
 
             override fun onActivityPaused(activity: Activity) {
                 resumedCount--
                 isActivityInForeground = resumedCount > 0
+                MediaNotificationService.activeInstance?.checkIdleTeardown()
             }
 
             override fun onActivityStopped(activity: Activity) {
@@ -312,5 +315,8 @@ class MelodyApplication : Application() {
                 else -> result.notImplemented()
             }
         }
+
+        // 8. Setup Battery Optimization Channel
+        MainActivity.registerBatteryChannel(engine.dartExecutor.binaryMessenger, this)
     }
 }

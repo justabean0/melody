@@ -11,7 +11,9 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
@@ -26,6 +28,14 @@ class MediaNotificationService : Service() {
     companion object {
         const val CHANNEL_ID = "melody_playback_channel"
         const val NOTIFICATION_ID = 1001
+
+        const val PREFS_NAME = "melody_native_prefs"
+        const val KEY_BACKGROUND_PLAYBACK_ENABLED = "background_playback_enabled"
+        const val IDLE_TEARDOWN_DELAY_MS = 900_000L // 15 minutes
+        var idleTeardownDelayMs: Long = IDLE_TEARDOWN_DELAY_MS
+
+        var activeInstance: MediaNotificationService? = null
+            private set
 
         const val ACTION_PLAY = "com.melody.music.ACTION_PLAY"
         const val ACTION_PAUSE = "com.melody.music.ACTION_PAUSE"
@@ -51,12 +61,68 @@ class MediaNotificationService : Service() {
     private var currentThumbnailUrl: String? = null
     private var currentArtwork: Bitmap? = null
 
+    private val idleHandler = Handler(Looper.getMainLooper())
+    private val idleTeardownRunnable = Runnable {
+        android.util.Log.d("MelodyMedia", "15-minute idle teardown triggered (app in background and playback stopped/paused)")
+        MelodyApplication.sendPlaybackAction("idleTeardown")
+        stopPlaybackService()
+        if (!MelodyApplication.isActivityAlive) {
+            MelodyApplication.destroyEngineAndExit()
+        }
+    }
+    private var isIdleArmed = false
+
+    fun isBackgroundPlaybackEnabled(): Boolean {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_BACKGROUND_PLAYBACK_ENABLED, true)
+    }
+
+    fun checkIdleTeardown() {
+        val inBackground = !MelodyApplication.isActivityInForeground
+        val isPausedOrStopped = !currentIsPlaying
+        if (inBackground && isPausedOrStopped) {
+            armIdleTeardown()
+        } else {
+            cancelIdleTeardown()
+        }
+    }
+
+    fun armIdleTeardown() {
+        if (!isIdleArmed) {
+            android.util.Log.d("MelodyMedia", "Arming idle teardown timer ($idleTeardownDelayMs ms)")
+            idleHandler.removeCallbacks(idleTeardownRunnable)
+            idleHandler.postDelayed(idleTeardownRunnable, idleTeardownDelayMs)
+            isIdleArmed = true
+        }
+    }
+
+    fun cancelIdleTeardown() {
+        if (isIdleArmed) {
+            android.util.Log.d("MelodyMedia", "Canceling idle teardown timer")
+            idleHandler.removeCallbacks(idleTeardownRunnable)
+            isIdleArmed = false
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        activeInstance = this
         createNotificationChannel()
         initMediaSession()
+        checkIdleTeardown()
+    }
+
+    override fun onDestroy() {
+        cancelIdleTeardown()
+        if (activeInstance == this) {
+            activeInstance = null
+        }
+        mediaSession?.isActive = false
+        mediaSession?.release()
+        mediaSession = null
+        super.onDestroy()
     }
 
     private fun initMediaSession() {
@@ -66,6 +132,7 @@ class MediaNotificationService : Service() {
                 override fun onPlay() {
                     android.util.Log.d("MelodyMedia", "MediaSessionCompat.Callback.onPlay triggered")
                     currentIsPlaying = true
+                    checkIdleTeardown()
                     updatePlaybackState(true, currentPositionMs)
                     val notif = buildNotification(currentTitle, currentArtist, true, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -76,6 +143,7 @@ class MediaNotificationService : Service() {
                 override fun onPause() {
                     android.util.Log.d("MelodyMedia", "MediaSessionCompat.Callback.onPause triggered")
                     currentIsPlaying = false
+                    checkIdleTeardown()
                     updatePlaybackState(false, currentPositionMs)
                     val notif = buildNotification(currentTitle, currentArtist, false, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -111,14 +179,22 @@ class MediaNotificationService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // When the user swipes away MainActivity from Recent Apps tray:
-        // Keep foreground service and audio playback actively alive in background!
-        // Audio will only stop when the user dismisses the notification bar or stops playback.
-        android.util.Log.d("MelodyMedia", "onTaskRemoved: app swiped from recents. Service and engine remain alive. currentIsPlaying=$currentIsPlaying")
+        val bgEnabled = isBackgroundPlaybackEnabled()
+        android.util.Log.d("MelodyMedia", "onTaskRemoved: bgEnabled=$bgEnabled, currentIsPlaying=$currentIsPlaying")
+        if (!bgEnabled || !currentIsPlaying) {
+            MelodyApplication.sendPlaybackAction(ACTION_STOP)
+            stopPlaybackService()
+            if (!MelodyApplication.isActivityAlive) {
+                MelodyApplication.destroyEngineAndExit()
+            }
+        } else {
+            checkIdleTeardown()
+        }
         super.onTaskRemoved(rootIntent)
     }
 
     private fun stopPlaybackService() {
+        cancelIdleTeardown()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -159,6 +235,7 @@ class MediaNotificationService : Service() {
                 }
                 ACTION_PLAY -> {
                     currentIsPlaying = true
+                    checkIdleTeardown()
                     updatePlaybackState(true, currentPositionMs)
                     val notif = buildNotification(currentTitle, currentArtist, true, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -168,6 +245,7 @@ class MediaNotificationService : Service() {
                 }
                 ACTION_PAUSE -> {
                     currentIsPlaying = false
+                    checkIdleTeardown()
                     updatePlaybackState(false, currentPositionMs)
                     val notif = buildNotification(currentTitle, currentArtist, false, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -224,6 +302,8 @@ class MediaNotificationService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+
+        checkIdleTeardown()
 
         return START_STICKY
     }
@@ -359,12 +439,5 @@ class MediaNotificationService : Service() {
         }
 
         return builder.build()
-    }
-
-    override fun onDestroy() {
-        mediaSession?.isActive = false
-        mediaSession?.release()
-        mediaSession = null
-        super.onDestroy()
     }
 }

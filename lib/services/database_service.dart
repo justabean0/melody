@@ -1,6 +1,28 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
 import '../models/song.dart';
+import 'battery_service.dart';
+
+class PlaybackSession {
+  final Song song;
+  final Duration position;
+  final Duration duration;
+  final List<Song> queue;
+  final int queueIndex;
+  final DateTime updatedAt;
+
+  const PlaybackSession({
+    required this.song,
+    required this.position,
+    required this.duration,
+    required this.queue,
+    required this.queueIndex,
+    required this.updatedAt,
+  });
+}
 
 class DatabaseService {
   static const String _favoritesKey = 'melody_favorites';
@@ -19,11 +41,216 @@ class DatabaseService {
   static const String _hasSelectedLanguagesKey = 'melody_has_selected_languages';
   static const String _languagePromptCompletedKey = 'melody_language_onboarding_v2_completed';
   static const String _searchHistoryKey = 'melody_search_history';
+  static const String _batteryOptPromptShownKey = 'melody_battery_opt_prompt_shown';
+  static const String _backgroundPlaybackKey = 'melody_background_playback_enabled';
 
   static SharedPreferences? _prefs;
+  static Database? _db;
 
-  static Future<void> init() async {
+  @visibleForTesting
+  static void setDatabaseForTesting(Database? db) {
+    _db = db;
+  }
+
+  static Future<void> init({String? dbName}) async {
     _prefs ??= await SharedPreferences.getInstance();
+
+    if (_db == null) {
+      try {
+        final databasesPath = await getDatabasesPath();
+        final path = p.join(databasesPath, dbName ?? 'melody.db');
+
+        _db = await openDatabase(
+          path,
+          version: 1,
+          onCreate: (db, version) async {
+            await _createTables(db);
+          },
+          onOpen: (db) async {
+            await _createTables(db);
+          },
+        );
+      } catch (e) {
+        debugPrint('DatabaseService init database error: $e');
+      }
+    } else {
+      try {
+        await _createTables(_db!);
+      } catch (e) {
+        debugPrint('DatabaseService _createTables error: $e');
+      }
+    }
+
+    try {
+      final bgEnabled = await getBackgroundPlaybackEnabled();
+      await BatteryService.syncBackgroundPlayback(bgEnabled);
+    } catch (_) {}
+  }
+
+  static Future<void> _createTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS last_playback_session (
+        id INTEGER PRIMARY KEY,
+        song_id TEXT,
+        title TEXT,
+        artist TEXT,
+        album TEXT,
+        thumbnail_url TEXT,
+        duration_ms INTEGER,
+        position_ms INTEGER,
+        queue_json TEXT,
+        queue_index INTEGER,
+        updated_at INTEGER
+      )
+    ''');
+  }
+
+  // --- Background Playback Setting ---
+  static Future<bool> getBackgroundPlaybackEnabled() async {
+    if (_db != null) {
+      try {
+        final rows = await _db!.query(
+          'app_settings',
+          columns: ['value'],
+          where: 'key = ?',
+          whereArgs: ['background_playback_enabled'],
+          limit: 1,
+        );
+        if (rows.isNotEmpty) {
+          final val = rows.first['value'];
+          return val == '1' || val == 'true';
+        }
+      } catch (e) {
+        debugPrint('Error reading background playback setting from SQLite: $e');
+      }
+    }
+    return _prefs?.getBool(_backgroundPlaybackKey) ?? true;
+  }
+
+  static Future<void> setBackgroundPlaybackEnabled(bool enabled) async {
+    await _prefs?.setBool(_backgroundPlaybackKey, enabled);
+    if (_db != null) {
+      try {
+        await _db!.insert(
+          'app_settings',
+          {'key': 'background_playback_enabled', 'value': enabled ? '1' : '0'},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      } catch (e) {
+        debugPrint('Error saving background playback setting to SQLite: $e');
+      }
+    }
+    await BatteryService.syncBackgroundPlayback(enabled);
+  }
+
+  // --- Last Playback Session ---
+  static Future<void> savePlaybackSession({
+    required Song song,
+    required Duration position,
+    required Duration duration,
+    required List<Song> queue,
+    required int queueIndex,
+  }) async {
+    if (_db == null) return;
+    try {
+      final queueJson = jsonEncode(queue.take(100).map((s) => s.toJson()).toList());
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+      await _db!.insert(
+        'last_playback_session',
+        {
+          'id': 1,
+          'song_id': song.id,
+          'title': song.title,
+          'artist': song.artist,
+          'album': song.album,
+          'thumbnail_url': song.thumbnailUrl,
+          'duration_ms': duration.inMilliseconds,
+          'position_ms': position.inMilliseconds,
+          'queue_json': queueJson,
+          'queue_index': queueIndex,
+          'updated_at': nowMs,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } catch (e) {
+      debugPrint('Error saving last playback session: $e');
+    }
+  }
+
+  static Future<PlaybackSession?> getLastPlaybackSession() async {
+    if (_db == null) return null;
+    try {
+      final rows = await _db!.query(
+        'last_playback_session',
+        where: 'id = ?',
+        whereArgs: [1],
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+
+      final row = rows.first;
+      final songId = row['song_id'] as String?;
+      final title = row['title'] as String?;
+      if (songId == null || title == null) return null;
+
+      final artist = row['artist'] as String? ?? 'Unknown Artist';
+      final album = row['album'] as String? ?? '';
+      final thumbnailUrl = row['thumbnail_url'] as String? ?? '';
+      final durationMs = row['duration_ms'] as int? ?? 0;
+      final positionMs = row['position_ms'] as int? ?? 0;
+      final queueJson = row['queue_json'] as String? ?? '[]';
+      final queueIndex = row['queue_index'] as int? ?? 0;
+      final updatedAtMs = row['updated_at'] as int? ?? 0;
+
+      final song = Song(
+        id: songId,
+        title: title,
+        artist: artist,
+        album: album,
+        thumbnailUrl: thumbnailUrl,
+        duration: durationMs ~/ 1000,
+      );
+
+      List<Song> queue = [];
+      try {
+        final decoded = jsonDecode(queueJson) as List<dynamic>;
+        queue = decoded.map((item) => Song.fromJson(item as Map<String, dynamic>)).toList();
+      } catch (_) {
+        queue = [song];
+      }
+
+      return PlaybackSession(
+        song: song,
+        position: Duration(milliseconds: positionMs),
+        duration: Duration(milliseconds: durationMs),
+        queue: queue,
+        queueIndex: queueIndex,
+        updatedAt: DateTime.fromMillisecondsSinceEpoch(updatedAtMs),
+      );
+    } catch (e) {
+      debugPrint('Error getting last playback session: $e');
+      return null;
+    }
+  }
+
+  static Future<void> clearPlaybackSession() async {
+    if (_db == null) return;
+    try {
+      await _db!.delete(
+        'last_playback_session',
+        where: 'id = ?',
+        whereArgs: [1],
+      );
+    } catch (e) {
+      debugPrint('Error clearing playback session: $e');
+    }
   }
 
   // --- Liked Songs ---
@@ -179,11 +406,26 @@ class DatabaseService {
   static Future<void> setLastUpdateCheck(int timestamp) async =>
       await _prefs?.setInt(_lastUpdateCheckKey, timestamp);
 
+  // --- Battery Optimization Prompt ---
+  static bool hasShownBatteryOptPrompt() =>
+      _prefs?.getBool(_batteryOptPromptShownKey) ?? false;
+  static Future<void> markBatteryOptPromptShown() async =>
+      await _prefs?.setBool(_batteryOptPromptShownKey, true);
+
   // --- Music Languages Preferences ---
   static List<String> getMusicLanguages() {
     final list = _prefs?.getStringList(_musicLanguagesKey);
     if (list != null && list.isNotEmpty) return list;
     return ['English'];
+  }
+
+  static List<String> getSavedMusicLanguages() {
+    return _prefs?.getStringList(_musicLanguagesKey) ?? [];
+  }
+
+  static bool hasSelectedMusicLanguages() {
+    final list = _prefs?.getStringList(_musicLanguagesKey);
+    return list != null && list.isNotEmpty;
   }
 
   static Future<void> setMusicLanguages(List<String> languages) async {

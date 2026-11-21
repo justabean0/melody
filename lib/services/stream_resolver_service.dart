@@ -27,6 +27,9 @@ class StreamResolverService {
   /// In-memory LRU Stream URL Cache with TTL (typically 4-6 hours)
   static final Map<String, CachedStream> _streamCache = {};
 
+  /// In-flight stream resolutions to prevent simultaneous duplicate fetches
+  static final Map<String, Future<String>> _inFlightResolutions = {};
+
   /// Primary solver: High-speed US instance with SABR companion proxy support
   static const String _primaryInstance = 'https://yt.chocolatemoo53.com';
 
@@ -46,6 +49,7 @@ class StreamResolverService {
   /// Invalidates a cached stream if playback encounters a 403 or error
   static void invalidateCache(String videoId) {
     _streamCache.remove(videoId);
+    AudioCacheService.evict(videoId);
     debugPrint('StreamResolverService: Invalidated cache for $videoId');
   }
 
@@ -342,10 +346,50 @@ class StreamResolverService {
 
   /// Master stream resolver featuring:
   /// 1. Instant Cache hit (0ms)
-  /// 2. Concurrent Fast Solver Race (InnerTube + Companion Proxy, 250-600ms)
-  /// 3. YoutubeExplode Local Client Fallback
-  /// 4. Smart Alternative Track Matching
+  /// 2. In-flight resolution deduplication
+  /// 3. Concurrent Fast Solver Race (InnerTube + Companion Proxy, 250-600ms)
+  /// 4. YoutubeExplode Local Client Fallback
+  /// 5. Smart Alternative Track Matching
   static Future<String> resolveAudioStreamUrl(
+    String videoId, {
+    String? songTitle,
+    String? artist,
+    bool optimistic = true,
+    http.Client? client,
+  }) async {
+    // 1. STREAM URL CACHE: Instant 0ms return if cached and unexpired
+    final cached = _streamCache[videoId];
+    if (cached != null && !cached.isExpired) {
+      LogService.recordBreadcrumb('Stream cache HIT for $videoId', category: 'stream');
+      debugPrint('StreamResolverService: Cache HIT for $videoId (0ms startup)');
+      return cached.url;
+    }
+
+    // Deduplicate simultaneous requests for same videoId
+    final inFlight = _inFlightResolutions[videoId];
+    if (inFlight != null) {
+      LogService.recordBreadcrumb('Awaiting in-flight resolution for $videoId', category: 'stream');
+      return await inFlight;
+    }
+
+    final future = _doResolveAudioStreamUrl(
+      videoId,
+      songTitle: songTitle,
+      artist: artist,
+      optimistic: optimistic,
+      client: client,
+    );
+    _inFlightResolutions[videoId] = future;
+
+    try {
+      final res = await future;
+      return res;
+    } finally {
+      _inFlightResolutions.remove(videoId);
+    }
+  }
+
+  static Future<String> _doResolveAudioStreamUrl(
     String videoId, {
     String? songTitle,
     String? artist,
@@ -357,14 +401,6 @@ class StreamResolverService {
       'Resolving stream for $videoId (optimistic: $optimistic)',
       category: 'stream',
     );
-
-    // 1. STREAM URL CACHE: Instant 0ms return if cached and unexpired
-    final cached = _streamCache[videoId];
-    if (cached != null && !cached.isExpired) {
-      LogService.recordBreadcrumb('Stream cache HIT for $videoId', category: 'stream');
-      debugPrint('StreamResolverService: Cache HIT for $videoId (0ms startup)');
-      return cached.url;
-    }
 
     // 2. CONCURRENT FAST SOLVER RACE: InnerTube & Companion Proxy simultaneously
     final racedUrl = await _raceFastSolvers(videoId, optimistic: optimistic, client: effectiveClient);

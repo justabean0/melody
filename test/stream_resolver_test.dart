@@ -141,5 +141,40 @@ void main() {
         throwsA(isA<Exception>()),
       );
     });
+
+    test('Simultaneous concurrent requests for same videoId are deduplicated', () async {
+      int requestCount = 0;
+      final mockClient = MockClient((request) async {
+        requestCount++;
+        await Future.delayed(const Duration(milliseconds: 50));
+        return http.Response(
+          jsonEncode({
+            'playabilityStatus': {'status': 'OK'},
+            'streamingData': {
+              'adaptiveFormats': [
+                {
+                  'mimeType': 'audio/mp4; codecs="mp4a.40.2"',
+                  'bitrate': 131072,
+                  'url': 'https://rr1.googlevideo.com/videoplayback?id=dedup_track',
+                }
+              ]
+            }
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final results = await Future.wait([
+        StreamResolverService.resolveAudioStreamUrl('concurrent_track', client: mockClient),
+        StreamResolverService.resolveAudioStreamUrl('concurrent_track', client: mockClient),
+        StreamResolverService.resolveAudioStreamUrl('concurrent_track', client: mockClient),
+      ]);
+
+      expect(results[0], 'https://rr1.googlevideo.com/videoplayback?id=dedup_track');
+      expect(results[1], results[0]);
+      expect(results[2], results[0]);
+      expect(requestCount, lessThanOrEqualTo(2));
+    });
   });
 }

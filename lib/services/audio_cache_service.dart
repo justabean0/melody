@@ -20,6 +20,12 @@ class AudioCacheService {
   /// Default head chunk size: 128 KB (~6-8 seconds of 128kbps AAC / Opus)
   static const int headChunkSize = 131072;
 
+  /// Bounded upstream chunk size: 256 KB per request to avoid idle TCP drops while paused
+  static const int upstreamChunkSize = 262144;
+
+  static const String _defaultUserAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
   /// Max head files to keep on disk (~12.8 MB total for 100 songs)
   static const int maxCachedHeads = 100;
 
@@ -62,6 +68,13 @@ class AudioCacheService {
   static Future<void> _handleProxyRequest(HttpRequest request) async {
     final response = request.response;
     try {
+      // Security: Strictly enforce loopback connections only
+      if (request.connectionInfo?.remoteAddress.isLoopback != true) {
+        response.statusCode = HttpStatus.forbidden;
+        await response.close();
+        return;
+      }
+
       final id = request.uri.queryParameters['id'] ?? '';
       final rawRemoteUrl = request.uri.queryParameters['url'] ?? '';
 
@@ -71,98 +84,339 @@ class AudioCacheService {
         return;
       }
 
-      final remoteUri = Uri.parse(Uri.decodeComponent(rawRemoteUrl));
+      Uri remoteUri = Uri.parse(Uri.decodeComponent(rawRemoteUrl));
       final incomingRange = request.headers.value(HttpHeaders.rangeHeader);
+
+      int reqStart = 0;
+      int? reqEnd;
+      if (incomingRange != null) {
+        final trimmed = incomingRange.trim();
+        if (!trimmed.startsWith('bytes=')) {
+          response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+          response.headers.set(HttpHeaders.contentRangeHeader, 'bytes */*');
+          await response.close();
+          return;
+        }
+        final spec = trimmed.substring(6).trim();
+        final parts = spec.split('-');
+        if (parts.length != 2) {
+          response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+          response.headers.set(HttpHeaders.contentRangeHeader, 'bytes */*');
+          await response.close();
+          return;
+        }
+        final parsedStart = int.tryParse(parts[0]);
+        if (parsedStart == null || parsedStart < 0) {
+          response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+          response.headers.set(HttpHeaders.contentRangeHeader, 'bytes */*');
+          await response.close();
+          return;
+        }
+        reqStart = parsedStart;
+        if (parts[1].isNotEmpty) {
+          final parsedEnd = int.tryParse(parts[1]);
+          if (parsedEnd == null || parsedEnd < reqStart) {
+            response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+            response.headers.set(HttpHeaders.contentRangeHeader, 'bytes */*');
+            await response.close();
+            return;
+          }
+          reqEnd = parsedEnd;
+        }
+      }
 
       final headFile = File('${_headsDir?.path}/$id.head');
       final metaFile = File('${_headsDir?.path}/$id.meta');
-
       final hasHead = await headFile.exists() && await metaFile.exists();
 
-      // Case 1: We have the first 5-8s head cached and request asks for start of audio
-      if (hasHead && (incomingRange == null || incomingRange.startsWith('bytes=0-'))) {
-        final headBytes = await headFile.readAsBytes();
+      int totalLength = 0;
+      Uint8List? headBytes;
+
+      if (hasHead) {
+        headBytes = await headFile.readAsBytes();
         final metaContent = (await metaFile.readAsString()).trim();
-        final totalLength = int.tryParse(metaContent) ?? (headBytes.length * 20);
+        totalLength = int.tryParse(metaContent) ?? (headBytes.length * 20);
+      } else {
+        totalLength = int.tryParse(remoteUri.queryParameters['clen'] ?? '') ?? 0;
+      }
 
-        response.statusCode = HttpStatus.partialContent;
-        response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
-        response.headers.set(HttpHeaders.contentRangeHeader, 'bytes 0-${totalLength - 1}/$totalLength');
-        response.headers.set(HttpHeaders.contentLengthHeader, totalLength.toString());
-        response.headers.contentType = ContentType('audio', 'mp4');
-
-        // Instantly write the 5-second head from local flash storage (<2ms)
-        response.add(headBytes);
-        await response.flush();
-
-        // Stream the remaining audio chunks from the remote server
-        if (headBytes.length < totalLength) {
-          final remoteReq = http.Request('GET', remoteUri)
-            ..headers[HttpHeaders.rangeHeader] = 'bytes=${headBytes.length}-'
-            ..headers['User-Agent'] =
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-          final streamedRemote = await _httpClient.send(remoteReq);
-          await for (final chunk in streamedRemote.stream) {
-            response.add(chunk);
-          }
-        }
-
+      if (totalLength > 0 && reqStart >= totalLength) {
+        response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+        response.headers.set(HttpHeaders.contentRangeHeader, 'bytes */$totalLength');
         await response.close();
         return;
       }
 
-      // Case 2: Passthrough proxy for seeking or when no head is cached yet
-      final forwardReq = http.Request('GET', remoteUri);
-      if (incomingRange != null) {
-        forwardReq.headers[HttpHeaders.rangeHeader] = incomingRange;
-      }
-      forwardReq.headers['User-Agent'] =
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+      // Fast-path: start inside or at beginning of cached 5s head
+      if (headBytes != null && reqStart < headBytes.length) {
+        if (totalLength <= 0) totalLength = headBytes.length * 20;
+        final effectiveEnd = (reqEnd != null && reqEnd < totalLength) ? reqEnd : totalLength - 1;
+        final contentLength = effectiveEnd - reqStart + 1;
 
-      http.StreamedResponse remoteRes = await _httpClient.send(forwardReq);
+        response.statusCode = HttpStatus.partialContent;
+        response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+        response.headers.set(HttpHeaders.contentRangeHeader, 'bytes $reqStart-$effectiveEnd/$totalLength');
+        response.headers.set(HttpHeaders.contentLengthHeader, contentLength.toString());
+        response.headers.contentType = ContentType('audio', 'mp4');
 
-      // Automatic Stream Re-Resolution on Seek/Stream Expiration (e.g. 502/403 on long 17-minute tracks)
-      if (remoteRes.statusCode >= 400 && id.isNotEmpty) {
-        debugPrint('AudioCacheService: Proxy request failed (${remoteRes.statusCode}). Re-resolving fresh stream for $id...');
-        StreamResolverService.invalidateCache(id);
-        try {
-          final freshUrl = await StreamResolverService.resolveAudioStreamUrl(
-            id,
-            optimistic: false,
+        final headSliceEnd = headBytes.length < effectiveEnd + 1 ? headBytes.length : effectiveEnd + 1;
+        response.add(headBytes.sublist(reqStart, headSliceEnd));
+        await response.flush();
+
+        final currentOffset = headSliceEnd;
+        if (currentOffset <= effectiveEnd) {
+          await _streamBoundedChunks(
+            response: response,
+            videoId: id,
+            initialRemoteUri: remoteUri,
+            startOffset: currentOffset,
+            endOffset: effectiveEnd,
           );
-          final freshUri = Uri.parse(freshUrl);
-          final retryReq = http.Request('GET', freshUri);
-          if (incomingRange != null) {
-            retryReq.headers[HttpHeaders.rangeHeader] = incomingRange;
-          }
-          retryReq.headers['User-Agent'] = forwardReq.headers['User-Agent']!;
+        } else {
+          await response.close();
+        }
+        return;
+      }
+
+      // Passthrough / Seek beyond cached head:
+      // Request initial chunk upstream to discover exact total length & content type if unknown
+      var firstChunkEnd = reqStart + upstreamChunkSize - 1;
+      if (reqEnd != null && reqEnd < firstChunkEnd) {
+        firstChunkEnd = reqEnd;
+      }
+      if (totalLength > 0 && firstChunkEnd >= totalLength) {
+        firstChunkEnd = totalLength - 1;
+      }
+
+      final probeReq = http.Request('GET', remoteUri)
+        ..headers[HttpHeaders.rangeHeader] = 'bytes=$reqStart-$firstChunkEnd'
+        ..headers['User-Agent'] = _defaultUserAgent;
+
+      http.StreamedResponse remoteRes = await _httpClient.send(probeReq);
+
+      // Handle stream expiration or 403/502/416
+      if ((remoteRes.statusCode >= 400 || remoteRes.statusCode == HttpStatus.requestedRangeNotSatisfiable) && id.isNotEmpty) {
+        StreamResolverService.invalidateCache(id);
+        await evict(id);
+        try {
+          final freshUrl = await StreamResolverService.resolveAudioStreamUrl(id, optimistic: false);
+          remoteUri = Uri.parse(freshUrl);
+          final retryReq = http.Request('GET', remoteUri)
+            ..headers[HttpHeaders.rangeHeader] = 'bytes=$reqStart-$firstChunkEnd'
+            ..headers['User-Agent'] = _defaultUserAgent;
           final retryRes = await _httpClient.send(retryReq);
           if (retryRes.statusCode < 400) {
             remoteRes = retryRes;
           }
-        } catch (e) {
-          debugPrint('AudioCacheService: Re-resolve stream error: $e');
+        } catch (_) {}
+      }
+
+      if (remoteRes.statusCode == HttpStatus.requestedRangeNotSatisfiable) {
+        response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+        response.headers.set(HttpHeaders.contentRangeHeader, 'bytes */$totalLength');
+        await response.close();
+        return;
+      }
+
+      if (remoteRes.statusCode == HttpStatus.ok) {
+        if (reqStart > 0) {
+          // Upstream ignored Range header and returned full stream starting from 0.
+          // Skip the first reqStart bytes.
+          response.statusCode = HttpStatus.partialContent;
+          final effectiveEnd = (reqEnd != null && reqEnd < totalLength) ? reqEnd : (totalLength > 0 ? totalLength - 1 : null);
+          response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+          if (effectiveEnd != null && totalLength > 0) {
+            response.headers.set(HttpHeaders.contentRangeHeader, 'bytes $reqStart-$effectiveEnd/$totalLength');
+            response.headers.set(HttpHeaders.contentLengthHeader, '${effectiveEnd - reqStart + 1}');
+          }
+          var skipped = 0;
+          var sent = 0;
+          await for (final chunk in remoteRes.stream) {
+            if (skipped + chunk.length <= reqStart) {
+              skipped += chunk.length;
+              continue;
+            }
+            final sliceStart = (reqStart > skipped) ? reqStart - skipped : 0;
+            skipped += chunk.length;
+            final dataToSend = chunk.sublist(sliceStart);
+            if (effectiveEnd != null && (reqStart + sent + dataToSend.length - 1 > effectiveEnd)) {
+              final needed = effectiveEnd - (reqStart + sent) + 1;
+              if (needed > 0) {
+                response.add(dataToSend.sublist(0, needed));
+                sent += needed;
+              }
+              break;
+            } else {
+              response.add(dataToSend);
+              sent += dataToSend.length;
+            }
+          }
+          await response.close();
+          return;
+        } else {
+          // reqStart == 0
+          response.statusCode = HttpStatus.ok;
+          remoteRes.headers.forEach((name, value) {
+            final lower = name.toLowerCase();
+            if (lower != 'content-encoding' && lower != 'transfer-encoding' && lower != 'connection') {
+              response.headers.set(name, value);
+            }
+          });
+          await response.addStream(remoteRes.stream);
+          await response.close();
+          return;
         }
       }
 
-      response.statusCode = remoteRes.statusCode;
+      // Extract total length from Content-Range header: bytes start-end/total
+      final cr = remoteRes.headers[HttpHeaders.contentRangeHeader] ?? '';
+      if (cr.contains('/')) {
+        final totalStr = cr.split('/').last.trim();
+        totalLength = int.tryParse(totalStr) ?? totalLength;
+      }
+      if (totalLength <= 0) {
+        totalLength = remoteRes.contentLength ?? (headChunkSize * 250);
+      }
 
-      remoteRes.headers.forEach((name, value) {
-        final lower = name.toLowerCase();
-        if (lower != 'content-encoding' &&
-            lower != 'transfer-encoding' &&
-            lower != 'connection') {
-          response.headers.set(name, value);
+      final effectiveEnd = (reqEnd != null && reqEnd < totalLength) ? reqEnd : totalLength - 1;
+      final contentLength = effectiveEnd - reqStart + 1;
+
+      response.statusCode = HttpStatus.partialContent;
+      response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+      response.headers.set(HttpHeaders.contentRangeHeader, 'bytes $reqStart-$effectiveEnd/$totalLength');
+      response.headers.set(HttpHeaders.contentLengthHeader, contentLength.toString());
+
+      final ct = remoteRes.headers[HttpHeaders.contentTypeHeader];
+      if (ct != null) {
+        try {
+          response.headers.contentType = ContentType.parse(ct);
+        } catch (_) {
+          response.headers.contentType = ContentType('audio', 'mp4');
         }
-      });
+      } else {
+        response.headers.contentType = ContentType('audio', 'mp4');
+      }
 
-      await response.addStream(remoteRes.stream);
-      await response.close();
+      var currentOffset = reqStart;
+      await for (final chunk in remoteRes.stream) {
+        response.add(chunk);
+        currentOffset += chunk.length;
+      }
+      await response.flush();
+
+      if (currentOffset <= effectiveEnd) {
+        await _streamBoundedChunks(
+          response: response,
+          videoId: id,
+          initialRemoteUri: remoteUri,
+          startOffset: currentOffset,
+          endOffset: effectiveEnd,
+        );
+      } else {
+        await response.close();
+      }
     } catch (_) {
       try {
         await response.close();
       } catch (_) {}
+    }
+  }
+
+  /// Streams remaining bytes in bounded chunks (256 KB) with automatic retry and stream re-resolution
+  static Future<void> _streamBoundedChunks({
+    required HttpResponse response,
+    required String videoId,
+    required Uri initialRemoteUri,
+    required int startOffset,
+    required int endOffset,
+  }) async {
+    var currentOffset = startOffset;
+    var remoteUri = initialRemoteUri;
+
+    while (currentOffset <= endOffset) {
+      var chunkEnd = currentOffset + upstreamChunkSize - 1;
+      if (chunkEnd > endOffset) {
+        chunkEnd = endOffset;
+      }
+
+      int retries = 0;
+      bool chunkSuccess = false;
+
+      while (retries < 3 && !chunkSuccess) {
+        try {
+          final chunkReq = http.Request('GET', remoteUri)
+            ..headers[HttpHeaders.rangeHeader] = 'bytes=$currentOffset-$chunkEnd'
+            ..headers['User-Agent'] = _defaultUserAgent;
+
+          final chunkRes = await _httpClient.send(chunkReq).timeout(const Duration(seconds: 8));
+
+          if (chunkRes.statusCode == HttpStatus.partialContent ||
+              (chunkRes.statusCode == HttpStatus.ok && currentOffset == 0)) {
+            await for (final data in chunkRes.stream) {
+              response.add(data);
+              currentOffset += data.length;
+            }
+            await response.flush();
+            chunkSuccess = true;
+          } else if (chunkRes.statusCode == HttpStatus.requestedRangeNotSatisfiable) {
+            // Requested past EOF: finish streaming cleanly
+            debugPrint('AudioCacheService: Upstream 416 at $currentOffset-$chunkEnd. Terminating chunk stream cleanly.');
+            return;
+          } else if (chunkRes.statusCode >= 400) {
+            if (videoId.isNotEmpty) {
+              StreamResolverService.invalidateCache(videoId);
+              await evict(videoId);
+              try {
+                final freshUrl = await StreamResolverService.resolveAudioStreamUrl(videoId, optimistic: false);
+                remoteUri = Uri.parse(freshUrl);
+              } catch (_) {}
+            }
+            retries++;
+            if (retries < 3) await Future.delayed(Duration(milliseconds: 150 * retries));
+          } else {
+            retries++;
+            if (retries < 3) await Future.delayed(Duration(milliseconds: 150 * retries));
+          }
+        } on SocketException catch (_) {
+          // Client player closed or seeked away
+          return;
+        } on HttpException catch (_) {
+          return;
+        } catch (e) {
+          retries++;
+          if (retries >= 3) {
+            debugPrint('AudioCacheService: Chunk retry exhausted at $currentOffset: $e');
+            return;
+          }
+          await Future.delayed(Duration(milliseconds: 150 * retries));
+        }
+      }
+
+      if (!chunkSuccess) {
+        break;
+      }
+    }
+
+    try {
+      await response.close();
+    } catch (_) {}
+  }
+
+  /// Evicts the cached head and metadata for a specific video ID.
+  static Future<void> evict(String videoId) async {
+    if (_headsDir == null) return;
+    try {
+      final headFile = File('${_headsDir!.path}/$videoId.head');
+      final metaFile = File('${_headsDir!.path}/$videoId.meta');
+      if (await headFile.exists()) {
+        await headFile.delete();
+      }
+      if (await metaFile.exists()) {
+        await metaFile.delete();
+      }
+      debugPrint('AudioCacheService: Evicted head cache for $videoId');
+    } catch (e) {
+      debugPrint('AudioCacheService: Error evicting head cache for $videoId: $e');
     }
   }
 
@@ -174,10 +428,16 @@ class AudioCacheService {
       final metaFile = File('${_headsDir!.path}/$videoId.meta');
 
       if (await headFile.exists() && await metaFile.exists()) {
-        try {
-          await headFile.setLastModified(DateTime.now());
-        } catch (_) {}
-        return; // Already cached
+        final metaContent = (await metaFile.readAsString()).trim();
+        final existingLen = int.tryParse(metaContent);
+        if (existingLen != null && existingLen > 0) {
+          try {
+            await headFile.setLastModified(DateTime.now());
+          } catch (_) {}
+          return; // Already cached and valid
+        } else {
+          await evict(videoId);
+        }
       }
 
       final uri = Uri.parse(remoteUrl);
@@ -187,6 +447,11 @@ class AudioCacheService {
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
       final streamedRes = await _httpClient.send(req).timeout(const Duration(seconds: 4));
+      if (streamedRes.statusCode >= 400) {
+        await evict(videoId);
+        return;
+      }
+
       if (streamedRes.statusCode == HttpStatus.ok || streamedRes.statusCode == HttpStatus.partialContent) {
         // Extract exact content-length from URL parameter 'clen' if present (embedded by YouTube/Invidious)
         int totalLength = int.tryParse(uri.queryParameters['clen'] ?? '') ?? 0;

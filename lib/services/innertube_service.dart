@@ -329,29 +329,7 @@ class InnerTubeService {
       return diskFallback;
     }
 
-    return [
-      const Song(
-        id: 'dQw4w9WgXcQ',
-        title: 'Never Gonna Give You Up',
-        artist: 'Rick Astley',
-        duration: 213,
-        thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
-      ),
-      const Song(
-        id: 'kJQP7kiw5Fk',
-        title: 'Despacito',
-        artist: 'Luis Fonsi ft. Daddy Yankee',
-        duration: 282,
-        thumbnailUrl: 'https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg',
-      ),
-      const Song(
-        id: 'JGwWNGJdvx8',
-        title: 'Shape of You',
-        artist: 'Ed Sheeran',
-        duration: 233,
-        thumbnailUrl: 'https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg',
-      ),
-    ];
+    return [];
   }
 
   /// Get related songs for Radio / Auto-mix queue

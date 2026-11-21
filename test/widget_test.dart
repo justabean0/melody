@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:melody/models/song.dart';
 import 'package:melody/models/lyrics.dart';
 import 'package:melody/services/database_service.dart';
@@ -8,8 +9,15 @@ import 'package:melody/providers/library_provider.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  });
+
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
+    final db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
+    DatabaseService.setDatabaseForTesting(db);
     await DatabaseService.init();
   });
 

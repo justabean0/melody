@@ -271,28 +271,35 @@ class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSt
                   color: colorScheme.primary,
                   shape: BoxShape.circle,
                 ),
-                child: playback.isLoading
-                    ? Padding(
-                        padding: const EdgeInsets.all(20.0),
-                        child: SizedBox(
-                          width: 28,
-                          height: 28,
-                          child: CircularProgressIndicator(
-                            color: colorScheme.onPrimary,
-                            strokeWidth: 3,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    if (playback.isLoading)
+                      Positioned.fill(
+                        child: Padding(
+                          padding: const EdgeInsets.all(6.0),
+                          child: IgnorePointer(
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                colorScheme.onPrimary.withAlpha(200),
+                              ),
+                            ),
                           ),
                         ),
-                      )
-                    : IconButton(
-                        iconSize: 44,
-                        icon: Icon(
-                          playback.isPlaying
-                              ? Icons.pause_rounded
-                              : Icons.play_arrow_rounded,
-                          color: colorScheme.onPrimary,
-                        ),
-                        onPressed: playback.togglePlayPause,
                       ),
+                    IconButton(
+                      iconSize: 44,
+                      icon: Icon(
+                        playback.isPlaying
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
+                        color: colorScheme.onPrimary,
+                      ),
+                      onPressed: playback.togglePlayPause,
+                    ),
+                  ],
+                ),
               ),
 
               // Next

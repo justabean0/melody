@@ -41,6 +41,16 @@ class MelodyAudioService {
   bool _isPlaying = false;
   bool get isPlaying => _isPlaying;
 
+  bool _isPausedByUser = false;
+  bool get isPausedByUser => _isPausedByUser;
+
+  bool _needsStreamRecovery = false;
+  bool get needsStreamRecovery => _needsStreamRecovery;
+
+  int _recoveryAttempts = 0;
+  Duration _lastRecoveryPosition = Duration.zero;
+  int _playOperationToken = 0;
+
   Duration _position = Duration.zero;
   Duration get position => _position;
 
@@ -78,6 +88,10 @@ class MelodyAudioService {
       if (call.method == 'onNotificationAction') {
         final action = call.arguments as String?;
         if (action == null) return;
+        if (action == 'idleTeardown') {
+          await _handleIdleTeardown();
+          return;
+        }
         if (action.startsWith('seek:')) {
           final ms = int.tryParse(action.substring(5)) ?? 0;
           await seek(Duration(milliseconds: ms));
@@ -156,6 +170,10 @@ class MelodyAudioService {
 
   Future<void> playSong(Song song, {List<Song>? contextQueue, int? startIndex}) async {
     AntiBotService.recordPlay(videoId: song.id);
+    _isPausedByUser = false;
+    _needsStreamRecovery = false;
+    _recoveryAttempts = 0;
+
     if (contextQueue != null && contextQueue.isNotEmpty) {
       _queue.clear();
       _queue.addAll(contextQueue);
@@ -176,9 +194,14 @@ class MelodyAudioService {
 
   Future<void> _playCurrent() async {
     if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
+    final opToken = ++_playOperationToken;
+    _isPausedByUser = false;
+    _needsStreamRecovery = false;
+    _recoveryAttempts = 0;
 
     // 1. Immediately cut off old audio so it stops playing right away
     await _player.stop();
+    if (opToken != _playOperationToken || _isPausedByUser) return;
 
     _currentSong = _queue[_currentIndex];
 
@@ -197,6 +220,7 @@ class MelodyAudioService {
 
     // Save to local history
     DatabaseService.addToHistory(_currentSong!);
+    unawaited(_saveCurrentSession());
     LogService.recordBreadcrumb(
       'Playback started: "${_currentSong!.title}" (${_currentSong!.id})',
       category: 'playback',
@@ -211,6 +235,8 @@ class MelodyAudioService {
         optimistic: true,
       );
 
+      if (opToken != _playOperationToken || _isPausedByUser) return;
+
       // 2. Local Disk Cache & 5s Head Proxy mapping
       String playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, streamUrl);
 
@@ -220,9 +246,11 @@ class MelodyAudioService {
         } else {
           await _player.play(UrlSource(playableUrl));
         }
-      } catch (playError) {
-        debugPrint('Optimistic play error ($playError). Retrying with safe probed stream...');
+      } on PlatformException catch (pe) {
+        LogService.error('PlatformException in _playCurrent: ${pe.message}', tag: 'AudioPlayer', error: pe.toString());
+        if (opToken != _playOperationToken || _isPausedByUser) return;
         StreamResolverService.invalidateCache(_currentSong!.id);
+        AudioCacheService.evict(_currentSong!.id);
 
         // Safe fallback retry with active probe & alternative track lookup
         streamUrl = await StreamResolverService.resolveAudioStreamUrl(
@@ -231,6 +259,8 @@ class MelodyAudioService {
           artist: _currentSong!.artist,
           optimistic: false,
         );
+        if (opToken != _playOperationToken || _isPausedByUser) return;
+
         playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, streamUrl);
 
         if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
@@ -238,6 +268,35 @@ class MelodyAudioService {
         } else {
           await _player.play(UrlSource(playableUrl));
         }
+      } catch (playError) {
+        if (opToken != _playOperationToken || _isPausedByUser) return;
+        debugPrint('Optimistic play error ($playError). Retrying with safe probed stream...');
+        StreamResolverService.invalidateCache(_currentSong!.id);
+        AudioCacheService.evict(_currentSong!.id);
+
+        // Safe fallback retry with active probe & alternative track lookup
+        streamUrl = await StreamResolverService.resolveAudioStreamUrl(
+          _currentSong!.id,
+          songTitle: _currentSong!.title,
+          artist: _currentSong!.artist,
+          optimistic: false,
+        );
+        if (opToken != _playOperationToken || _isPausedByUser) return;
+
+        playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, streamUrl);
+
+        if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
+          await _player.play(DeviceFileSource(playableUrl));
+        } else {
+          await _player.play(UrlSource(playableUrl));
+        }
+      }
+
+      if (opToken != _playOperationToken || _isPausedByUser) {
+        try {
+          await _player.pause();
+        } catch (_) {}
+        return;
       }
 
       // 3. Keep 5-second head of this listened song in local cache for instant future replays
@@ -253,8 +312,10 @@ class MelodyAudioService {
       _isPlaying = false;
       _updateNotification();
     } finally {
-      _isLoading = false;
-      _stateChangeController.add(null);
+      if (opToken == _playOperationToken) {
+        _isLoading = false;
+        _stateChangeController.add(null);
+      }
     }
   }
 
@@ -282,14 +343,35 @@ class MelodyAudioService {
   }
 
   void _handleTrackEnded() {
-    // Detect premature track completion (e.g. Invidious proxy dropped connection early on a long 17-minute track)
+    // If the track was paused by the user when a stale completion event fires, do NOT auto-restart
+    if (_isPausedByUser) {
+      debugPrint('AudioService: Track completion received while paused by user. Marking recovery pending.');
+      _needsStreamRecovery = true;
+      return;
+    }
+
+    // Detect premature track completion during active playback
     if (_currentSong != null &&
         _duration > const Duration(seconds: 30) &&
         _position < _duration - const Duration(seconds: 15)) {
-      debugPrint('AudioService: Premature track end at $_position of $_duration. Resuming stream seamlessly...');
-      unawaited(_recoverStreamAtPosition(_position));
-      return;
+      if ((_position.inSeconds - _lastRecoveryPosition.inSeconds).abs() <= 2) {
+        _recoveryAttempts++;
+      } else {
+        _lastRecoveryPosition = _position;
+        _recoveryAttempts = 1;
+      }
+
+      if (_recoveryAttempts <= 2) {
+        debugPrint('AudioService: Premature track end at $_position of $_duration (attempt $_recoveryAttempts/2). Resuming stream seamlessly...');
+        unawaited(_recoverStreamAtPosition(_position));
+        return;
+      } else {
+        debugPrint('AudioService: Max recovery attempts reached at $_position. Continuing to next track.');
+      }
     }
+
+    _recoveryAttempts = 0;
+    _lastRecoveryPosition = Duration.zero;
 
     if (_loopMode == MelodyLoopMode.one) {
       _player.seek(Duration.zero);
@@ -329,23 +411,49 @@ class MelodyAudioService {
 
   Future<void> resume() async {
     if (_currentSong == null) return;
+    _isPausedByUser = false;
+    final opToken = ++_playOperationToken;
+
     try {
-      if (_player.state == PlayerState.paused) {
+      if (!_needsStreamRecovery && _player.state == PlayerState.paused) {
         await _player.resume();
+      } else if (_position > Duration.zero) {
+        _needsStreamRecovery = false;
+        await _recoverStreamAtPosition(_position, token: opToken);
       } else {
+        _needsStreamRecovery = false;
         await _playCurrent();
       }
+      if (opToken != _playOperationToken || _isPausedByUser) return;
       _isPlaying = true;
       LogService.recordBreadcrumb('Playback resumed at $_position', category: 'playback');
       _updateNotification();
       _stateChangeController.add(null);
+    } on PlatformException catch (pe) {
+      LogService.error('PlatformException in resume: ${pe.message}', tag: 'AudioPlayer', error: pe.toString());
+      if (_currentSong != null) {
+        StreamResolverService.invalidateCache(_currentSong!.id);
+        AudioCacheService.evict(_currentSong!.id);
+      }
+      if (_position > Duration.zero) {
+        await _recoverStreamAtPosition(_position, token: opToken);
+      } else {
+        await _playCurrent();
+      }
     } catch (e) {
-      debugPrint('Resume error: $e. Retrying playback...');
-      await _playCurrent();
+      debugPrint('Resume error: $e. Retrying playback at position...');
+      if (_position > Duration.zero) {
+        await _recoverStreamAtPosition(_position, token: opToken);
+      } else {
+        await _playCurrent();
+      }
     }
   }
 
   Future<void> pause() async {
+    _isPausedByUser = true;
+    _playOperationToken++;
+    _isLoading = false;
     try {
       await _player.pause();
     } catch (_) {}
@@ -353,9 +461,16 @@ class MelodyAudioService {
     LogService.recordBreadcrumb('Playback paused at $_position', category: 'playback');
     _updateNotification();
     _stateChangeController.add(null);
+    unawaited(_saveCurrentSession());
   }
 
   Future<void> stop() async {
+    _isPausedByUser = true;
+    _playOperationToken++;
+    _needsStreamRecovery = false;
+    _recoveryAttempts = 0;
+    _isLoading = false;
+    unawaited(_saveCurrentSession());
     try {
       await _player.stop();
     } catch (_) {}
@@ -367,7 +482,7 @@ class MelodyAudioService {
   }
 
   Future<void> togglePlayPause() async {
-    if (_isPlaying) {
+    if (_isPlaying || (_isLoading && !_isPausedByUser)) {
       await pause();
     } else {
       await resume();
@@ -382,19 +497,28 @@ class MelodyAudioService {
 
     try {
       await _player.seek(position);
+    } on PlatformException catch (pe) {
+      LogService.error('PlatformException in seek: ${pe.message}', tag: 'AudioPlayer', error: pe.toString());
+      if (_currentSong != null) {
+        StreamResolverService.invalidateCache(_currentSong!.id);
+        AudioCacheService.evict(_currentSong!.id);
+      }
+      await _recoverStreamAtPosition(position);
     } catch (e) {
       debugPrint('AudioService: Seek error ($e). Re-resolving stream and resuming at $position...');
       await _recoverStreamAtPosition(position);
     }
   }
 
-  Future<void> _recoverStreamAtPosition(Duration position) async {
+  Future<void> _recoverStreamAtPosition(Duration position, {int? token}) async {
     if (_currentSong == null) return;
+    final opToken = token ?? ++_playOperationToken;
     try {
       _isLoading = true;
       _stateChangeController.add(null);
 
       StreamResolverService.invalidateCache(_currentSong!.id);
+      AudioCacheService.evict(_currentSong!.id);
       final freshStreamUrl = await StreamResolverService.resolveAudioStreamUrl(
         _currentSong!.id,
         songTitle: _currentSong!.title,
@@ -402,19 +526,103 @@ class MelodyAudioService {
         optimistic: false,
       );
 
+      if (opToken != _playOperationToken || _isPausedByUser) return;
+
       final playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, freshStreamUrl);
-      if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
-        await _player.play(DeviceFileSource(playableUrl), position: position);
-      } else {
-        await _player.play(UrlSource(playableUrl), position: position);
+      try {
+        if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
+          await _player.play(DeviceFileSource(playableUrl), position: position);
+        } else {
+          await _player.play(UrlSource(playableUrl), position: position);
+        }
+      } on PlatformException catch (pe) {
+        LogService.error('PlatformException in _recoverStreamAtPosition: ${pe.message}', tag: 'AudioPlayer', error: pe.toString());
+        AudioCacheService.evict(_currentSong!.id);
+        await _player.play(UrlSource(freshStreamUrl), position: position);
       }
+
+      if (opToken != _playOperationToken || _isPausedByUser) {
+        try {
+          await _player.pause();
+        } catch (_) {}
+        return;
+      }
+
       _isPlaying = true;
       _updateNotification();
     } catch (err) {
       debugPrint('AudioService: Recovery at position failed: $err');
     } finally {
-      _isLoading = false;
+      if (opToken == _playOperationToken) {
+        _isLoading = false;
+        _stateChangeController.add(null);
+      }
+    }
+  }
+
+  Future<void> _handleIdleTeardown() async {
+    LogService.recordBreadcrumb('AudioService: 15-minute idleTeardown triggered from native', category: 'lifecycle');
+    await _saveCurrentSession();
+    await stop();
+  }
+
+  Future<void> _saveCurrentSession() async {
+    if (_currentSong == null) return;
+    try {
+      await DatabaseService.savePlaybackSession(
+        song: _currentSong!,
+        position: _position,
+        duration: _duration,
+        queue: _queue.take(100).toList(),
+        queueIndex: _currentIndex,
+      );
+    } catch (e) {
+      debugPrint('AudioService: Error saving playback session: $e');
+    }
+  }
+
+  Future<bool> restoreLastSession() async {
+    try {
+      final session = await DatabaseService.getLastPlaybackSession();
+      if (session == null) return false;
+
+      // Check if session was updated within the last 7 days
+      final age = DateTime.now().difference(session.updatedAt);
+      if (age > const Duration(days: 7)) {
+        await DatabaseService.clearPlaybackSession();
+        return false;
+      }
+
+      _currentSong = session.song;
+      _queue.clear();
+      _queue.addAll(session.queue.isNotEmpty ? session.queue : [session.song]);
+      _currentIndex = (session.queueIndex >= 0 && session.queueIndex < _queue.length)
+          ? session.queueIndex
+          : _queue.indexWhere((s) => s.id == session.song.id);
+      if (_currentIndex == -1) _currentIndex = 0;
+
+      _position = session.position;
+      _duration = session.duration > Duration.zero
+          ? session.duration
+          : Duration(seconds: session.song.duration);
+
+      _isPlaying = false;
+      _isPausedByUser = true;
+      _needsStreamRecovery = true;
+
+      _positionChangeController.add(_position);
+      _songChangeController.add(_currentSong);
       _stateChangeController.add(null);
+
+      _updateNotification();
+      LogService.recordBreadcrumb(
+        'Restored previous playback session: "${session.song.title}" at $_position',
+        category: 'playback',
+      );
+      return true;
+    } catch (e) {
+      debugPrint('AudioService: Error restoring playback session: $e');
+      return false;
     }
   }
 

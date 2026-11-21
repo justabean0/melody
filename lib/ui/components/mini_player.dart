@@ -109,27 +109,40 @@ class MiniPlayer extends StatelessWidget {
                         ),
                         onPressed: () => library.toggleLike(song),
                       ),
-                      // Play/Pause button
-                      if (playback.isLoading)
-                        const Padding(
-                          padding: EdgeInsets.all(12.0),
-                          child: SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(strokeWidth: 2.5),
-                          ),
-                        )
-                      else
-                        IconButton(
-                          icon: Icon(
-                            playback.isPlaying
-                                ? Icons.pause_rounded
-                                : Icons.play_arrow_rounded,
-                            size: 32,
-                            color: colorScheme.onSurface,
-                          ),
-                          onPressed: playback.togglePlayPause,
+                      // Play/Pause button with non-blocking loading indicator
+                      SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            if (playback.isLoading)
+                              Positioned.fill(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(7.0),
+                                  child: IgnorePointer(
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      valueColor: AlwaysStoppedAnimation<Color>(
+                                        colorScheme.primary.withAlpha(220),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            IconButton(
+                              icon: Icon(
+                                playback.isPlaying
+                                    ? Icons.pause_rounded
+                                    : Icons.play_arrow_rounded,
+                                size: 30,
+                                color: colorScheme.onSurface,
+                              ),
+                              onPressed: playback.togglePlayPause,
+                            ),
+                          ],
                         ),
+                      ),
                     ],
                   ),
                 ),

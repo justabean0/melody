@@ -42,6 +42,15 @@ class PlaybackProvider extends ChangeNotifier {
     _songSub = _audioService.onSongChange.listen((song) {
       _onSongChanged(song);
     });
+
+    _restoreSession();
+  }
+
+  Future<void> _restoreSession() async {
+    final restored = await _audioService.restoreLastSession();
+    if (restored) {
+      notifyListeners();
+    }
   }
 
   void _onSongChanged(Song? song) {

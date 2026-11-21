@@ -36,7 +36,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   List<Song> _quickPicks = [];
   bool _isLoading = true;
-  bool _isReloading = false;
+  bool _hasError = false;
+  int _feedRequestToken = 0;
   Timer? _preWarmTimer;
   String _activeMood = 'All';
 
@@ -53,11 +54,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _loadFeed('All', false);
     _checkAppUpdateSilently();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkFirstTimeLanguageSetup();
-    });
+    _initializeHome();
   }
 
   @override
@@ -66,15 +64,37 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  Future<void> _initializeHome() async {
+    final hasLangs = DatabaseService.hasSelectedMusicLanguages();
+    final onboardingDone = DatabaseService.hasCompletedLanguageOnboarding();
+
+    if (!hasLangs && !onboardingDone) {
+      // Prompt user for language selection on first run before loading feed
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        await _checkFirstTimeLanguageSetup();
+        if (mounted) {
+          await _loadFeed('All', false);
+        }
+      });
+    } else {
+      // Languages already selected or onboarding completed: load immediately
+      _loadFeed('All', false);
+    }
+  }
+
   Future<void> _checkFirstTimeLanguageSetup() async {
     if (!DatabaseService.hasCompletedLanguageOnboarding()) {
-      LanguageSelectionDialog.show(
+      await LanguageSelectionDialog.show(
         context,
         isDismissible: false,
         onSaved: (selected) {
-          _loadFeed(_activeMood, true);
+          // Handled upon dialog completion
         },
       );
+      if (!DatabaseService.hasCompletedLanguageOnboarding()) {
+        await DatabaseService.markLanguageOnboardingCompleted();
+      }
     }
   }
 
@@ -99,11 +119,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadFeed([String mood = 'All', bool isUserRefresh = false]) async {
-    if (_isReloading) {
-      debugPrint('Feed reload dropped: concurrent reload in-flight');
-      return;
-    }
-    _isReloading = true;
+    final requestToken = ++_feedRequestToken;
 
     final activeLangs = DatabaseService.getMusicLanguages();
     final cacheKey = '$mood:${activeLangs.join(",")}';
@@ -111,52 +127,66 @@ class _HomeScreenState extends State<HomeScreen> {
     // 1. Instant display from cache (0ms perceived latency)
     final cached = DatabaseService.getCachedFeed(cacheKey);
     if (cached.isNotEmpty) {
-      setState(() {
-        _quickPicks = cached;
-        _isLoading = false;
-      });
+      if (mounted && requestToken == _feedRequestToken) {
+        setState(() {
+          _quickPicks = cached;
+          _isLoading = false;
+          _hasError = false;
+        });
+      }
     } else if (_quickPicks.isEmpty) {
-      setState(() => _isLoading = true);
+      if (mounted && requestToken == _feedRequestToken) {
+        setState(() {
+          _isLoading = true;
+          _hasError = false;
+        });
+      }
     }
 
-    // 2. Fetch fresh personalized feed concurrently with strict 3.8s timeout guard
+    // 2. Fetch fresh personalized feed with 10-second timeout guard
     try {
       final songs = await InnerTubeService.getQuickPicks(
+        languages: activeLangs,
         mood: mood,
         forceRefresh: isUserRefresh || cached.isEmpty,
       ).timeout(
-        const Duration(milliseconds: 3800),
+        const Duration(seconds: 10),
         onTimeout: () {
           debugPrint('Feed network request timed out - falling back to cache');
-          return cached.isNotEmpty ? cached : _quickPicks;
+          return cached;
         },
       );
-      if (mounted && songs.isNotEmpty) {
-        setState(() {
-          _quickPicks = songs;
-          _isLoading = false;
-        });
 
+      if (!mounted || requestToken != _feedRequestToken) return;
+
+      setState(() {
+        if (songs.isNotEmpty) {
+          _quickPicks = songs;
+          _hasError = false;
+        } else if (_quickPicks.isEmpty && cached.isEmpty) {
+          _hasError = true;
+        }
+        _isLoading = false;
+      });
+
+      if (songs.isNotEmpty) {
         // 3. Decoupled pre-warm: Delayed by 1.5s so network is not contested during feed render
         _preWarmTimer?.cancel();
         _preWarmTimer = Timer(const Duration(milliseconds: 1500), () {
-          if (!mounted) return;
+          if (!mounted || requestToken != _feedRequestToken) return;
           for (final s in songs.take(2)) {
             StreamResolverService.preWarm(s.id, songTitle: s.title, artist: s.artist);
           }
         });
       }
     } catch (_) {
-      // Ignore network errors and keep cached view
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _isReloading = false;
-        });
-      } else {
-        _isReloading = false;
-      }
+      if (!mounted || requestToken != _feedRequestToken) return;
+      setState(() {
+        if (_quickPicks.isEmpty && cached.isEmpty) {
+          _hasError = true;
+        }
+        _isLoading = false;
+      });
     }
   }
 
@@ -328,7 +358,37 @@ class _HomeScreenState extends State<HomeScreen> {
         onRefresh: () => _loadFeed(_activeMood, true),
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
-            : ListView(
+            : _hasError && _quickPicks.isEmpty
+                ? Center(
+                    child: SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 48.0),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.wifi_off_rounded, size: 56, color: colorScheme.outline),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Unable to load music feed',
+                            style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Check your internet connection and try again.',
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                          ),
+                          const SizedBox(height: 20),
+                          FilledButton.icon(
+                            onPressed: () => _loadFeed(_activeMood, true),
+                            icon: const Icon(Icons.refresh_rounded),
+                            label: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : ListView(
                 padding: const EdgeInsets.only(bottom: 120),
                 children: [
                   // Moods & Genres Filters

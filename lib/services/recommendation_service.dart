@@ -349,38 +349,6 @@ class RecommendationService {
     return merged.where((s) => seen.add(s.id)).toList();
   }
 
-  /// Default high-quality fallback singles (all strictly single songs under 5 minutes)
-  static const List<Song> defaultFallbackSingles = [
-    Song(
-      id: 'dQw4w9WgXcQ',
-      title: 'Never Gonna Give You Up',
-      artist: 'Rick Astley',
-      duration: 213,
-      thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
-    ),
-    Song(
-      id: 'kJQP7kiw5Fk',
-      title: 'Despacito',
-      artist: 'Luis Fonsi ft. Daddy Yankee',
-      duration: 282,
-      thumbnailUrl: 'https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg',
-    ),
-    Song(
-      id: 'JGwWNGJdvx8',
-      title: 'Shape of You',
-      artist: 'Ed Sheeran',
-      duration: 233,
-      thumbnailUrl: 'https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg',
-    ),
-    Song(
-      id: 'k2qgadSvNyU',
-      title: 'Dua Lipa - New Rules',
-      artist: 'Dua Lipa',
-      duration: 225,
-      thumbnailUrl: 'https://i.ytimg.com/vi/k2qgadSvNyU/hqdefault.jpg',
-    ),
-  ];
-
   /// Interleaves trending singles and personalized songs into dedicated slots
   /// ensuring trending songs are always represented and never crowded out.
   static List<Song> blendIntoSlots({
@@ -439,13 +407,6 @@ class RecommendationService {
       takePersonalized(1);
     }
 
-    if (blended.length >= 3) {
-      return blended;
-    }
-
-    for (final fallback in defaultFallbackSingles) {
-      tryAdd(fallback);
-    }
     return blended;
   }
 
