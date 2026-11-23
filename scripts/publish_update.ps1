@@ -8,7 +8,8 @@
 
 param(
     [string]$Version,
-    [string]$Changelog = "Bug fixes, playback optimizations, anti-bot protection, and performance improvements."
+    [string]$Changelog = "Bug fixes, playback optimizations, anti-bot protection, and performance improvements.",
+    [switch]$AutoUpload
 )
 
 $ErrorActionPreference = "Stop"
@@ -220,18 +221,20 @@ try {
 }
 
 # 6. Publish to GitHub Release
-if (Test-Path "C:\Program Files\GitHub CLI") {
-    $env:PATH = "C:\Program Files\GitHub CLI;$env:PATH"
-}
-$ghInstalled = Get-Command "gh" -ErrorAction SilentlyContinue
-if ($ghInstalled) {
-    Write-Host "`nGitHub CLI detected. Creating GitHub Release..." -ForegroundColor Cyan
-    try {
-        gh release create "v${Version}" "$releaseApkPath" "$debugApkPath" --title "Melody v${Version}" --notes "$Changelog"
-        Write-Host "`n[SUCCESS] Release published to GitHub! Both release and debug APKs uploaded." -ForegroundColor Green
-        exit 0
-    } catch {
-        Write-Host "GitHub CLI release creation failed. Falling back to browser..." -ForegroundColor Yellow
+if ($AutoUpload) {
+    if (Test-Path "C:\Program Files\GitHub CLI") {
+        $env:PATH = "C:\Program Files\GitHub CLI;$env:PATH"
+    }
+    $ghInstalled = Get-Command "gh" -ErrorAction SilentlyContinue
+    if ($ghInstalled) {
+        Write-Host "`nGitHub CLI detected. Creating GitHub Release..." -ForegroundColor Cyan
+        try {
+            gh release create "v${Version}" "$releaseApkPath" "$debugApkPath" --title "Melody v${Version}" --notes "$Changelog"
+            Write-Host "`n[SUCCESS] Release published to GitHub! Both release and debug APKs uploaded." -ForegroundColor Green
+            exit 0
+        } catch {
+            Write-Host "GitHub CLI release creation failed. Falling back to browser..." -ForegroundColor Yellow
+        }
     }
 }
 

@@ -31,8 +31,8 @@ class UpdateService {
   static final http.Client _httpClient = http.Client();
 
   /// Default application version matching pubspec.yaml
-  static const String appVersion = '1.1.9';
-  static const int appBuildNumber = 11;
+  static const String appVersion = '1.1.10';
+  static const int appBuildNumber = 12;
 
   /// Retrieves the running app version from the native platform (or fallback)
   static Future<String> getCurrentVersion() async {
@@ -299,4 +299,5 @@ class UpdateService {
     return false;
   }
 }
+
 
