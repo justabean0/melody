@@ -33,7 +33,7 @@ class AntiBotService {
 
   // Cooldown durations:
   static const Duration burstCooldown = Duration(seconds: 30);
-  static const Duration botDetectedCooldown = Duration(minutes: 2);
+  static const Duration botDetectedCooldown = Duration(minutes: 15);
 
   /// Whether Safe Mode is currently active
   static bool get isSafeModeActive {

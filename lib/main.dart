@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -9,6 +10,7 @@ import 'providers/search_provider.dart';
 import 'services/audio_cache_service.dart';
 import 'services/database_service.dart';
 import 'services/log_service.dart';
+import 'services/stream_resolver_service.dart';
 import 'ui/components/mini_player.dart';
 import 'ui/screens/home_screen.dart';
 import 'ui/screens/search_screen.dart';
@@ -53,6 +55,7 @@ void main() async {
 
   await DatabaseService.init();
   await AudioCacheService.init();
+  unawaited(StreamResolverService.initInstances());
 
   runApp(
     MultiProvider(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -52,8 +53,13 @@ class DatabaseService {
     _db = db;
   }
 
+  @visibleForTesting
+  static void setPrefsForTesting(SharedPreferences? prefs) {
+    _prefs = prefs;
+  }
+
   static Future<void> init({String? dbName}) async {
-    _prefs ??= await SharedPreferences.getInstance();
+    _prefs = await SharedPreferences.getInstance();
 
     if (_db == null) {
       try {
@@ -330,9 +336,23 @@ class DatabaseService {
   }
 
   // --- History ---
+  static final StreamController<void> _historyChangedController = StreamController<void>.broadcast();
+  static Stream<void> get onHistoryChanged => _historyChangedController.stream;
+
   static List<Song> getHistory() {
     final raw = _prefs?.getStringList(_historyKey) ?? [];
-    return raw.map((str) => Song.fromJson(jsonDecode(str))).toList();
+    final List<Song> list = [];
+    for (final str in raw) {
+      try {
+        final decoded = jsonDecode(str);
+        if (decoded is Map) {
+          list.add(Song.fromJson(Map<String, dynamic>.from(decoded)));
+        }
+      } catch (e) {
+        debugPrint('DatabaseService: Skipping corrupted history entry: $e');
+      }
+    }
+    return list;
   }
 
   static Future<void> addToHistory(Song song) async {
@@ -342,10 +362,12 @@ class DatabaseService {
     if (list.length > 50) list.removeLast();
     final raw = list.map((s) => jsonEncode(s.toJson())).toList();
     await _prefs?.setStringList(_historyKey, raw);
+    _historyChangedController.add(null);
   }
 
   static Future<void> clearHistory() async {
     await _prefs?.remove(_historyKey);
+    _historyChangedController.add(null);
   }
 
   // --- Settings ---

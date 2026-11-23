@@ -1,7 +1,8 @@
 import 'dart:async';
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:audioplayers/audioplayers.dart';
+import 'package:just_audio/just_audio.dart';
 import '../models/song.dart';
 import 'anti_bot_service.dart';
 import 'audio_cache_service.dart';
@@ -47,9 +48,12 @@ class MelodyAudioService {
   bool _needsStreamRecovery = false;
   bool get needsStreamRecovery => _needsStreamRecovery;
 
+  bool _hasHandledCompletion = false;
+
   int _recoveryAttempts = 0;
   Duration _lastRecoveryPosition = Duration.zero;
   int _playOperationToken = 0;
+  int get playOperationToken => _playOperationToken;
 
   Duration _position = Duration.zero;
   Duration get position => _position;
@@ -67,20 +71,7 @@ class MelodyAudioService {
   Stream<Duration> get onPositionChange => _positionChangeController.stream;
 
   void init() {
-    // Configure audio context to keep playing cleanly in background
-    _player.setAudioContext(
-      AudioContext(
-        android: const AudioContextAndroid(
-          stayAwake: true,
-          contentType: AndroidContentType.music,
-          usageType: AndroidUsageType.media,
-          audioFocus: AndroidAudioFocus.gain,
-        ),
-        iOS: AudioContextIOS(
-          category: AVAudioSessionCategory.playback,
-        ),
-      ),
-    );
+    unawaited(_initAudioSession());
 
     // Persistent playback notification channel actions
     const MethodChannel('com.melody.music/playback').setMethodCallHandler((call) async {
@@ -120,30 +111,55 @@ class MelodyAudioService {
       }
     });
 
-    _player.onPlayerStateChanged.listen((state) {
-      _isPlaying = (state == PlayerState.playing);
-      _updateNotification();
-      _stateChangeController.add(null);
+    _player.playerStateStream.listen((state) {
+      final wasPlaying = _isPlaying;
+      _isPlaying = state.playing && state.processingState != ProcessingState.completed;
+
+      if (state.processingState == ProcessingState.ready) {
+        _hasHandledCompletion = false;
+      }
+
+      if (state.processingState == ProcessingState.completed) {
+        if (!_hasHandledCompletion) {
+          _hasHandledCompletion = true;
+          _handleTrackEnded();
+        }
+      }
+
+      if (wasPlaying != _isPlaying) {
+        _position = _player.position;
+        _updateNotification();
+        _stateChangeController.add(null);
+      }
     });
 
-    _player.onPositionChanged.listen((pos) {
+    _player.positionStream.listen((pos) {
       if (!_isLoading) {
         _position = pos;
         _positionChangeController.add(pos);
       }
     });
 
-    _player.onDurationChanged.listen((dur) {
-      if (dur > Duration.zero) {
+    _player.durationStream.listen((dur) {
+      if (dur != null && dur > Duration.zero) {
         _duration = dur;
+        _position = _player.position;
         _updateNotification();
         _stateChangeController.add(null);
       }
     });
+  }
 
-    _player.onPlayerComplete.listen((_) {
-      _handleTrackEnded();
-    });
+  Future<void> _initAudioSession() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration.music());
+      session.becomingNoisyEventStream.listen((_) {
+        pause();
+      });
+    } catch (e) {
+      debugPrint('AudioSession init warning: $e');
+    }
   }
 
   void _updateNotification() {
@@ -168,11 +184,49 @@ class MelodyAudioService {
     } catch (_) {}
   }
 
+  AudioSource _createAudioSource(String url) {
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return AudioSource.file(url);
+    }
+    return AudioSource.uri(
+      Uri.parse(url),
+      headers: {
+        'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    );
+  }
+
+  void _logPlayerException(dynamic error, String url) {
+    String host = '';
+    String path = '';
+    String itag = '';
+    try {
+      final uri = Uri.parse(url);
+      host = uri.host;
+      path = uri.path;
+      itag = uri.queryParameters['itag'] ?? '';
+    } catch (_) {}
+
+    if (error is PlayerException) {
+      LogService.error(
+        'PlayerException: code=${error.code}, message="${error.message}", host=$host, path=$path, itag=$itag',
+        tag: 'AudioPlayer',
+      );
+    } else {
+      LogService.warning(
+        'Playback error: $error, host=$host, path=$path, itag=$itag',
+        tag: 'AudioPlayer',
+      );
+    }
+  }
+
   Future<void> playSong(Song song, {List<Song>? contextQueue, int? startIndex}) async {
     AntiBotService.recordPlay(videoId: song.id);
     _isPausedByUser = false;
     _needsStreamRecovery = false;
     _recoveryAttempts = 0;
+    _hasHandledCompletion = false;
 
     if (contextQueue != null && contextQueue.isNotEmpty) {
       _queue.clear();
@@ -192,15 +246,32 @@ class MelodyAudioService {
     await _playCurrent();
   }
 
-  Future<void> _playCurrent() async {
-    if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
-    final opToken = ++_playOperationToken;
+  Future<void> playQueue(List<Song> queue, {int startIndex = 0}) async {
+    if (queue.isEmpty) return;
     _isPausedByUser = false;
     _needsStreamRecovery = false;
     _recoveryAttempts = 0;
+    _hasHandledCompletion = false;
+
+    _queue.clear();
+    _queue.addAll(queue);
+    _currentIndex = (startIndex >= 0 && startIndex < _queue.length) ? startIndex : 0;
+
+    await _playCurrent();
+  }
+
+  Future<void> _playCurrent({int? token}) async {
+    if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
+    final opToken = token ?? ++_playOperationToken;
+    _isPausedByUser = false;
+    _needsStreamRecovery = false;
+    _recoveryAttempts = 0;
+    _hasHandledCompletion = false;
 
     // 1. Immediately cut off old audio so it stops playing right away
-    await _player.stop();
+    try {
+      await _player.stop();
+    } catch (_) {}
     if (opToken != _playOperationToken || _isPausedByUser) return;
 
     _currentSong = _queue[_currentIndex];
@@ -219,7 +290,9 @@ class MelodyAudioService {
     _stateChangeController.add(null);
 
     // Save to local history
-    DatabaseService.addToHistory(_currentSong!);
+    unawaited(DatabaseService.addToHistory(_currentSong!).catchError((e) {
+      LogService.error('History write failed: $e', tag: 'Database');
+    }));
     unawaited(_saveCurrentSession());
     LogService.recordBreadcrumb(
       'Playback started: "${_currentSong!.title}" (${_currentSong!.id})',
@@ -241,54 +314,83 @@ class MelodyAudioService {
       String playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, streamUrl);
 
       try {
-        if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
-          await _player.play(DeviceFileSource(playableUrl));
-        } else {
-          await _player.play(UrlSource(playableUrl));
+        final source = _createAudioSource(playableUrl);
+        await _player.setAudioSource(source).timeout(const Duration(seconds: 8));
+
+        if (opToken != _playOperationToken || _isPausedByUser) {
+          try {
+            await _player.pause();
+          } catch (_) {}
+          return;
         }
-      } on PlatformException catch (pe) {
-        LogService.error('PlatformException in _playCurrent: ${pe.message}', tag: 'AudioPlayer', error: pe.toString());
-        if (opToken != _playOperationToken || _isPausedByUser) return;
-        StreamResolverService.invalidateCache(_currentSong!.id);
-        AudioCacheService.evict(_currentSong!.id);
 
-        // Safe fallback retry with active probe & alternative track lookup
-        streamUrl = await StreamResolverService.resolveAudioStreamUrl(
-          _currentSong!.id,
-          songTitle: _currentSong!.title,
-          artist: _currentSong!.artist,
-          optimistic: false,
-        );
-        if (opToken != _playOperationToken || _isPausedByUser) return;
+        try {
+          final session = await AudioSession.instance;
+          await session.setActive(true);
+        } catch (_) {}
 
-        playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, streamUrl);
-
-        if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
-          await _player.play(DeviceFileSource(playableUrl));
-        } else {
-          await _player.play(UrlSource(playableUrl));
-        }
+        unawaited(_player.play().catchError((e) {
+          LogService.error('AudioPlayer play execution error: $e', tag: 'AudioPlayer');
+        }));
       } catch (playError) {
+        // Immediately cancel native ExoPlayer on timeout or error
+        try {
+          await _player.stop();
+        } catch (_) {}
+
+        _logPlayerException(playError, streamUrl);
+
         if (opToken != _playOperationToken || _isPausedByUser) return;
-        debugPrint('Optimistic play error ($playError). Retrying with safe probed stream...');
-        StreamResolverService.invalidateCache(_currentSong!.id);
+        LogService.warning(
+          'Optimistic source preparation failed ($playError). Retrying with safe direct stream (skipping proxy)...',
+          tag: 'AudioPlayer',
+        );
+        debugPrint('Optimistic play error ($playError). Retrying with safe direct stream (skipping proxy)...');
+        if (playError is! TimeoutException) {
+          StreamResolverService.invalidateCache(_currentSong!.id);
+        }
         AudioCacheService.evict(_currentSong!.id);
 
-        // Safe fallback retry with active probe & alternative track lookup
+        // Safe fallback retry with direct resolved stream (bypassing local proxy and companion proxy)
         streamUrl = await StreamResolverService.resolveAudioStreamUrl(
           _currentSong!.id,
           songTitle: _currentSong!.title,
           artist: _currentSong!.artist,
           optimistic: false,
+          skipCompanionProxy: true,
         );
         if (opToken != _playOperationToken || _isPausedByUser) return;
 
-        playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, streamUrl);
+        final directFallbackSource = _createAudioSource(streamUrl);
 
-        if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
-          await _player.play(DeviceFileSource(playableUrl));
-        } else {
-          await _player.play(UrlSource(playableUrl));
+        try {
+          await _player.setAudioSource(directFallbackSource).timeout(const Duration(seconds: 10));
+          if (opToken != _playOperationToken || _isPausedByUser) {
+            try {
+              await _player.pause();
+            } catch (_) {}
+            return;
+          }
+
+          try {
+            final session = await AudioSession.instance;
+            await session.setActive(true);
+          } catch (_) {}
+
+          unawaited(_player.play().catchError((e) {
+            LogService.error('AudioPlayer fallback play execution error: $e', tag: 'AudioPlayer');
+          }));
+        } catch (fallbackError) {
+          // Immediately cancel native ExoPlayer on fallback timeout or error
+          try {
+            await _player.stop();
+          } catch (_) {}
+
+          _logPlayerException(fallbackError, streamUrl);
+          StreamResolverService.invalidateCache(_currentSong!.id);
+
+          if (opToken != _playOperationToken || _isPausedByUser) return;
+          rethrow;
         }
       }
 
@@ -362,7 +464,8 @@ class MelodyAudioService {
       }
 
       if (_recoveryAttempts <= 2) {
-        debugPrint('AudioService: Premature track end at $_position of $_duration (attempt $_recoveryAttempts/2). Resuming stream seamlessly...');
+        debugPrint(
+            'AudioService: Premature track end at $_position of $_duration (attempt $_recoveryAttempts/2). Resuming stream seamlessly...');
         unawaited(_recoverStreamAtPosition(_position));
         return;
       } else {
@@ -374,8 +477,10 @@ class MelodyAudioService {
     _lastRecoveryPosition = Duration.zero;
 
     if (_loopMode == MelodyLoopMode.one) {
-      _player.seek(Duration.zero);
-      _player.resume();
+      seek(Duration.zero);
+      unawaited(_player.play().catchError((e) {
+        LogService.error('Loop one play error: $e', tag: 'AudioPlayer');
+      }));
     } else if (hasNext) {
       playNext();
     } else if (_loopMode == MelodyLoopMode.all && _queue.isNotEmpty) {
@@ -415,37 +520,35 @@ class MelodyAudioService {
     final opToken = ++_playOperationToken;
 
     try {
-      if (!_needsStreamRecovery && _player.state == PlayerState.paused) {
-        await _player.resume();
+      if (!_needsStreamRecovery && _player.processingState != ProcessingState.idle) {
+        try {
+          final session = await AudioSession.instance;
+          await session.setActive(true);
+        } catch (_) {}
+        unawaited(_player.play().catchError((e) {
+          LogService.error('Error in resume play: $e', tag: 'AudioPlayer');
+        }));
       } else if (_position > Duration.zero) {
         _needsStreamRecovery = false;
         await _recoverStreamAtPosition(_position, token: opToken);
+        return;
       } else {
         _needsStreamRecovery = false;
-        await _playCurrent();
+        await _playCurrent(token: opToken);
+        return;
       }
       if (opToken != _playOperationToken || _isPausedByUser) return;
       _isPlaying = true;
       LogService.recordBreadcrumb('Playback resumed at $_position', category: 'playback');
       _updateNotification();
       _stateChangeController.add(null);
-    } on PlatformException catch (pe) {
-      LogService.error('PlatformException in resume: ${pe.message}', tag: 'AudioPlayer', error: pe.toString());
-      if (_currentSong != null) {
-        StreamResolverService.invalidateCache(_currentSong!.id);
-        AudioCacheService.evict(_currentSong!.id);
-      }
-      if (_position > Duration.zero) {
-        await _recoverStreamAtPosition(_position, token: opToken);
-      } else {
-        await _playCurrent();
-      }
     } catch (e) {
       debugPrint('Resume error: $e. Retrying playback at position...');
+      LogService.warning('Resume error: $e. Retrying playback at position...', tag: 'AudioPlayer');
       if (_position > Duration.zero) {
         await _recoverStreamAtPosition(_position, token: opToken);
       } else {
-        await _playCurrent();
+        await _playCurrent(token: opToken);
       }
     }
   }
@@ -454,10 +557,12 @@ class MelodyAudioService {
     _isPausedByUser = true;
     _playOperationToken++;
     _isLoading = false;
+    _position = _player.position;
     try {
       await _player.pause();
     } catch (_) {}
     _isPlaying = false;
+    _position = _player.position;
     LogService.recordBreadcrumb('Playback paused at $_position', category: 'playback');
     _updateNotification();
     _stateChangeController.add(null);
@@ -469,6 +574,7 @@ class MelodyAudioService {
     _playOperationToken++;
     _needsStreamRecovery = false;
     _recoveryAttempts = 0;
+    _hasHandledCompletion = false;
     _isLoading = false;
     unawaited(_saveCurrentSession());
     try {
@@ -491,21 +597,21 @@ class MelodyAudioService {
 
   Future<void> seek(Duration position) async {
     _position = position;
+    _hasHandledCompletion = false;
     LogService.recordBreadcrumb('Playback seek to $position', category: 'playback');
     _updateNotification();
+    _positionChangeController.add(position);
     _stateChangeController.add(null);
 
     try {
       await _player.seek(position);
-    } on PlatformException catch (pe) {
-      LogService.error('PlatformException in seek: ${pe.message}', tag: 'AudioPlayer', error: pe.toString());
+    } catch (e) {
+      debugPrint('AudioService: Seek error ($e). Re-resolving stream and resuming at $position...');
+      LogService.warning('Seek error ($e). Attempting stream recovery at $position', tag: 'AudioPlayer');
       if (_currentSong != null) {
         StreamResolverService.invalidateCache(_currentSong!.id);
         AudioCacheService.evict(_currentSong!.id);
       }
-      await _recoverStreamAtPosition(position);
-    } catch (e) {
-      debugPrint('AudioService: Seek error ($e). Re-resolving stream and resuming at $position...');
       await _recoverStreamAtPosition(position);
     }
   }
@@ -513,32 +619,50 @@ class MelodyAudioService {
   Future<void> _recoverStreamAtPosition(Duration position, {int? token}) async {
     if (_currentSong == null) return;
     final opToken = token ?? ++_playOperationToken;
+    _hasHandledCompletion = false;
     try {
       _isLoading = true;
       _stateChangeController.add(null);
 
       StreamResolverService.invalidateCache(_currentSong!.id);
-      AudioCacheService.evict(_currentSong!.id);
       final freshStreamUrl = await StreamResolverService.resolveAudioStreamUrl(
         _currentSong!.id,
         songTitle: _currentSong!.title,
         artist: _currentSong!.artist,
         optimistic: false,
+        skipCompanionProxy: true,
       );
 
       if (opToken != _playOperationToken || _isPausedByUser) return;
 
-      final playableUrl = AudioCacheService.getPlayableUrl(_currentSong!.id, freshStreamUrl);
+      final directSource = _createAudioSource(freshStreamUrl);
+
       try {
-        if (!playableUrl.startsWith('http://') && !playableUrl.startsWith('https://')) {
-          await _player.play(DeviceFileSource(playableUrl), position: position);
-        } else {
-          await _player.play(UrlSource(playableUrl), position: position);
+        await _player.setAudioSource(directSource, initialPosition: position).timeout(const Duration(seconds: 10));
+        if (opToken != _playOperationToken || _isPausedByUser) {
+          try {
+            await _player.pause();
+          } catch (_) {}
+          return;
         }
-      } on PlatformException catch (pe) {
-        LogService.error('PlatformException in _recoverStreamAtPosition: ${pe.message}', tag: 'AudioPlayer', error: pe.toString());
-        AudioCacheService.evict(_currentSong!.id);
-        await _player.play(UrlSource(freshStreamUrl), position: position);
+
+        try {
+          final session = await AudioSession.instance;
+          await session.setActive(true);
+        } catch (_) {}
+
+        unawaited(_player.play().catchError((e) {
+          LogService.error('AudioPlayer recovery play error: $e', tag: 'AudioPlayer');
+        }));
+      } catch (pe) {
+        // Immediately cancel native ExoPlayer on timeout or error
+        try {
+          await _player.stop();
+        } catch (_) {}
+
+        _logPlayerException(pe, freshStreamUrl);
+        StreamResolverService.invalidateCache(_currentSong!.id);
+        rethrow;
       }
 
       if (opToken != _playOperationToken || _isPausedByUser) {
@@ -552,6 +676,7 @@ class MelodyAudioService {
       _updateNotification();
     } catch (err) {
       debugPrint('AudioService: Recovery at position failed: $err');
+      LogService.error('Recovery at position failed: $err', tag: 'AudioPlayer');
     } finally {
       if (opToken == _playOperationToken) {
         _isLoading = false;
@@ -609,6 +734,7 @@ class MelodyAudioService {
       _isPlaying = false;
       _isPausedByUser = true;
       _needsStreamRecovery = true;
+      _hasHandledCompletion = false;
 
       _positionChangeController.add(_position);
       _songChangeController.add(_currentSong);
@@ -655,7 +781,7 @@ class MelodyAudioService {
   }
 
   Future<void> setPlaybackSpeed(double speed) async {
-    await _player.setPlaybackRate(speed);
+    await _player.setSpeed(speed);
     _stateChangeController.add(null);
   }
 

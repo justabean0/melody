@@ -75,7 +75,7 @@ class AudioCacheService {
         return;
       }
 
-      final id = request.uri.queryParameters['id'] ?? '';
+      final id = (request.uri.queryParameters['id'] ?? '').replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '');
       final rawRemoteUrl = request.uri.queryParameters['url'] ?? '';
 
       if (rawRemoteUrl.isEmpty) {
@@ -84,7 +84,13 @@ class AudioCacheService {
         return;
       }
 
-      Uri remoteUri = Uri.parse(Uri.decodeComponent(rawRemoteUrl));
+      final parsedUri = Uri.tryParse(Uri.decodeComponent(rawRemoteUrl));
+      if (parsedUri == null || (!parsedUri.isScheme('http') && !parsedUri.isScheme('https'))) {
+        response.statusCode = HttpStatus.badRequest;
+        await response.close();
+        return;
+      }
+      Uri remoteUri = parsedUri;
       final incomingRange = request.headers.value(HttpHeaders.rangeHeader);
 
       int reqStart = 0;
@@ -405,27 +411,37 @@ class AudioCacheService {
   /// Evicts the cached head and metadata for a specific video ID.
   static Future<void> evict(String videoId) async {
     if (_headsDir == null) return;
+    final sanitizedId = videoId.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '');
+    if (sanitizedId.isEmpty) return;
     try {
-      final headFile = File('${_headsDir!.path}/$videoId.head');
-      final metaFile = File('${_headsDir!.path}/$videoId.meta');
-      if (await headFile.exists()) {
-        await headFile.delete();
-      }
-      if (await metaFile.exists()) {
-        await metaFile.delete();
-      }
-      debugPrint('AudioCacheService: Evicted head cache for $videoId');
+      final headFile = File('${_headsDir!.path}/$sanitizedId.head');
+      final metaFile = File('${_headsDir!.path}/$sanitizedId.meta');
+      try {
+        if (await headFile.exists()) {
+          await headFile.delete();
+        }
+      } on PathNotFoundException catch (_) {
+      } on FileSystemException catch (_) {}
+      try {
+        if (await metaFile.exists()) {
+          await metaFile.delete();
+        }
+      } on PathNotFoundException catch (_) {
+      } on FileSystemException catch (_) {}
+      debugPrint('AudioCacheService: Evicted head cache for $sanitizedId');
     } catch (e) {
-      debugPrint('AudioCacheService: Error evicting head cache for $videoId: $e');
+      debugPrint('AudioCacheService: Error evicting head cache for $sanitizedId: $e');
     }
   }
 
   /// Pre-caches the first 5-8 seconds (~128 KB) of an upcoming or played track to disk
   static Future<void> prefetchHead(String videoId, String remoteUrl) async {
     if (_headsDir == null) return;
+    final sanitizedId = videoId.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '');
+    if (sanitizedId.isEmpty) return;
     try {
-      final headFile = File('${_headsDir!.path}/$videoId.head');
-      final metaFile = File('${_headsDir!.path}/$videoId.meta');
+      final headFile = File('${_headsDir!.path}/$sanitizedId.head');
+      final metaFile = File('${_headsDir!.path}/$sanitizedId.meta');
 
       if (await headFile.exists() && await metaFile.exists()) {
         final metaContent = (await metaFile.readAsString()).trim();
@@ -436,7 +452,7 @@ class AudioCacheService {
           } catch (_) {}
           return; // Already cached and valid
         } else {
-          await evict(videoId);
+          await evict(sanitizedId);
         }
       }
 
@@ -448,7 +464,7 @@ class AudioCacheService {
 
       final streamedRes = await _httpClient.send(req).timeout(const Duration(seconds: 4));
       if (streamedRes.statusCode >= 400) {
-        await evict(videoId);
+        await evict(sanitizedId);
         return;
       }
 
@@ -472,14 +488,14 @@ class AudioCacheService {
         if (bytes.isNotEmpty) {
           await headFile.writeAsBytes(bytes, flush: true);
           await metaFile.writeAsString(totalLength.toString(), flush: true);
-          debugPrint('AudioCacheService: Pre-cached 5s head for $videoId (${bytes.length} bytes, total: $totalLength)');
+          debugPrint('AudioCacheService: Pre-cached 5s head for $sanitizedId (${bytes.length} bytes, total: $totalLength)');
 
           // Keep head cache compact
           await _pruneHeadsCache();
         }
       }
     } catch (e) {
-      debugPrint('AudioCacheService: Head prefetch skipped for $videoId: $e');
+      debugPrint('AudioCacheService: Head prefetch skipped for $sanitizedId: $e');
     }
   }
 
@@ -512,7 +528,9 @@ class AudioCacheService {
   /// Checks if the first 5-8 seconds are pre-cached on local storage
   static bool hasCachedHead(String videoId) {
     if (_headsDir == null) return false;
-    final head = File('${_headsDir!.path}/$videoId.head');
+    final sanitizedId = videoId.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '');
+    if (sanitizedId.isEmpty) return false;
+    final head = File('${_headsDir!.path}/$sanitizedId.head');
     return head.existsSync() && head.lengthSync() > 1000;
   }
 
@@ -521,10 +539,11 @@ class AudioCacheService {
   /// 2. Direct remote URL otherwise
   /// Deliberately never downloads or caches full songs on disk.
   static String getPlayableUrl(String videoId, String remoteUrl) {
-    if (isProxyRunning && hasCachedHead(videoId)) {
-      debugPrint('AudioCacheService: Using 5s head cache proxy for $videoId');
+    final sanitizedId = videoId.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '');
+    if (isProxyRunning && sanitizedId.isNotEmpty && hasCachedHead(sanitizedId)) {
+      debugPrint('AudioCacheService: Using 5s head cache proxy for $sanitizedId');
       final encoded = Uri.encodeComponent(remoteUrl);
-      return 'http://127.0.0.1:$_port/stream?id=$videoId&url=$encoded';
+      return 'http://127.0.0.1:$_port/stream?id=$sanitizedId&url=$encoded';
     }
 
     return remoteUrl;

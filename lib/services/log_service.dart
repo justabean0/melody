@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -124,6 +125,7 @@ class LogService {
   static final DoubleLinkedQueue<Breadcrumb> _breadcrumbs = DoubleLinkedQueue<Breadcrumb>();
   static final ValueNotifier<int> logCountNotifier = ValueNotifier<int>(0);
   static bool _initialized = false;
+  static bool _isLogging = false;
 
   @visibleForTesting
   static bool? debugOverrideDiagnosticsEnabled;
@@ -138,8 +140,17 @@ class LogService {
     // Intercept debugPrint so standard Flutter logs flow into our diagnostic buffer
     final originalDebugPrint = debugPrint;
     debugPrint = (String? message, {int? wrapWidth}) {
+      if (_isLogging) {
+        originalDebugPrint(message, wrapWidth: wrapWidth);
+        return;
+      }
       if (isDiagnosticsEnabled && message != null && message.trim().isNotEmpty) {
-        log(message, tag: _detectTag(message));
+        _isLogging = true;
+        try {
+          log(message, tag: _detectTag(message));
+        } finally {
+          _isLogging = false;
+        }
       }
       originalDebugPrint(message, wrapWidth: wrapWidth);
     };
@@ -248,6 +259,7 @@ class LogService {
       message: message,
       data: data,
     ));
+    developer.log('[Breadcrumb] [$category] $message', name: 'MelodyDiag');
   }
 
   static void _addEntry(LogEntry entry) {
@@ -257,6 +269,7 @@ class LogService {
     }
     _logs.addLast(entry);
     logCountNotifier.value++;
+    developer.log(entry.toString(), name: entry.tag);
   }
 
   static List<LogEntry> get logs => _logs.toList();

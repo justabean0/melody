@@ -56,10 +56,20 @@ class MediaNotificationService : Service() {
     private var currentArtist: String = "Playing music"
     private var currentDurationMs: Long = 0L
     private var currentPositionMs: Long = 0L
+    private var lastPositionUpdateTimeMs: Long = 0L
     private var currentIsPlaying: Boolean = false
     private var mediaSession: MediaSessionCompat? = null
     private var currentThumbnailUrl: String? = null
     private var currentArtwork: Bitmap? = null
+
+    private fun getCurrentLivePositionMs(): Long {
+        if (!currentIsPlaying || lastPositionUpdateTimeMs == 0L) {
+            return currentPositionMs
+        }
+        val elapsed = SystemClock.elapsedRealtime() - lastPositionUpdateTimeMs
+        val estimated = currentPositionMs + elapsed
+        return if (currentDurationMs > 0L) estimated.coerceAtMost(currentDurationMs) else estimated
+    }
 
     private val idleHandler = Handler(Looper.getMainLooper())
     private val idleTeardownRunnable = Runnable {
@@ -142,9 +152,11 @@ class MediaNotificationService : Service() {
 
                 override fun onPause() {
                     android.util.Log.d("MelodyMedia", "MediaSessionCompat.Callback.onPause triggered")
+                    val livePos = getCurrentLivePositionMs()
+                    currentPositionMs = livePos
                     currentIsPlaying = false
                     checkIdleTeardown()
-                    updatePlaybackState(false, currentPositionMs)
+                    updatePlaybackState(false, livePos)
                     val notif = buildNotification(currentTitle, currentArtist, false, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     manager.notify(NOTIFICATION_ID, notif)
@@ -244,9 +256,11 @@ class MediaNotificationService : Service() {
                     return START_STICKY
                 }
                 ACTION_PAUSE -> {
+                    val livePos = getCurrentLivePositionMs()
+                    currentPositionMs = livePos
                     currentIsPlaying = false
                     checkIdleTeardown()
-                    updatePlaybackState(false, currentPositionMs)
+                    updatePlaybackState(false, livePos)
                     val notif = buildNotification(currentTitle, currentArtist, false, currentArtwork)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     manager.notify(NOTIFICATION_ID, notif)
@@ -318,13 +332,16 @@ class MediaNotificationService : Service() {
                 PlaybackStateCompat.ACTION_SEEK_TO or
                 PlaybackStateCompat.ACTION_STOP
 
+        currentPositionMs = positionMs
+        lastPositionUpdateTimeMs = SystemClock.elapsedRealtime()
+
         val playbackState = PlaybackStateCompat.Builder()
             .setActions(actions)
             .setState(
                 state,
                 positionMs,
                 if (isPlaying) 1.0f else 0.0f,
-                SystemClock.elapsedRealtime()
+                lastPositionUpdateTimeMs
             )
             .build()
 

@@ -4,18 +4,63 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.util.concurrent.Executors
 
 class MainActivity: FlutterActivity() {
     companion object {
         const val BATTERY_CHANNEL = "com.melody.music/battery"
+        const val EXTRACTOR_CHANNEL = "com.melody.music/extractor"
+
+        private val extractorExecutor = Executors.newCachedThreadPool()
+        private val mainHandler = Handler(Looper.getMainLooper())
 
         fun sendPlaybackAction(action: String) {
             MelodyApplication.sendPlaybackAction(action)
+        }
+
+        fun prewarmExtractor() {
+            extractorExecutor.execute {
+                try {
+                    NewPipeAudioResolver.ensureInitialized()
+                } catch (e: Exception) {
+                    android.util.Log.w("NewPipeResolver", "Pre-warm failed: ${e.message}")
+                }
+            }
+        }
+
+        fun registerExtractorChannel(messenger: io.flutter.plugin.common.BinaryMessenger) {
+            MethodChannel(messenger, EXTRACTOR_CHANNEL).setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "resolveAudioStream" -> {
+                        val videoId = call.argument<String>("videoId")
+                        if (videoId.isNullOrBlank()) {
+                            result.error("INVALID_ARGUMENT", "videoId must not be null or blank", null)
+                            return@setMethodCallHandler
+                        }
+                        extractorExecutor.execute {
+                            try {
+                                val streamMap = NewPipeAudioResolver.resolveAudioStream(videoId)
+                                mainHandler.post {
+                                    result.success(streamMap)
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e("NewPipeResolver", "Extraction failed for $videoId: ${e.message}")
+                                mainHandler.post {
+                                    result.error("EXTRACTION_FAILED", e.message, null)
+                                }
+                            }
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
         }
 
         fun registerBatteryChannel(messenger: io.flutter.plugin.common.BinaryMessenger, context: Context) {
@@ -98,5 +143,6 @@ class MainActivity: FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         registerBatteryChannel(flutterEngine.dartExecutor.binaryMessenger, this)
+        registerExtractorChannel(flutterEngine.dartExecutor.binaryMessenger)
     }
 }

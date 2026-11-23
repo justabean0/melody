@@ -117,6 +117,9 @@ void main() {
             headers: {'content-type': 'application/json'},
           );
         }
+        if (uriStr.contains('videoplayback?id=invidious_proxy')) {
+          return http.Response('', 200, headers: {'content-type': 'audio/mp4'});
+        }
         return http.Response('Not found', 404);
       });
 

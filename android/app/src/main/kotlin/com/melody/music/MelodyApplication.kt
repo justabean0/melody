@@ -318,5 +318,9 @@ class MelodyApplication : Application() {
 
         // 8. Setup Battery Optimization Channel
         MainActivity.registerBatteryChannel(engine.dartExecutor.binaryMessenger, this)
+
+        // 9. Setup Native Extractor Channel & Pre-warm
+        MainActivity.registerExtractorChannel(engine.dartExecutor.binaryMessenger)
+        MainActivity.prewarmExtractor()
     }
 }

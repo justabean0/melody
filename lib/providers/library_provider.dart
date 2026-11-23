@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/song.dart';
 import '../services/database_service.dart';
@@ -6,6 +7,7 @@ class LibraryProvider extends ChangeNotifier {
   List<Song> _likedSongs = [];
   List<Playlist> _playlists = [];
   List<Song> _history = [];
+  StreamSubscription<void>? _historySubscription;
 
   List<Song> get likedSongs => List.unmodifiable(_likedSongs);
   List<Playlist> get playlists => List.unmodifiable(_playlists);
@@ -13,6 +15,15 @@ class LibraryProvider extends ChangeNotifier {
 
   LibraryProvider() {
     loadAll();
+    _historySubscription = DatabaseService.onHistoryChanged.listen((_) {
+      refreshHistory();
+    });
+  }
+
+  @override
+  void dispose() {
+    _historySubscription?.cancel();
+    super.dispose();
   }
 
   void loadAll() {
