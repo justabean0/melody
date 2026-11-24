@@ -44,6 +44,9 @@ class DatabaseService {
   static const String _searchHistoryKey = 'melody_search_history';
   static const String _batteryOptPromptShownKey = 'melody_battery_opt_prompt_shown';
   static const String _backgroundPlaybackKey = 'melody_background_playback_enabled';
+  static const String _feedCacheVersion = 'v3';
+
+  static String _feedCacheKey(String cacheKey) => 'melody_feed_cache_${_feedCacheVersion}_$cacheKey';
 
   static SharedPreferences? _prefs;
   static Database? _db;
@@ -90,6 +93,16 @@ class DatabaseService {
     try {
       final bgEnabled = await getBackgroundPlaybackEnabled();
       await BatteryService.syncBackgroundPlayback(bgEnabled);
+    } catch (_) {}
+
+    try {
+      final keys = _prefs?.getKeys() ?? <String>{};
+      for (final key in keys) {
+        if (key.startsWith('melody_feed_cache_') &&
+            !key.startsWith('melody_feed_cache_${_feedCacheVersion}_')) {
+          await _prefs?.remove(key);
+        }
+      }
     } catch (_) {}
   }
 
@@ -470,7 +483,7 @@ class DatabaseService {
 
   // --- Cached Feed (Instant Stale-While-Revalidate Home Display) ---
   static List<Song> getCachedFeed(String cacheKey) {
-    final raw = _prefs?.getString('melody_feed_cache_$cacheKey');
+    final raw = _prefs?.getString(_feedCacheKey(cacheKey));
     if (raw == null) return [];
     try {
       final list = jsonDecode(raw) as List<dynamic>;
@@ -483,7 +496,7 @@ class DatabaseService {
   static Future<void> saveCachedFeed(String cacheKey, List<Song> songs) async {
     try {
       final jsonStr = jsonEncode(songs.map((s) => s.toJson()).toList());
-      await _prefs?.setString('melody_feed_cache_$cacheKey', jsonStr);
+      await _prefs?.setString(_feedCacheKey(cacheKey), jsonStr);
     } catch (_) {}
   }
 

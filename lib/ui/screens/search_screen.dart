@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:provider/provider.dart';
 import '../../models/search_result.dart';
+import '../../models/song.dart';
 import '../../providers/search_provider.dart';
 import '../../providers/playback_provider.dart';
 import '../components/song_tile.dart';
 import '../components/album_card.dart';
+import '../../widgets/skeleton_loaders.dart';
+import 'collection_detail_screen.dart';
+import 'artist_detail_screen.dart';
+import '../../utils/thumbnail_utils.dart';
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
@@ -88,7 +94,7 @@ class _SearchScreenState extends State<SearchScreen> {
             )
           else if (search.isLoading)
             const Expanded(
-              child: Center(child: CircularProgressIndicator()),
+              child: SearchResultsSkeleton(),
             )
           else
             Expanded(
@@ -157,6 +163,7 @@ class _SearchScreenState extends State<SearchScreen> {
             ),
           ),
           ...search.history.map((item) => ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
                 leading: Icon(
                   Icons.history_rounded,
                   color: colorScheme.primary,
@@ -165,6 +172,8 @@ class _SearchScreenState extends State<SearchScreen> {
                 trailing: IconButton(
                   icon: const Icon(Icons.close, size: 18),
                   tooltip: 'Remove',
+                  constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                  padding: const EdgeInsets.all(12),
                   onPressed: () => search.removeFromHistory(item),
                 ),
                 onTap: () {
@@ -194,6 +203,7 @@ class _SearchScreenState extends State<SearchScreen> {
             ),
           ),
           ...matchingHistory.take(4).map((item) => ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
                 leading: Icon(
                   Icons.history_rounded,
                   color: colorScheme.primary,
@@ -201,6 +211,9 @@ class _SearchScreenState extends State<SearchScreen> {
                 title: Text(item),
                 trailing: IconButton(
                   icon: const Icon(Icons.close, size: 18),
+                  tooltip: 'Remove',
+                  constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                  padding: const EdgeInsets.all(12),
                   onPressed: () => search.removeFromHistory(item),
                 ),
                 onTap: () {
@@ -225,9 +238,19 @@ class _SearchScreenState extends State<SearchScreen> {
               ),
             ),
           ...suggestions.map((suggestion) => ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
                 leading: const Icon(Icons.search_rounded),
                 title: Text(suggestion),
-                trailing: const Icon(Icons.north_west, size: 18),
+                trailing: IconButton(
+                  icon: const Icon(Icons.north_west, size: 18),
+                  tooltip: 'Insert',
+                  constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                  padding: const EdgeInsets.all(12),
+                  onPressed: () {
+                    _controller.text = suggestion;
+                    search.onQueryChanged(suggestion);
+                  },
+                ),
                 onTap: () {
                   _controller.text = suggestion;
                   search.performSearch(suggestion);
@@ -254,6 +277,18 @@ class _SearchScreenState extends State<SearchScreen> {
     return ListView(
       padding: const EdgeInsets.only(bottom: 120),
       children: [
+        // Top Result Hero Card (All tab only)
+        if (search.filter == SearchFilter.all && results.topResult != null) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Text(
+              'Top Result',
+              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+            ),
+          ),
+          _buildTopResultCard(context, results.topResult, playback, theme, colorScheme),
+        ],
+
         // Songs
         if (results.songs.isNotEmpty &&
             (search.filter == SearchFilter.all || search.filter == SearchFilter.songs)) ...[
@@ -266,6 +301,23 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
           ...results.songs.map((s) => SongTile(
                 song: s,
+                contextQueue: results.songs,
+              )),
+        ],
+
+        // Videos
+        if (results.videos.isNotEmpty &&
+            (search.filter == SearchFilter.all || search.filter == SearchFilter.videos)) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text(
+              'Videos',
+              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+            ),
+          ),
+          ...results.videos.map((s) => SongTile(
+                song: s,
+                contextQueue: results.videos,
               )),
         ],
 
@@ -275,7 +327,7 @@ class _SearchScreenState extends State<SearchScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: Text(
-              'Albums & Playlists',
+              'Albums',
               style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
           ),
@@ -289,12 +341,103 @@ class _SearchScreenState extends State<SearchScreen> {
                 final album = results.albums[i];
                 return MediaCard(
                   title: album.title,
-                  subtitle: album.artist,
+                  subtitle: album.year != null && album.year! > 0
+                      ? '${album.artist} • ${album.year}'
+                      : album.artist,
                   imageUrl: album.thumbnailUrl,
                   onTap: () {
-                    if (album.songs.isNotEmpty) {
-                      playback.playSong(album.songs.first, contextQueue: album.songs);
-                    }
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => CollectionDetailScreen(
+                          browseId: album.browseId,
+                          isAlbum: true,
+                          title: album.title,
+                          subtitle: album.artist,
+                          thumbnailUrl: album.thumbnailUrl,
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+
+        // Artists
+        if (results.artists.isNotEmpty &&
+            (search.filter == SearchFilter.all || search.filter == SearchFilter.artists)) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text(
+              'Artists',
+              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+            ),
+          ),
+          SizedBox(
+            height: 220,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              itemCount: results.artists.length,
+              itemBuilder: (ctx, i) {
+                final artist = results.artists[i];
+                return MediaCard(
+                  title: artist.name,
+                  subtitle: artist.subscribers ?? 'Artist',
+                  imageUrl: artist.thumbnailUrl ?? '',
+                  isCircle: true,
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ArtistDetailScreen(
+                          browseId: artist.browseId,
+                          name: artist.name,
+                          thumbnailUrl: artist.thumbnailUrl,
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+
+        // Playlists
+        if (results.playlists.isNotEmpty &&
+            (search.filter == SearchFilter.all || search.filter == SearchFilter.playlists)) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text(
+              'Playlists',
+              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+            ),
+          ),
+          SizedBox(
+            height: 220,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              itemCount: results.playlists.length,
+              itemBuilder: (ctx, i) {
+                final playlist = results.playlists[i];
+                return MediaCard(
+                  title: playlist.title,
+                  subtitle: playlist.author ?? 'Playlist',
+                  imageUrl: playlist.thumbnailUrl,
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => CollectionDetailScreen(
+                          browseId: playlist.browseId,
+                          isAlbum: false,
+                          title: playlist.title,
+                          subtitle: playlist.author,
+                          thumbnailUrl: playlist.thumbnailUrl,
+                        ),
+                      ),
+                    );
                   },
                 );
               },
@@ -302,6 +445,195 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
         ],
       ],
+    );
+  }
+
+  Widget _buildTopResultCard(
+    BuildContext context,
+    dynamic topResult,
+    PlaybackProvider playback,
+    ThemeData theme,
+    ColorScheme colorScheme,
+  ) {
+    String title = '';
+    String subtitle = '';
+    String badge = '';
+    String imageUrl = '';
+    bool isCircle = false;
+    VoidCallback? onTap;
+
+    if (topResult is Song) {
+      title = topResult.title;
+      subtitle = topResult.duration > 0
+          ? '${topResult.artist} • ${topResult.formattedDuration}'
+          : topResult.artist;
+      badge = 'Song';
+      imageUrl = topResult.thumbnailUrl;
+      onTap = () => playback.playSong(topResult);
+    } else if (topResult is Artist) {
+      title = topResult.name;
+      subtitle = topResult.subscribers ?? 'Artist';
+      badge = 'Artist';
+      imageUrl = topResult.thumbnailUrl ?? '';
+      isCircle = true;
+      onTap = () {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ArtistDetailScreen(
+              browseId: topResult.browseId,
+              name: topResult.name,
+              thumbnailUrl: topResult.thumbnailUrl,
+            ),
+          ),
+        );
+      };
+    } else if (topResult is Album) {
+      title = topResult.title;
+      final yearStr = topResult.year != null && topResult.year! > 0 ? ' • ${topResult.year}' : '';
+      subtitle = '${topResult.artist}$yearStr';
+      badge = 'Album';
+      imageUrl = topResult.thumbnailUrl;
+      onTap = () {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => CollectionDetailScreen(
+              browseId: topResult.browseId,
+              isAlbum: true,
+              title: topResult.title,
+              subtitle: topResult.artist,
+              thumbnailUrl: topResult.thumbnailUrl,
+            ),
+          ),
+        );
+      };
+    } else if (topResult is Playlist) {
+      title = topResult.title;
+      subtitle = topResult.author ?? 'Playlist';
+      badge = 'Playlist';
+      imageUrl = topResult.thumbnailUrl;
+      onTap = () {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => CollectionDetailScreen(
+              browseId: topResult.browseId,
+              isAlbum: false,
+              title: topResult.title,
+              subtitle: topResult.author,
+              thumbnailUrl: topResult.thumbnailUrl,
+            ),
+          ),
+        );
+      };
+    } else {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: colorScheme.outlineVariant.withAlpha(80),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(isCircle ? 36 : 10),
+                child: SizedBox(
+                  width: 72,
+                  height: 72,
+                  child: imageUrl.isNotEmpty
+                      ? CachedNetworkImage(
+                          imageUrl: ThumbnailUtils.upgradeUrl(imageUrl, size: 544),
+                          fit: BoxFit.cover,
+                          placeholder: (_, __) => Container(
+                            color: colorScheme.surfaceContainerHighest,
+                          ),
+                          errorWidget: (_, __, ___) => Container(
+                            color: colorScheme.surfaceContainerHighest,
+                            child: Icon(
+                              isCircle ? Icons.person : Icons.music_note,
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        )
+                      : Container(
+                          color: colorScheme.surfaceContainerHighest,
+                          child: Icon(
+                            isCircle ? Icons.person : Icons.music_note,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        badge,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: colorScheme.primary,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      title,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (topResult is Song)
+                IconButton.filledTonal(
+                  icon: const Icon(Icons.play_arrow_rounded),
+                  iconSize: 28,
+                  onPressed: onTap,
+                )
+              else
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

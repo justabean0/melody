@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import '../../utils/thumbnail_utils.dart';
 
 class MediaCard extends StatelessWidget {
   final String title;
@@ -37,7 +38,7 @@ class MediaCard extends StatelessWidget {
             ClipRRect(
               borderRadius: BorderRadius.circular(isCircle ? size / 2 : 16),
               child: CachedNetworkImage(
-                imageUrl: imageUrl,
+                imageUrl: ThumbnailUtils.upgradeUrl(imageUrl, size: 544),
                 width: size,
                 height: size,
                 fit: BoxFit.cover,

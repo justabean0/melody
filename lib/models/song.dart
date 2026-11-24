@@ -56,6 +56,30 @@ class Song {
     );
   }
 
+  Song copyWith({
+    String? id,
+    String? title,
+    String? artist,
+    String? artistId,
+    String? album,
+    String? albumId,
+    int? duration,
+    String? thumbnailUrl,
+    bool? isVideo,
+  }) {
+    return Song(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      artist: artist ?? this.artist,
+      artistId: artistId ?? this.artistId,
+      album: album ?? this.album,
+      albumId: albumId ?? this.albumId,
+      duration: duration ?? this.duration,
+      thumbnailUrl: thumbnailUrl ?? this.thumbnailUrl,
+      isVideo: isVideo ?? this.isVideo,
+    );
+  }
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -78,6 +102,8 @@ class Artist {
     this.subscribers,
   });
 
+  String get browseId => id;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
@@ -95,6 +121,7 @@ class Artist {
 
 class Album {
   final String id;
+  final String? playlistId;
   final String title;
   final String artist;
   final String? artistId;
@@ -105,6 +132,7 @@ class Album {
 
   const Album({
     required this.id,
+    this.playlistId,
     required this.title,
     required this.artist,
     this.artistId,
@@ -114,8 +142,11 @@ class Album {
     this.songs = const [],
   });
 
+  String get browseId => id;
+
   Map<String, dynamic> toJson() => {
         'id': id,
+        'playlistId': playlistId,
         'title': title,
         'artist': artist,
         'artistId': artistId,
@@ -127,6 +158,7 @@ class Album {
 
   factory Album.fromJson(Map<String, dynamic> json) => Album(
         id: json['id'] as String,
+        playlistId: json['playlistId'] as String?,
         title: json['title'] as String,
         artist: json['artist'] as String? ?? 'Unknown Artist',
         artistId: json['artistId'] as String?,
@@ -142,6 +174,7 @@ class Album {
 
 class Playlist {
   final String id;
+  final String? playlistId;
   final String title;
   final String? author;
   final String? description;
@@ -151,6 +184,7 @@ class Playlist {
 
   const Playlist({
     required this.id,
+    this.playlistId,
     required this.title,
     this.author,
     this.description,
@@ -159,8 +193,11 @@ class Playlist {
     this.songs = const [],
   });
 
+  String get browseId => id;
+
   Map<String, dynamic> toJson() => {
         'id': id,
+        'playlistId': playlistId,
         'title': title,
         'author': author,
         'description': description,
@@ -171,6 +208,7 @@ class Playlist {
 
   factory Playlist.fromJson(Map<String, dynamic> json) => Playlist(
         id: json['id'] as String,
+        playlistId: json['playlistId'] as String?,
         title: json['title'] as String,
         author: json['author'] as String?,
         description: json['description'] as String?,

@@ -296,7 +296,6 @@ class StreamResolverService {
       }
     } catch (e) {
       LogService.warning('Could not fetch instances.json ($e), using seeds.', tag: 'StreamResolver');
-      debugPrint('StreamResolverService: Could not fetch instances.json ($e), using seeds.');
     }
   }
 

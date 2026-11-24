@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'database_service.dart';
 
 class UpdateInfo {
@@ -31,8 +31,8 @@ class UpdateService {
   static final http.Client _httpClient = http.Client();
 
   /// Default application version matching pubspec.yaml
-  static const String appVersion = '1.1.10';
-  static const int appBuildNumber = 12;
+  static const String appVersion = '1.1.11';
+  static const int appBuildNumber = 13;
 
   /// Retrieves the running app version from the native platform (or fallback)
   static Future<String> getCurrentVersion() async {
@@ -129,7 +129,7 @@ class UpdateService {
       final url = asset['browser_download_url'] as String? ?? '';
       if (!name.endsWith('.apk') || url.isEmpty) continue;
 
-      if (name.contains('debug')) {
+      if (name.contains('debug') || name.contains('diag')) {
         debugApkUrl ??= url;
       } else {
         releaseApkUrl ??= url;
@@ -180,18 +180,21 @@ class UpdateService {
 
         final assets = data['assets'] as List<dynamic>? ?? [];
         final targetUrl = selectTargetApkAsset(assets, isDebug: isDebug);
+        final htmlUrl = data['html_url'] as String? ?? '';
 
-        if (targetUrl == null) {
-          debugPrint('Update check: Running ${isDebug ? "Debug" : "Release"} build, but no matching APK found in release assets.');
+        if (targetUrl != null && targetUrl.isNotEmpty) {
+          downloadUrl = targetUrl;
+          final matchedAsset = assets.cast<Map<String, dynamic>?>().firstWhere(
+                (a) => a?['browser_download_url'] == targetUrl,
+                orElse: () => null,
+              );
+          apkSize = matchedAsset?['size'] as int?;
+        } else if (htmlUrl.isNotEmpty) {
+          downloadUrl = htmlUrl;
+        } else {
+          debugPrint('Update check: Running ${isDebug ? "Debug" : "Release"} build, but no matching APK or release page found in release assets.');
           return null;
         }
-
-        downloadUrl = targetUrl;
-        final matchedAsset = assets.cast<Map<String, dynamic>?>().firstWhere(
-              (a) => a?['browser_download_url'] == targetUrl,
-              orElse: () => null,
-            );
-        apkSize = matchedAsset?['size'] as int?;
       }
       // 2. Custom JSON Manifest format
       else if (data is Map<String, dynamic>) {
@@ -202,13 +205,17 @@ class UpdateService {
         if (isDebug) {
           downloadUrl = (data['debugDownloadUrl'] as String? ?? '').isNotEmpty
               ? (data['debugDownloadUrl'] as String)
-              : '';
-          apkSize = data['debugApkSize'] as int?;
+              : (data['diagDownloadUrl'] as String? ?? '');
+          apkSize = data['debugApkSize'] as int? ?? data['diagApkSize'] as int?;
         } else {
           downloadUrl = (data['releaseDownloadUrl'] as String? ?? '').isNotEmpty
               ? (data['releaseDownloadUrl'] as String)
               : (data['downloadUrl'] as String? ?? '');
           apkSize = data['releaseApkSize'] as int? ?? data['apkSize'] as int?;
+        }
+
+        if (downloadUrl.isEmpty) {
+          downloadUrl = (data['htmlUrl'] as String? ?? (data['releasePageUrl'] as String? ?? ''));
         }
       }
 
@@ -234,69 +241,18 @@ class UpdateService {
     }
   }
 
-  /// Downloads the APK file to temporary cache and reports download progress
-  static Future<File> downloadApk(
-    String downloadUrl, {
-    required void Function(int receivedBytes, int totalBytes, double percent) onProgress,
-  }) async {
-    final uri = Uri.parse(downloadUrl);
-    final request = http.Request('GET', uri)
-      ..headers['User-Agent'] = 'Melody-Music-App/1.0';
-
-    final streamedResponse = await _httpClient.send(request);
-    if (streamedResponse.statusCode != 200 && streamedResponse.statusCode != 206) {
-      throw Exception('Failed to download APK: HTTP ${streamedResponse.statusCode}');
+  /// Opens the update URL (direct APK download or release page) in an external browser
+  static Future<bool> launchUpdateUrl(String url) async {
+    try {
+      final uri = Uri.parse(url);
+      return await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (e) {
+      debugPrint('Failed to launch update URL: $e');
+      return false;
     }
-
-    final totalBytes = streamedResponse.contentLength ?? 0;
-    int receivedBytes = 0;
-
-    final tempDir = await getTemporaryDirectory();
-    final apkFile = File('${tempDir.path}/melody-update.apk');
-
-    if (await apkFile.exists()) {
-      await apkFile.delete();
-    }
-
-    final sink = apkFile.openWrite();
-
-    await for (final chunk in streamedResponse.stream) {
-      sink.add(chunk);
-      receivedBytes += chunk.length;
-
-      final percent = totalBytes > 0 ? (receivedBytes / totalBytes) : 0.0;
-      onProgress(receivedBytes, totalBytes, percent.clamp(0.0, 1.0));
-    }
-
-    await sink.flush();
-    await sink.close();
-
-    return apkFile;
-  }
-
-  /// Launches the native Android package installer (or runs installer on Windows)
-  static Future<bool> installApk(String filePath) async {
-    if (Platform.isAndroid) {
-      try {
-        final success = await _channel.invokeMethod<bool>('installApk', {
-          'filePath': filePath,
-        });
-        return success ?? false;
-      } on PlatformException catch (e) {
-        debugPrint('Install error: ${e.message}');
-        return false;
-      }
-    } else if (Platform.isWindows) {
-      // On Windows desktop, execute or open the file
-      try {
-        await Process.start('explorer.exe', [filePath]);
-        return true;
-      } catch (e) {
-        debugPrint('Windows install trigger error: $e');
-        return false;
-      }
-    }
-    return false;
   }
 }
 

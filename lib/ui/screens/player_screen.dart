@@ -7,6 +7,7 @@ import '../../providers/library_provider.dart';
 import '../../services/audio_service.dart';
 import '../components/lyrics_view.dart';
 import '../components/song_tile.dart';
+import '../../utils/thumbnail_utils.dart';
 
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
@@ -148,7 +149,7 @@ class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSt
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(24),
                     child: CachedNetworkImage(
-                      imageUrl: song.thumbnailUrl,
+                      imageUrl: ThumbnailUtils.upgradeUrl(song.thumbnailUrl, size: 1080),
                       fit: BoxFit.cover,
                       placeholder: (_, __) => Container(
                         color: colorScheme.surfaceContainerHighest,

@@ -20,6 +20,7 @@ class PlaybackProvider extends ChangeNotifier {
 
   LyricsData? _lyrics;
   LyricsData? get lyrics => _lyrics;
+  String? _lastLyricsSongId;
 
   bool _isLoadingLyrics = false;
   bool get isLoadingLyrics => _isLoadingLyrics;
@@ -55,12 +56,16 @@ class PlaybackProvider extends ChangeNotifier {
 
   void _onSongChanged(Song? song) {
     if (song == null) {
+      _lastLyricsSongId = null;
       _lyrics = null;
       notifyListeners();
       return;
     }
 
-    _loadLyrics(song);
+    if (_lastLyricsSongId != song.id) {
+      _lastLyricsSongId = song.id;
+      _loadLyrics(song);
+    }
     notifyListeners();
   }
 

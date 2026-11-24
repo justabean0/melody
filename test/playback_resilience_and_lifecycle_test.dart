@@ -465,7 +465,7 @@ void main() {
     });
   });
 
-  group('Dynamic Instance Pool Parser & Security Tests (Strix White-Box Audit)', () {
+  group('Playback Resilience & Lifecycle Security Tests', () {
     test('sanitizeAndValidateInstanceUrl rejects SSRF, loopback, private IPs, credentials, and paths', () {
       expect(StreamResolverService.sanitizeAndValidateInstanceUrl('http://invidious.example.com'), isNull);
       expect(StreamResolverService.sanitizeAndValidateInstanceUrl('ftp://invidious.example.com'), isNull);

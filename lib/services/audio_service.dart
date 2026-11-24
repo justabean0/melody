@@ -144,6 +144,14 @@ class MelodyAudioService {
       if (dur != null && dur > Duration.zero) {
         _duration = dur;
         _position = _player.position;
+        if (_currentSong != null && _currentSong!.duration <= 0) {
+          final updatedSong = _currentSong!.copyWith(duration: dur.inSeconds);
+          _currentSong = updatedSong;
+          if (_currentIndex >= 0 && _currentIndex < _queue.length) {
+            _queue[_currentIndex] = updatedSong;
+          }
+          _songChangeController.add(updatedSong);
+        }
         _updateNotification();
         _stateChangeController.add(null);
       }

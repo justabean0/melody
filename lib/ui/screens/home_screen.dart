@@ -1,30 +1,20 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../models/browse_result.dart';
 import '../../models/song.dart';
 import '../../providers/playback_provider.dart';
 import '../../services/database_service.dart';
 import '../../services/innertube_service.dart';
+import '../../services/recommendation_service.dart';
 import '../../services/stream_resolver_service.dart';
 import '../../services/update_service.dart';
+import '../../widgets/skeleton_loaders.dart';
 import '../components/album_card.dart';
 import '../components/language_selection_dialog.dart';
 import '../components/song_tile.dart';
 import '../components/update_dialog.dart';
-
-class _TrendingCategory {
-  final String title;
-  final String subtitle;
-  final String imageUrl;
-  final String query;
-
-  const _TrendingCategory({
-    required this.title,
-    required this.subtitle,
-    required this.imageUrl,
-    required this.query,
-  });
-}
+import 'collection_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -35,6 +25,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   List<Song> _quickPicks = [];
+  List<BrowseMediaItem> _browseItems = [];
   bool _isLoading = true;
   bool _hasError = false;
   int _feedRequestToken = 0;
@@ -126,7 +117,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // 1. Instant display from cache (0ms perceived latency)
     final cached = DatabaseService.getCachedFeed(cacheKey);
-    if (cached.isNotEmpty) {
+    if (cached.isNotEmpty && !isUserRefresh) {
       if (mounted && requestToken == _feedRequestToken) {
         setState(() {
           _quickPicks = cached;
@@ -134,7 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _hasError = false;
         });
       }
-    } else if (_quickPicks.isEmpty) {
+    } else if (_quickPicks.isEmpty || isUserRefresh) {
       if (mounted && requestToken == _feedRequestToken) {
         setState(() {
           _isLoading = true;
@@ -143,21 +134,32 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 2. Fetch fresh personalized feed with 10-second timeout guard
+    // 2. Fetch fresh personalized feed + featured browse items concurrently
     try {
-      final songs = await InnerTubeService.getQuickPicks(
-        languages: activeLangs,
-        mood: mood,
-        forceRefresh: isUserRefresh || cached.isEmpty,
-      ).timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          debugPrint('Feed network request timed out - falling back to cache');
-          return cached;
-        },
-      );
+      final results = await Future.wait([
+        InnerTubeService.getQuickPicks(
+          languages: activeLangs,
+          mood: mood,
+          forceRefresh: isUserRefresh || cached.isEmpty,
+        ).timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            debugPrint('Feed network request timed out - falling back to cache');
+            return cached;
+          },
+        ),
+        RecommendationService.getFeaturedBrowseItems(
+          languages: activeLangs,
+        ).timeout(
+          const Duration(seconds: 8),
+          onTimeout: () => <BrowseMediaItem>[],
+        ),
+      ]);
 
       if (!mounted || requestToken != _feedRequestToken) return;
+
+      final songs = results[0] as List<Song>;
+      final browse = results[1] as List<BrowseMediaItem>;
 
       setState(() {
         if (songs.isNotEmpty) {
@@ -165,6 +167,9 @@ class _HomeScreenState extends State<HomeScreen> {
           _hasError = false;
         } else if (_quickPicks.isEmpty && cached.isEmpty) {
           _hasError = true;
+        }
+        if (browse.isNotEmpty) {
+          _browseItems = browse;
         }
         _isLoading = false;
       });
@@ -188,120 +193,6 @@ class _HomeScreenState extends State<HomeScreen> {
         _isLoading = false;
       });
     }
-  }
-
-  List<_TrendingCategory> _getTrendingCategories() {
-    final languages = DatabaseService.getMusicLanguages();
-    final categories = <_TrendingCategory>[];
-
-    for (final lang in languages) {
-      switch (lang) {
-        case 'Hindi':
-          categories.add(const _TrendingCategory(
-            title: 'Top 50 India',
-            subtitle: 'Bollywood & Hindi Hits',
-            imageUrl: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300',
-            query: 'Top 50 Hindi Songs 2026',
-          ));
-          categories.add(const _TrendingCategory(
-            title: 'Desi Indie & Pop',
-            subtitle: 'Indian Indie Charts',
-            imageUrl: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=300',
-            query: 'Trending Hindi Indie Hits',
-          ));
-          break;
-        case 'Punjabi':
-          categories.add(const _TrendingCategory(
-            title: 'Punjabi Hot 50',
-            subtitle: 'Bhangra & Pop Hits',
-            imageUrl: 'https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300',
-            query: 'Top Punjabi Songs 2026',
-          ));
-          break;
-        case 'Spanish':
-          categories.add(const _TrendingCategory(
-            title: 'Viva Latino',
-            subtitle: 'Reggaeton & Latin Pop',
-            imageUrl: 'https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=300',
-            query: 'Top Spanish Hits 2026',
-          ));
-          break;
-        case 'Korean':
-          categories.add(const _TrendingCategory(
-            title: 'K-Pop Daebak',
-            subtitle: 'Top K-Pop Idol Hits',
-            imageUrl: 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=300',
-            query: 'Top K-Pop Songs 2026',
-          ));
-          break;
-        case 'Bengali':
-          categories.add(const _TrendingCategory(
-            title: 'Bangla Top Hits',
-            subtitle: 'Tollywood & Bangla Folk',
-            imageUrl: 'https://images.unsplash.com/photo-1487180144351-b8472da7d491?w=300',
-            query: 'Top Bengali Songs 2026',
-          ));
-          break;
-        case 'Tamil':
-          categories.add(const _TrendingCategory(
-            title: 'Kollywood Beats',
-            subtitle: 'Tamil Chartbusters',
-            imageUrl: 'https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=300',
-            query: 'Top Tamil Songs 2026',
-          ));
-          break;
-        case 'Telugu':
-          categories.add(const _TrendingCategory(
-            title: 'Tollywood Top 50',
-            subtitle: 'Telugu Mass Melodies',
-            imageUrl: 'https://images.unsplash.com/photo-1511379938547-c1f69419868d?w=300',
-            query: 'Top Telugu Songs 2026',
-          ));
-          break;
-        case 'Malayalam':
-          categories.add(const _TrendingCategory(
-            title: 'Mollywood Melodies',
-            subtitle: 'Malayalam Hits & Indie',
-            imageUrl: 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?w=300',
-            query: 'Top Malayalam Songs 2026',
-          ));
-          break;
-        case 'Japanese':
-          categories.add(const _TrendingCategory(
-            title: 'J-Pop & Anime',
-            subtitle: 'Tokyo Top Charts',
-            imageUrl: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=300',
-            query: 'Top J-Pop Anime Songs 2026',
-          ));
-          break;
-        case 'English':
-        default:
-          categories.add(const _TrendingCategory(
-            title: 'Global Top 50',
-            subtitle: 'International Hits',
-            imageUrl: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300',
-            query: 'Global Top 50 Hits 2026',
-          ));
-          categories.add(const _TrendingCategory(
-            title: 'Today’s Hot Hits',
-            subtitle: 'Viral Pop & Hip-Hop',
-            imageUrl: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300',
-            query: 'Top Billboard Hits 2026',
-          ));
-          break;
-      }
-    }
-
-    if (categories.isEmpty) {
-      categories.add(const _TrendingCategory(
-        title: 'Global Top 50',
-        subtitle: 'International Hits',
-        imageUrl: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300',
-        query: 'Global Top 50 Hits 2026',
-      ));
-    }
-
-    return categories;
   }
 
   @override
@@ -347,6 +238,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 context,
                 isDismissible: true,
                 onSaved: (selected) {
+                  setState(() => _isLoading = true);
                   _loadFeed(_activeMood, true);
                 },
               );
@@ -355,64 +247,74 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: () => _loadFeed(_activeMood, true),
-        child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : _hasError && _quickPicks.isEmpty
-                ? Center(
-                    child: SingleChildScrollView(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 48.0),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.wifi_off_rounded, size: 56, color: colorScheme.outline),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Unable to load music feed',
-                            style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Check your internet connection and try again.',
-                            textAlign: TextAlign.center,
-                            style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
-                          ),
-                          const SizedBox(height: 20),
-                          FilledButton.icon(
-                            onPressed: () => _loadFeed(_activeMood, true),
-                            icon: const Icon(Icons.refresh_rounded),
-                            label: const Text('Retry'),
-                          ),
-                        ],
+        onRefresh: () async {
+          if (_isLoading) return;
+          unawaited(_loadFeed(_activeMood, true));
+        },
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          child: _isLoading
+              ? const HomeFeedSkeleton(key: ValueKey('home_skeleton'))
+              : _hasError && _quickPicks.isEmpty
+                  ? Center(
+                      key: const ValueKey('home_error'),
+                      child: SingleChildScrollView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 48.0),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.wifi_off_rounded, size: 56, color: colorScheme.outline),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Unable to load music feed',
+                              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Check your internet connection and try again.',
+                              textAlign: TextAlign.center,
+                              style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                            ),
+                            const SizedBox(height: 20),
+                            FilledButton.icon(
+                              onPressed: () => _loadFeed(_activeMood, true),
+                              icon: const Icon(Icons.refresh_rounded),
+                              label: const Text('Retry'),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  )
-                : ListView(
-                padding: const EdgeInsets.only(bottom: 120),
-                children: [
-                  // Moods & Genres Filters
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                    child: Row(
-                      children: _moods.map((mood) {
-                        final isSelected = _activeMood == mood;
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 8.0),
-                          child: FilterChip(
-                            label: Text(mood),
-                            selected: isSelected,
-                            showCheckmark: false,
-                            onSelected: (val) {
-                              setState(() => _activeMood = mood);
-                              _loadFeed(mood, false);
-                            },
+                    )
+                  : ListView(
+                      key: const ValueKey('home_content'),
+                      padding: const EdgeInsets.only(bottom: 120),
+                      children: [
+                        // Moods & Genres Filters
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                          child: Row(
+                            children: _moods.map((mood) {
+                              final isSelected = _activeMood == mood;
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 8.0),
+                                child: FilterChip(
+                                  label: Text(mood),
+                                  selected: isSelected,
+                                  showCheckmark: false,
+                                  onSelected: (val) {
+                                    setState(() {
+                                      _activeMood = mood;
+                                      _isLoading = true;
+                                    });
+                                    _loadFeed(mood, false);
+                                  },
+                                ),
+                              );
+                            }).toList(),
                           ),
-                        );
-                      }).toList(),
-                    ),
-                  ),
+                        ),
 
                   const SizedBox(height: 12),
 
@@ -461,49 +363,52 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 20),
 
                   // Section 2: Recommended Albums & Playlists (Personalized by Languages)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
-                    child: Text(
-                      'Featured & Trending',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
+                  if (_browseItems.isNotEmpty) ...[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
+                      child: Text(
+                        'Featured & Trending',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
-                  ),
 
-                  SizedBox(
-                    height: 220,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                      itemCount: _getTrendingCategories().length,
-                      itemBuilder: (context, index) {
-                        final cat = _getTrendingCategories()[index];
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 12.0),
-                          child: MediaCard(
-                            title: cat.title,
-                            subtitle: cat.subtitle,
-                            imageUrl: cat.imageUrl,
-                            onTap: () async {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Playing ${cat.title}...'),
-                                  duration: const Duration(seconds: 1),
-                                ),
-                              );
-                              try {
-                                final results = await InnerTubeService.search(cat.query);
-                                if (results.songs.isNotEmpty && mounted) {
-                                  playback.playSong(results.songs.first, contextQueue: results.songs);
-                                }
-                              } catch (_) {}
-                            },
-                          ),
-                        );
-                      },
+                    SizedBox(
+                      height: 220,
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                        itemCount: _browseItems.length,
+                        itemBuilder: (context, index) {
+                          final item = _browseItems[index];
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 12.0),
+                            child: MediaCard(
+                              title: item.title,
+                              subtitle: item.subtitle,
+                              imageUrl: item.thumbnailUrl,
+                              onTap: () {
+                                final browseId = item.browseId ?? item.id;
+                                if (browseId.isEmpty) return;
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => CollectionDetailScreen(
+                                      browseId: browseId,
+                                      isAlbum: item.type == 'album',
+                                      title: item.title,
+                                      subtitle: item.subtitle,
+                                      thumbnailUrl: item.thumbnailUrl,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          );
+                        },
+                      ),
                     ),
-                  ),
+                  ],
 
                   // Section 3: More Recommendations (if extra tracks available)
                   if (_quickPicks.length > 8) ...[
@@ -523,6 +428,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ],
               ),
+        ),
       ),
     );
   }

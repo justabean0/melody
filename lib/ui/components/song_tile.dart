@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../models/song.dart';
 import '../../providers/playback_provider.dart';
 import '../../providers/library_provider.dart';
+import '../../utils/thumbnail_utils.dart';
 
 class SongTile extends StatelessWidget {
   final Song song;
@@ -37,7 +38,7 @@ class SongTile extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: CachedNetworkImage(
-              imageUrl: song.thumbnailUrl,
+              imageUrl: ThumbnailUtils.upgradeUrl(song.thumbnailUrl, size: 544),
               width: 50,
               height: 50,
               fit: BoxFit.cover,
@@ -75,7 +76,7 @@ class SongTile extends StatelessWidget {
         ),
       ),
       subtitle: Text(
-        '${song.artist} • ${song.formattedDuration}',
+        song.duration > 0 ? '${song.artist} • ${song.formattedDuration}' : song.artist,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: theme.textTheme.bodySmall?.copyWith(

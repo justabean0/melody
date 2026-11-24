@@ -1,6 +1,28 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_platform_interface/plugin_platform_interface.dart';
+import 'package:url_launcher_platform_interface/link.dart';
+import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
 import 'package:melody/services/update_service.dart';
+
+class MockUrlLauncher extends UrlLauncherPlatform with MockPlatformInterfaceMixin {
+  String? launchedUrl;
+  PreferredLaunchMode? launchMode;
+  bool returnSuccess = true;
+
+  @override
+  LinkDelegate? get linkDelegate => null;
+
+  @override
+  Future<bool> launchUrl(String url, LaunchOptions options) async {
+    launchedUrl = url;
+    launchMode = options.mode;
+    return returnSuccess;
+  }
+
+  @override
+  Future<bool> canLaunch(String url) async => true;
+}
 
 void main() {
   group('UpdateService Semantic Version Comparison Tests', () {
@@ -112,6 +134,27 @@ void main() {
       final debugSelected = UpdateService.selectTargetApkAsset(dualAssets, isDebug: true);
       expect(debugSelected, 'https://github.com/justabean0/melody/releases/download/v1.1.8/melody-debug.apk');
     });
+
+    test('Debug/diag build correctly selects diag release APK', () {
+      final diagAssets = [
+        {
+          'name': 'app-release.apk',
+          'browser_download_url': 'https://github.com/justabean0/melody/releases/download/v1.1.8/app-release.apk',
+          'size': 42000000,
+        },
+        {
+          'name': 'app-diag-release.apk',
+          'browser_download_url': 'https://github.com/justabean0/melody/releases/download/v1.1.8/app-diag-release.apk',
+          'size': 45000000,
+        },
+      ];
+
+      final selected = UpdateService.selectTargetApkAsset(diagAssets, isDebug: true);
+      expect(selected, 'https://github.com/justabean0/melody/releases/download/v1.1.8/app-diag-release.apk');
+
+      final releaseSelected = UpdateService.selectTargetApkAsset(diagAssets, isDebug: false);
+      expect(releaseSelected, 'https://github.com/justabean0/melody/releases/download/v1.1.8/app-release.apk');
+    });
   });
 
   group('UpdateService Pubspec Version Sync Tests', () {
@@ -126,6 +169,31 @@ void main() {
 
       expect(UpdateService.appVersion, equals(expectedVersion));
       expect(UpdateService.appBuildNumber, equals(expectedBuild));
+    });
+  });
+
+  group('UpdateService Browser Update Launch Tests', () {
+    test('launchUpdateUrl invokes externalApplication mode with provided URL', () async {
+      final mock = MockUrlLauncher();
+      UrlLauncherPlatform.instance = mock;
+
+      const testUrl = 'https://github.com/justabean0/melody/releases/download/v1.1.11/app-release.apk';
+      final result = await UpdateService.launchUpdateUrl(testUrl);
+
+      expect(result, isTrue);
+      expect(mock.launchedUrl, equals(testUrl));
+      expect(mock.launchMode, equals(PreferredLaunchMode.externalApplication));
+    });
+
+    test('launchUpdateUrl returns false when platform launcher reports failure', () async {
+      final mock = MockUrlLauncher();
+      mock.returnSuccess = false;
+      UrlLauncherPlatform.instance = mock;
+
+      const testUrl = 'https://invalid-url';
+      final result = await UpdateService.launchUpdateUrl(testUrl);
+
+      expect(result, isFalse);
     });
   });
 }

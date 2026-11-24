@@ -179,7 +179,7 @@ class MelodyApplication : Application() {
             }
         }
 
-        // 6. Setup persistent In-App Updater Channel
+        // 6. Setup persistent Updater Channel (Version Queries)
         MethodChannel(engine.dartExecutor.binaryMessenger, UPDATER_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "getAppVersion" -> {
@@ -201,38 +201,6 @@ class MelodyApplication : Application() {
                         ))
                     } catch (e: Exception) {
                         result.error("VERSION_ERROR", e.message, null)
-                    }
-                }
-                "installApk" -> {
-                    val filePath = call.argument<String>("filePath")
-                    if (filePath.isNullOrEmpty()) {
-                        result.error("INVALID_PATH", "File path cannot be null or empty", null)
-                        return@setMethodCallHandler
-                    }
-
-                    try {
-                        val file = File(filePath)
-                        if (!file.exists()) {
-                            result.error("FILE_NOT_FOUND", "APK file does not exist at $filePath", null)
-                            return@setMethodCallHandler
-                        }
-
-                        val uri = FileProvider.getUriForFile(
-                            this,
-                            "$packageName.fileprovider",
-                            file
-                        )
-
-                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(uri, "application/vnd.android.package-archive")
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-
-                        startActivity(intent)
-                        result.success(true)
-                    } catch (e: Exception) {
-                        result.error("INSTALL_ERROR", e.message, null)
                     }
                 }
                 else -> result.notImplemented()
