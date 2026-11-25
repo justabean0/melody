@@ -197,7 +197,7 @@ void main() {
   });
 
   group('DatabaseService Feed Cache Versioning Tests', () {
-    test('getCachedFeed and saveCachedFeed use v3 cache key', () async {
+    test('getCachedFeed and saveCachedFeed use v4 cache key', () async {
       SharedPreferences.setMockInitialValues({});
       final db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
       DatabaseService.setDatabaseForTesting(db);
@@ -221,7 +221,7 @@ void main() {
       expect(loaded.first.title, equals('Cached Track'));
 
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.containsKey('melody_feed_cache_v3_Chill'), isTrue);
+      expect(prefs.containsKey('melody_feed_cache_v4_Chill'), isTrue);
       expect(prefs.containsKey('melody_feed_cache_Chill'), isFalse);
     });
 
@@ -234,7 +234,10 @@ void main() {
           {'id': 'stale_2', 'title': 'Stale v2', 'artist': 'Stale', 'thumbnailUrl': '', 'duration': 0}
         ]),
         'melody_feed_cache_v3_Focus': jsonEncode([
-          {'id': 'fresh_1', 'title': 'Fresh v3', 'artist': 'Fresh', 'thumbnailUrl': '', 'duration': 200}
+          {'id': 'stale_3', 'title': 'Stale v3', 'artist': 'Stale', 'thumbnailUrl': '', 'duration': 200}
+        ]),
+        'melody_feed_cache_v4_Focus': jsonEncode([
+          {'id': 'fresh_1', 'title': 'Fresh v4', 'artist': 'Fresh', 'thumbnailUrl': '', 'duration': 200}
         ]),
       });
 
@@ -243,12 +246,13 @@ void main() {
       await DatabaseService.init();
       final prefs = await SharedPreferences.getInstance();
 
-      // Older unversioned or v2 keys purged
+      // Older unversioned, v2, and v3 keys purged
       expect(prefs.containsKey('melody_feed_cache_Chill'), isFalse);
       expect(prefs.containsKey('melody_feed_cache_v2_Workout'), isFalse);
+      expect(prefs.containsKey('melody_feed_cache_v3_Focus'), isFalse);
 
-      // Current v3 key preserved
-      expect(prefs.containsKey('melody_feed_cache_v3_Focus'), isTrue);
+      // Current v4 key preserved
+      expect(prefs.containsKey('melody_feed_cache_v4_Focus'), isTrue);
       final preserved = DatabaseService.getCachedFeed('Focus');
       expect(preserved, hasLength(1));
       expect(preserved.first.id, equals('fresh_1'));

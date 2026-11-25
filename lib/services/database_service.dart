@@ -44,9 +44,13 @@ class DatabaseService {
   static const String _searchHistoryKey = 'melody_search_history';
   static const String _batteryOptPromptShownKey = 'melody_battery_opt_prompt_shown';
   static const String _backgroundPlaybackKey = 'melody_background_playback_enabled';
-  static const String _feedCacheVersion = 'v3';
+  static const String _feedCacheVersion = 'v4';
 
   static String _feedCacheKey(String cacheKey) => 'melody_feed_cache_${_feedCacheVersion}_$cacheKey';
+  static String _feedCacheTimestampKey(String cacheKey) => 'melody_feed_cache_ts_${_feedCacheVersion}_$cacheKey';
+
+  /// Reactive notifier for real-time synchronization when user changes music languages
+  static final ValueNotifier<List<String>> musicLanguagesNotifier = ValueNotifier<List<String>>([]);
 
   static SharedPreferences? _prefs;
   static Database? _db;
@@ -59,10 +63,12 @@ class DatabaseService {
   @visibleForTesting
   static void setPrefsForTesting(SharedPreferences? prefs) {
     _prefs = prefs;
+    musicLanguagesNotifier.value = getMusicLanguages();
   }
 
   static Future<void> init({String? dbName}) async {
     _prefs = await SharedPreferences.getInstance();
+    musicLanguagesNotifier.value = getMusicLanguages();
 
     if (_db == null) {
       try {
@@ -95,11 +101,17 @@ class DatabaseService {
       await BatteryService.syncBackgroundPlayback(bgEnabled);
     } catch (_) {}
 
+    await pruneOldFeedCaches();
+  }
+
+  /// Prunes all feed cache keys from previous versions (e.g. pre-v4 all-Hindi cache pollution)
+  static Future<void> pruneOldFeedCaches() async {
     try {
       final keys = _prefs?.getKeys() ?? <String>{};
       for (final key in keys) {
         if (key.startsWith('melody_feed_cache_') &&
-            !key.startsWith('melody_feed_cache_${_feedCacheVersion}_')) {
+            !key.startsWith('melody_feed_cache_${_feedCacheVersion}_') &&
+            !key.startsWith('melody_feed_cache_ts_${_feedCacheVersion}_')) {
           await _prefs?.remove(key);
         }
       }
@@ -467,6 +479,7 @@ class DatabaseService {
     await _prefs?.setStringList(_musicLanguagesKey, languages);
     await _prefs?.setBool(_hasSelectedLanguagesKey, true);
     await _prefs?.setBool(_languagePromptCompletedKey, true);
+    musicLanguagesNotifier.value = List.unmodifiable(languages);
   }
 
   static bool hasSelectedLanguages() {
@@ -493,10 +506,27 @@ class DatabaseService {
     }
   }
 
+  static DateTime? getCachedFeedTimestamp(String cacheKey) {
+    final ms = _prefs?.getInt(_feedCacheTimestampKey(cacheKey));
+    if (ms == null) return null;
+    return DateTime.fromMillisecondsSinceEpoch(ms);
+  }
+
   static Future<void> saveCachedFeed(String cacheKey, List<Song> songs) async {
     try {
       final jsonStr = jsonEncode(songs.map((s) => s.toJson()).toList());
       await _prefs?.setString(_feedCacheKey(cacheKey), jsonStr);
+      await _prefs?.setInt(
+        _feedCacheTimestampKey(cacheKey),
+        DateTime.now().millisecondsSinceEpoch,
+      );
+    } catch (_) {}
+  }
+
+  static Future<void> clearCachedFeed(String cacheKey) async {
+    try {
+      await _prefs?.remove(_feedCacheKey(cacheKey));
+      await _prefs?.remove(_feedCacheTimestampKey(cacheKey));
     } catch (_) {}
   }
 

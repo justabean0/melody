@@ -270,6 +270,11 @@ class LogService {
     _logs.addLast(entry);
     logCountNotifier.value++;
     developer.log(entry.toString(), name: entry.tag);
+    if (entry.tag == 'Feed') {
+      // Also emit via print() so adb logcat captures [Feed] under the flutter tag in --release builds.
+      // ignore: avoid_print
+      print('[Feed] ${entry.message}');
+    }
   }
 
   static List<LogEntry> get logs => _logs.toList();

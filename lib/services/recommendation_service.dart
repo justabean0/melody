@@ -3,18 +3,21 @@ import '../models/search_result.dart';
 import '../models/song.dart';
 import 'database_service.dart';
 import 'innertube_service.dart';
+import 'log_service.dart';
 
 class LanguageConfig {
   final String language;
   final String gl;
   final String hl;
   final List<String> keywords;
+  final bool useCountryCharts;
 
   const LanguageConfig({
     required this.language,
     required this.gl,
     required this.hl,
     required this.keywords,
+    this.useCountryCharts = true,
   });
 }
 
@@ -40,18 +43,113 @@ class RecommendationService {
   static final Map<String, List<MoodGenreItem>> _moodGenreCache = {};
   static final Map<String, List<BrowseMediaItem>> _featuredBrowseCache = {};
 
-  static const Set<String> _indianLanguages = {
-    'Hindi',
-    'Punjabi',
-    'Bengali',
-    'Tamil',
-    'Telugu',
-    'Malayalam',
-    'Kannada',
-    'Bhojpuri',
-    'Marathi',
-    'Urdu',
-  };
+  static const List<String> _englishExcludedHubTerms = [
+    'indian',
+    'hindi',
+    'desi',
+    'bollywood',
+    'punjabi',
+    'tamil',
+    'telugu',
+    'bengali',
+    'bangla',
+    'marathi',
+    'kannada',
+    'malayalam',
+    'bhojpuri',
+    'gujarati',
+    'haryanvi',
+    'k-pop',
+    'k pop',
+    'kpop',
+    'j-pop',
+    'j pop',
+    'jpop',
+    'latin',
+    'spanish',
+    'arabic',
+    'urdu',
+    'african',
+    'carnatic',
+    'hindustani',
+    'i-pop',
+    'tollywood',
+    'kollywood',
+    'mollywood',
+    'sandalwood',
+    'cafecito',
+    'indo-',
+  ];
+
+  static final RegExp _devanagariRegex = RegExp(r'[\u0900-\u097F]');
+  static final RegExp _nonLatinScriptRegex = RegExp(
+    r'[\u0400-\u04FF\u0600-\u06FF\u0900-\u0DFF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]',
+  );
+  static final RegExp _hindiCueRegex = RegExp(
+    r'\b(hindi|bollywood|desi|bhojpuri|haryanvi|t-series|zee music|saiyaara|guzarish|payal|kesariya|satranga|chaleya|tum hi ho|aashiqui|mohabbat|ishq|pyaar|dil|humsafar|sanam|barsaat|tere liye|rabba|zindagi|khuda|arijit|shreya ghoshal|jubin|atif aslam|pritam|neha kakkar|sonu nigam|alka yagnik|udit narayan|armaan malik|darshan raval|mohit chauhan|mohit love|tanishk|b praak|badshah|diljit)\b',
+    caseSensitive: false,
+  );
+
+  /// Returns true if a title/text carries regional or non-English markers excluded for [config].
+  static bool _isExcludedForConfig(String text, LanguageConfig config) {
+    if (config.language != 'English') return false;
+    final lower = text.toLowerCase();
+    for (final term in _englishExcludedHubTerms) {
+      if (lower.contains(term)) return true;
+    }
+    return false;
+  }
+
+  /// Detects likely Hindi/Bollywood songs (Devanagari script or unambiguous Hindi cues).
+  static bool isLikelyHindiTrack(Song song) {
+    final combined = '${song.title} ${song.artist}';
+    if (_devanagariRegex.hasMatch(combined)) return true;
+    return _hindiCueRegex.hasMatch(combined);
+  }
+
+  /// Checks whether a candidate song is a valid single and matches [config]'s language boundaries.
+  static bool _isEligibleTrackForConfig(Song song, LanguageConfig config) {
+    if (!isSingleSong(song)) return false;
+    if (config.language == 'English') {
+      final combined = '${song.title} ${song.artist}';
+      if (_isExcludedForConfig(combined, config)) return false;
+      if (_nonLatinScriptRegex.hasMatch(combined)) return false;
+      if (isLikelyHindiTrack(song)) return false;
+    }
+    return true;
+  }
+
+  /// Matches a Mood & Genre hub cleanly using exact title matching first, then whole-token matching,
+  /// preventing regional pop hubs (e.g. "Indian pop", "K-Pop", "Punjabi Pop") from matching English "pop".
+  static MoodGenreItem? matchMoodGenreHub(
+    List<MoodGenreItem> moodGenres,
+    LanguageConfig config,
+  ) {
+    final eligible = moodGenres
+        .where((m) => !_isExcludedForConfig(m.title, config))
+        .toList();
+
+    for (final kw in config.keywords) {
+      final lowerKw = kw.toLowerCase();
+      final exact = eligible.cast<MoodGenreItem?>().firstWhere(
+            (m) => m != null && m.title.trim().toLowerCase() == lowerKw,
+            orElse: () => null,
+          );
+      if (exact != null) return exact;
+    }
+
+    for (final kw in config.keywords) {
+      final lowerKw = kw.toLowerCase();
+      final boundary = RegExp('(^|[^a-z0-9])${RegExp.escape(lowerKw)}([^a-z0-9]|\$)');
+      final partial = eligible.cast<MoodGenreItem?>().firstWhere(
+            (m) => m != null && boundary.hasMatch(m.title.toLowerCase()),
+            orElse: () => null,
+          );
+      if (partial != null) return partial;
+    }
+
+    return null;
+  }
 
   /// Clears in-memory caches (useful for testing and language changes)
   static void clearCache() {
@@ -64,8 +162,6 @@ class RecommendationService {
     String language, {
     List<String>? allSelectedLanguages,
   }) {
-    final hasIndianLangs = allSelectedLanguages?.any(_indianLanguages.contains) ?? true;
-
     switch (language) {
       case 'Hindi':
         return const LanguageConfig(
@@ -73,6 +169,7 @@ class RecommendationService {
           gl: 'IN',
           hl: 'en',
           keywords: ['hindi', 'bollywood', 'desi', 'indian pop'],
+          useCountryCharts: true,
         );
       case 'Punjabi':
         return const LanguageConfig(
@@ -80,6 +177,7 @@ class RecommendationService {
           gl: 'IN',
           hl: 'en',
           keywords: ['punjabi', 'bhangra', 'desi'],
+          useCountryCharts: false,
         );
       case 'Tamil':
         return const LanguageConfig(
@@ -87,6 +185,7 @@ class RecommendationService {
           gl: 'IN',
           hl: 'en',
           keywords: ['tamil', 'kollywood'],
+          useCountryCharts: false,
         );
       case 'Telugu':
         return const LanguageConfig(
@@ -94,6 +193,7 @@ class RecommendationService {
           gl: 'IN',
           hl: 'en',
           keywords: ['telugu', 'tollywood'],
+          useCountryCharts: false,
         );
       case 'Bengali':
         return const LanguageConfig(
@@ -101,6 +201,7 @@ class RecommendationService {
           gl: 'IN',
           hl: 'en',
           keywords: ['bengali', 'bangla'],
+          useCountryCharts: false,
         );
       case 'Marathi':
         return const LanguageConfig(
@@ -108,6 +209,7 @@ class RecommendationService {
           gl: 'IN',
           hl: 'en',
           keywords: ['marathi'],
+          useCountryCharts: false,
         );
       case 'Kannada':
         return const LanguageConfig(
@@ -115,6 +217,7 @@ class RecommendationService {
           gl: 'IN',
           hl: 'en',
           keywords: ['kannada', 'sandalwood'],
+          useCountryCharts: false,
         );
       case 'Malayalam':
         return const LanguageConfig(
@@ -122,6 +225,7 @@ class RecommendationService {
           gl: 'IN',
           hl: 'en',
           keywords: ['malayalam', 'mollywood'],
+          useCountryCharts: false,
         );
       case 'Bhojpuri':
         return const LanguageConfig(
@@ -129,6 +233,7 @@ class RecommendationService {
           gl: 'IN',
           hl: 'en',
           keywords: ['bhojpuri', 'desi'],
+          useCountryCharts: false,
         );
       case 'Korean':
         return const LanguageConfig(
@@ -136,6 +241,7 @@ class RecommendationService {
           gl: 'KR',
           hl: 'en',
           keywords: ['k-pop', 'korean', 'k pop', 'kpop'],
+          useCountryCharts: true,
         );
       case 'Japanese':
         return const LanguageConfig(
@@ -143,6 +249,7 @@ class RecommendationService {
           gl: 'JP',
           hl: 'en',
           keywords: ['j-pop', 'japanese', 'j pop', 'jpop', 'anime'],
+          useCountryCharts: true,
         );
       case 'Spanish':
         return const LanguageConfig(
@@ -150,6 +257,7 @@ class RecommendationService {
           gl: 'MX',
           hl: 'en',
           keywords: ['latin', 'spanish', 'reggaeton', 'latino'],
+          useCountryCharts: true,
         );
       case 'French':
         return const LanguageConfig(
@@ -157,6 +265,7 @@ class RecommendationService {
           gl: 'FR',
           hl: 'en',
           keywords: ['french', 'francais', 'chanson'],
+          useCountryCharts: true,
         );
       case 'Arabic':
         return const LanguageConfig(
@@ -164,6 +273,7 @@ class RecommendationService {
           gl: 'SA',
           hl: 'en',
           keywords: ['arabic', 'khaleeji', 'tarab'],
+          useCountryCharts: true,
         );
       case 'Urdu':
         return const LanguageConfig(
@@ -171,14 +281,16 @@ class RecommendationService {
           gl: 'PK',
           hl: 'en',
           keywords: ['urdu', 'sufi', 'ghazal', 'coke studio'],
+          useCountryCharts: true,
         );
       case 'English':
       default:
-        return LanguageConfig(
+        return const LanguageConfig(
           language: 'English',
-          gl: hasIndianLangs ? 'IN' : 'US',
+          gl: 'US',
           hl: 'en',
-          keywords: const ['pop', 'hits', 'global', 'dance', 'charts'],
+          keywords: ['pop', 'hits', 'global', 'dance', 'charts'],
+          useCountryCharts: true,
         );
     }
   }
@@ -365,10 +477,19 @@ class RecommendationService {
   }
 
   /// Fetches recommended songs related to recently listened songs
-  static Future<List<Song>> getRelatedTracksForRecentSong(Song recentSong) async {
+  static Future<List<Song>> getRelatedTracksForRecentSong(
+    Song recentSong, {
+    String? gl,
+    String? hl,
+  }) async {
     try {
       final query = '${recentSong.title} ${recentSong.artist}'.trim();
-      final res = await InnerTubeService.search(query, filter: SearchFilter.songs);
+      final res = await InnerTubeService.search(
+        query,
+        filter: SearchFilter.songs,
+        gl: gl,
+        hl: hl,
+      );
       return res.songs
           .where((s) => s.id != recentSong.id && isSingleSong(s))
           .take(10)
@@ -379,9 +500,20 @@ class RecommendationService {
   }
 
   /// Searches targeted single tracks for a given language and genre
-  static Future<List<Song>> getGenreTracks(String language, String genre) async {
+  static Future<List<Song>> getGenreTracks(
+    String language,
+    String genre, {
+    String? gl,
+    String? hl,
+  }) async {
     try {
-      final res = await InnerTubeService.search('$language $genre', filter: SearchFilter.songs);
+      final config = getLanguageConfig(language);
+      final res = await InnerTubeService.search(
+        '$language $genre',
+        filter: SearchFilter.songs,
+        gl: gl ?? config.gl,
+        hl: hl ?? config.hl,
+      );
       return res.songs.where(isSingleSong).take(10).toList();
     } catch (_) {
       return const [];
@@ -402,73 +534,152 @@ class RecommendationService {
     );
     InnerTubeService.setLocale(gl: primaryConfig.gl, hl: primaryConfig.hl);
 
-    // 2. If a specific mood is requested (not 'All'), attempt to browse that mood hub directly
+    LogService.info(
+      'searchTrendingSinglesForLanguages activeLanguages=$activeLanguages mood=$mood primaryGl=${primaryConfig.gl}',
+      tag: 'Feed',
+    );
+
+    // 2. If a specific mood is requested (not 'All'), query and interleave across up to 3 active languages
     if (mood != 'All') {
-      try {
-        final moodGenres = await getCachedMoodsAndGenres(primaryConfig.gl, primaryConfig.hl);
-        final moodMatch = moodGenres.cast<MoodGenreItem?>().firstWhere(
-              (m) => m != null && m.title.toLowerCase().contains(mood.toLowerCase()),
-              orElse: () => null,
-            );
-        if (moodMatch != null) {
-          final hub = await InnerTubeService.browseMoodOrGenre(
-            moodMatch.browseId,
-            params: moodMatch.params,
-            gl: primaryConfig.gl,
-            hl: primaryConfig.hl,
-          );
-          final moodTracks = <Song>[...hub.songs.where(isSingleSong)];
-          if (moodTracks.length < 10 && hub.playlists.isNotEmpty) {
-            for (final pl in hub.playlists.take(2)) {
-              try {
-                final plResult = await InnerTubeService.browsePlaylist(pl.browseId);
-                if (plResult != null) {
-                  moodTracks.addAll(plResult.songs.where(isSingleSong));
+      final perLangMoodFutures = activeLanguages.take(3).map((lang) async {
+        final config = getLanguageConfig(lang, allSelectedLanguages: activeLanguages);
+        final langMoodTracks = <Song>[];
+        String matchedHubTitle = 'none';
+        String searchQueryUsed = 'none';
+        int searchCount = 0;
+
+        if (config.useCountryCharts) {
+          try {
+            final moodGenres = await getCachedMoodsAndGenres(config.gl, config.hl);
+            final moodMatch = moodGenres.cast<MoodGenreItem?>().firstWhere(
+                  (m) => m != null && m.title.toLowerCase().contains(mood.toLowerCase()),
+                  orElse: () => null,
+                );
+            if (moodMatch != null) {
+              matchedHubTitle = moodMatch.title;
+              final hub = await InnerTubeService.browseMoodOrGenre(
+                moodMatch.browseId,
+                params: moodMatch.params,
+                gl: config.gl,
+                hl: config.hl,
+              );
+              langMoodTracks.addAll(
+                hub.songs.where((s) => _isEligibleTrackForConfig(s, config)),
+              );
+
+              // Only unpack generic mood hub playlists for Hindi (since YouTube Music's mood playlists
+              // are heavily IP-geolocated to Bollywood/Indian mixes on Indian IPs regardless of gl).
+              if (config.language == 'Hindi' &&
+                  langMoodTracks.length < 10 &&
+                  hub.playlists.isNotEmpty) {
+                for (final pl in hub.playlists.take(2)) {
+                  try {
+                    final plResult = await InnerTubeService.browsePlaylist(
+                      pl.browseId,
+                      gl: config.gl,
+                      hl: config.hl,
+                    );
+                    if (plResult != null) {
+                      langMoodTracks.addAll(
+                        plResult.songs.where((s) => _isEligibleTrackForConfig(s, config)),
+                      );
+                    }
+                  } catch (_) {}
                 }
-              } catch (_) {}
+              }
             }
-          }
-          if (moodTracks.isNotEmpty) {
-            final seen = <String>{};
-            return moodTracks.where((s) => seen.add(s.id)).toList();
+          } catch (_) {}
+        }
+
+        // Fallback: search for language + mood songs if hub yielded fewer than 10 tracks
+        if (langMoodTracks.length < 10) {
+          try {
+            searchQueryUsed = '${config.language} $mood songs';
+            final searchRes = await InnerTubeService.search(
+              searchQueryUsed,
+              filter: SearchFilter.songs,
+              gl: config.gl,
+              hl: config.hl,
+            );
+            final eligible = searchRes.songs
+                .where((s) => _isEligibleTrackForConfig(s, config))
+                .toList();
+            searchCount = eligible.length;
+            langMoodTracks.addAll(eligible);
+          } catch (_) {}
+        }
+
+        final seen = <String>{};
+        final uniqueLangMood = langMoodTracks.where((s) => seen.add(s.id)).toList();
+        final top2 = uniqueLangMood.take(2).map((s) => '"${s.title}" (${s.id})').join(', ');
+        LogService.info(
+          'lang=${config.language} gl=${config.gl} useCountryCharts=${config.useCountryCharts} mood=$mood hub="$matchedHubTitle" charts=0 search="$searchQueryUsed":$searchCount total=${uniqueLangMood.length} top2=[$top2]',
+          tag: 'Feed',
+        );
+        return uniqueLangMood;
+      });
+
+      final perLangMoodResults = await Future.wait(perLangMoodFutures);
+
+      final mergedMoodTracks = <Song>[];
+      final maxMoodLen = perLangMoodResults.fold<int>(0, (m, l) => l.length > m ? l.length : m);
+      for (int i = 0; i < maxMoodLen; i++) {
+        for (final list in perLangMoodResults) {
+          if (i < list.length) {
+            mergedMoodTracks.add(list[i]);
           }
         }
-      } catch (_) {}
+      }
+
+      final seenMood = <String>{};
+      final uniqueMoodTracks = mergedMoodTracks.where((s) => seenMood.add(s.id)).toList();
+      if (uniqueMoodTracks.isNotEmpty) {
+        return uniqueMoodTracks;
+      }
     }
 
     // 3. For each active language (up to 4), fetch and unpack browse items
     final perLanguageFutures = activeLanguages.take(4).map((lang) async {
       final config = getLanguageConfig(lang, allSelectedLanguages: activeLanguages);
       final langCandidates = <Song>[];
+      String matchedHubTitle = 'none';
+      int chartCount = 0;
+      String searchQueryUsed = 'none';
+      int searchCount = 0;
 
       // A. Match language genre hub
       try {
         final moodGenres = await getCachedMoodsAndGenres(config.gl, config.hl);
-        MoodGenreItem? matchedItem;
-        for (final kw in config.keywords) {
-          matchedItem = moodGenres.cast<MoodGenreItem?>().firstWhere(
-                (m) => m != null && m.title.toLowerCase().contains(kw.toLowerCase()),
-                orElse: () => null,
-              );
-          if (matchedItem != null) break;
-        }
+        final matchedItem = matchMoodGenreHub(moodGenres, config);
 
         if (matchedItem != null) {
+          matchedHubTitle = matchedItem.title;
           final hubResult = await InnerTubeService.browseMoodOrGenre(
             matchedItem.browseId,
             params: matchedItem.params,
             gl: config.gl,
             hl: config.hl,
           );
-          langCandidates.addAll(hubResult.songs.where(isSingleSong));
+          langCandidates.addAll(
+            hubResult.songs.where((s) => _isEligibleTrackForConfig(s, config)),
+          );
 
           // Unpack top 1-2 playlists if songs < 10
           if (langCandidates.length < 10 && hubResult.playlists.isNotEmpty) {
-            for (final pl in hubResult.playlists.take(2)) {
+            final cleanPlaylists = hubResult.playlists
+                .where((pl) => !_isExcludedForConfig(pl.title, config))
+                .take(2);
+            for (final pl in cleanPlaylists) {
               try {
-                final plResult = await InnerTubeService.browsePlaylist(pl.browseId);
+                final plResult = await InnerTubeService.browsePlaylist(
+                  pl.browseId,
+                  gl: config.gl,
+                  hl: config.hl,
+                );
                 if (plResult != null) {
-                  langCandidates.addAll(plResult.songs.where(isSingleSong));
+                  langCandidates.addAll(
+                    plResult.songs.where((s) => _isEligibleTrackForConfig(s, config)),
+                  );
                 }
               } catch (_) {}
             }
@@ -476,35 +687,69 @@ class RecommendationService {
         }
       } catch (_) {}
 
-      // B. Combine with localized charts (unpack top chart playlist if topSongs is sparse)
-      try {
-        final charts = await InnerTubeService.getCharts(countryCode: config.gl, hl: config.hl);
-        langCandidates.addAll(charts.topSongs.where(isSingleSong));
-
-        if (langCandidates.length < 5 && charts.playlists.isNotEmpty) {
-          try {
-            final plResult = await InnerTubeService.browsePlaylist(charts.playlists.first.browseId);
-            if (plResult != null) {
-              langCandidates.addAll(plResult.songs.where(isSingleSong));
-            }
-          } catch (_) {}
-        }
-      } catch (_) {}
-
-      // C. Fallback: only if hub & charts yielded no songs, search via InnerTube songs
-      if (langCandidates.isEmpty) {
+      // B. Combine with localized charts (ONLY for languages whose country charts match)
+      if (config.useCountryCharts) {
         try {
+          final charts = await InnerTubeService.getCharts(countryCode: config.gl, hl: config.hl);
+          final chartSongs = charts.topSongs
+              .where((s) => _isEligibleTrackForConfig(s, config))
+              .toList();
+          chartCount = chartSongs.length;
+          langCandidates.addAll(chartSongs);
+
+          if (langCandidates.length < 5 && charts.playlists.isNotEmpty) {
+            final cleanChartPlaylists = charts.playlists
+                .where((pl) => !_isExcludedForConfig(pl.title, config))
+                .toList();
+            if (cleanChartPlaylists.isNotEmpty) {
+              try {
+                final plResult = await InnerTubeService.browsePlaylist(
+                  cleanChartPlaylists.first.browseId,
+                  gl: config.gl,
+                  hl: config.hl,
+                );
+                if (plResult != null) {
+                  final unpacked = plResult.songs
+                      .where((s) => _isEligibleTrackForConfig(s, config))
+                      .toList();
+                  chartCount += unpacked.length;
+                  langCandidates.addAll(unpacked);
+                }
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+      }
+
+      // C. Fallback: if candidates < 10 (especially regional Indian languages or sparse/filtered hubs)
+      if (langCandidates.length < 10) {
+        try {
+          searchQueryUsed = config.language == 'English'
+              ? 'top english pop songs'
+              : '${config.language} top songs';
           final searchRes = await InnerTubeService.search(
-            '${config.language} top songs',
+            searchQueryUsed,
             filter: SearchFilter.songs,
+            gl: config.gl,
+            hl: config.hl,
           );
-          langCandidates.addAll(searchRes.songs.where(isSingleSong));
+          final eligible = searchRes.songs
+              .where((s) => _isEligibleTrackForConfig(s, config))
+              .toList();
+          searchCount = eligible.length;
+          langCandidates.addAll(eligible);
         } catch (_) {}
       }
 
       // Deduplicate within this language
       final seenLang = <String>{};
-      return langCandidates.where((s) => seenLang.add(s.id)).toList();
+      final uniqueLangSongs = langCandidates.where((s) => seenLang.add(s.id)).toList();
+      final top2 = uniqueLangSongs.take(2).map((s) => '"${s.title}" (${s.id})').join(', ');
+      LogService.info(
+        'lang=${config.language} gl=${config.gl} useCountryCharts=${config.useCountryCharts} mood=$mood hub="$matchedHubTitle" charts=$chartCount search="$searchQueryUsed":$searchCount total=${uniqueLangSongs.length} top2=[$top2]',
+        tag: 'Feed',
+      );
+      return uniqueLangSongs;
     });
 
     final resultsPerLang = await Future.wait(perLanguageFutures);
@@ -553,78 +798,136 @@ class RecommendationService {
       allSelectedLanguages: effectiveLangs,
     );
 
-    // 1. Localized charts and explore new releases
-    try {
-      final chartsFuture = InnerTubeService.getCharts(countryCode: primaryConfig.gl, hl: primaryConfig.hl);
-      final exploreFuture = InnerTubeService.getExplore(gl: primaryConfig.gl, hl: primaryConfig.hl);
-      final results = await Future.wait([chartsFuture, exploreFuture]);
-      final charts = results[0] as ChartsResult;
-      final explore = results[1] as ExploreResult;
+    // 1. Localized charts and explore new releases (general top media)
+    // Only query when primaryConfig.useCountryCharts is true (national-majority languages)
+    // so regional languages sharing gl: 'IN' (e.g. Bengali, Tamil) never get Hindi charts injected.
+    final generalCards = <BrowseMediaItem>[];
+    if (primaryConfig.useCountryCharts) {
+      try {
+        final chartsFuture = InnerTubeService.getCharts(countryCode: primaryConfig.gl, hl: primaryConfig.hl);
+        // FEmusic_explore ignores gl on Indian IPs and injects Indian releases, so only query it when gl == 'IN'.
+        final exploreFuture = primaryConfig.gl == 'IN'
+            ? InnerTubeService.getExplore(gl: primaryConfig.gl, hl: primaryConfig.hl)
+            : Future.value(const ExploreResult());
+        final results = await Future.wait([chartsFuture, exploreFuture]);
+        final charts = results[0] as ChartsResult;
+        final explore = results[1] as ExploreResult;
 
-      for (final pl in charts.playlists) {
-        addItem(BrowseMediaItem(
-          id: pl.id,
-          title: pl.title,
-          subtitle: (pl.author != null && pl.author!.isNotEmpty) ? pl.author! : 'Charts',
-          thumbnailUrl: pl.thumbnailUrl,
-          browseId: pl.browseId,
-          type: 'playlist',
-        ));
-      }
+        for (final pl in charts.playlists) {
+          if (_isExcludedForConfig(pl.title, primaryConfig)) continue;
+          generalCards.add(BrowseMediaItem(
+            id: pl.id,
+            title: pl.title,
+            subtitle: (pl.author != null && pl.author!.isNotEmpty) ? pl.author! : 'Charts',
+            thumbnailUrl: pl.thumbnailUrl,
+            browseId: pl.browseId,
+            type: 'playlist',
+          ));
+        }
 
-      for (final album in explore.newReleaseAlbums) {
-        addItem(BrowseMediaItem(
-          id: album.id,
-          title: album.title,
-          subtitle: album.artist.isNotEmpty ? album.artist : 'New Release',
-          thumbnailUrl: album.thumbnailUrl,
-          browseId: album.browseId,
-          type: 'album',
-        ));
-      }
-    } catch (_) {}
+        for (final album in explore.newReleaseAlbums) {
+          if (_isExcludedForConfig('${album.title} ${album.artist}', primaryConfig)) continue;
+          generalCards.add(BrowseMediaItem(
+            id: album.id,
+            title: album.title,
+            subtitle: album.artist.isNotEmpty ? album.artist : 'New Release',
+            thumbnailUrl: album.thumbnailUrl,
+            browseId: album.browseId,
+            type: 'album',
+          ));
+        }
+      } catch (_) {}
+    }
 
-    // 2. Playlists/Albums from language genre hubs
-    for (final lang in effectiveLangs.take(3)) {
+    // 2. Playlists/Albums per selected language (up to 3 in parallel)
+    final perLanguageFutures = effectiveLangs.take(3).map((lang) async {
       final config = getLanguageConfig(lang, allSelectedLanguages: effectiveLangs);
+      final langCards = <BrowseMediaItem>[];
+
+      // A. Try language genre hub
       try {
         final moodGenres = await getCachedMoodsAndGenres(config.gl, config.hl);
-        for (final kw in config.keywords) {
-          final match = moodGenres.cast<MoodGenreItem?>().firstWhere(
-                (m) => m != null && m.title.toLowerCase().contains(kw.toLowerCase()),
-                orElse: () => null,
-              );
-          if (match != null) {
-            final hub = await InnerTubeService.browseMoodOrGenre(
-              match.browseId,
-              params: match.params,
-              gl: config.gl,
-              hl: config.hl,
-            );
-            for (final pl in hub.playlists.take(3)) {
-              addItem(BrowseMediaItem(
-                id: pl.id,
-                title: pl.title,
-                subtitle: (pl.author != null && pl.author!.isNotEmpty) ? pl.author! : lang,
-                thumbnailUrl: pl.thumbnailUrl,
-                browseId: pl.browseId,
-                type: 'playlist',
-              ));
-            }
-            for (final al in hub.albums.take(3)) {
-              addItem(BrowseMediaItem(
-                id: al.id,
-                title: al.title,
-                subtitle: al.artist.isNotEmpty ? al.artist : lang,
-                thumbnailUrl: al.thumbnailUrl,
-                browseId: al.browseId,
-                type: 'album',
-              ));
-            }
-            break;
+        final match = matchMoodGenreHub(moodGenres, config);
+
+        if (match != null) {
+          final hub = await InnerTubeService.browseMoodOrGenre(
+            match.browseId,
+            params: match.params,
+            gl: config.gl,
+            hl: config.hl,
+          );
+          for (final pl in hub.playlists.where((p) => !_isExcludedForConfig(p.title, config)).take(3)) {
+            langCards.add(BrowseMediaItem(
+              id: pl.id,
+              title: pl.title,
+              subtitle: (pl.author != null && pl.author!.isNotEmpty) ? pl.author! : lang,
+              thumbnailUrl: pl.thumbnailUrl,
+              browseId: pl.browseId,
+              type: 'playlist',
+            ));
+          }
+          for (final al in hub.albums.where((a) => !_isExcludedForConfig('${a.title} ${a.artist}', config)).take(3)) {
+            langCards.add(BrowseMediaItem(
+              id: al.id,
+              title: al.title,
+              subtitle: al.artist.isNotEmpty ? al.artist : lang,
+              thumbnailUrl: al.thumbnailUrl,
+              browseId: al.browseId,
+              type: 'album',
+            ));
           }
         }
       } catch (_) {}
+
+      // B. Fallback: if no matching hub (e.g. Bengali) or sparse items, search for playlist hits
+      if (langCards.isEmpty) {
+        try {
+          final searchRes = await InnerTubeService.search(
+            '${config.language} hits playlist',
+            filter: SearchFilter.playlists,
+            gl: config.gl,
+            hl: config.hl,
+          );
+          for (final pl in searchRes.playlists.where((p) => !_isExcludedForConfig(p.title, config)).take(4)) {
+            langCards.add(BrowseMediaItem(
+              id: pl.id,
+              title: pl.title,
+              subtitle: (pl.author != null && pl.author!.isNotEmpty) ? pl.author! : lang,
+              thumbnailUrl: pl.thumbnailUrl,
+              browseId: pl.browseId,
+              type: 'playlist',
+            ));
+          }
+        } catch (_) {}
+      }
+
+      return langCards;
+    });
+
+    final perLanguageItems = await Future.wait(perLanguageFutures);
+
+    // 3. Assemble and interleave cards across languages (round-robin)
+    // Add first 1-2 top general cards (e.g., chart playlist + top new release album)
+    if (generalCards.isNotEmpty) {
+      addItem(generalCards[0]);
+    }
+    if (generalCards.length > 1) {
+      addItem(generalCards[1]);
+    }
+
+    // Interleave language-specific cards so every selected language is well-represented
+    final maxPerLang = perLanguageItems.fold<int>(0, (m, l) => l.length > m ? l.length : m);
+    for (int i = 0; i < maxPerLang; i++) {
+      for (final list in perLanguageItems) {
+        if (i < list.length) {
+          addItem(list[i]);
+        }
+      }
+    }
+
+    // Append any remaining general chart/release cards
+    for (int i = 2; i < generalCards.length; i++) {
+      addItem(generalCards[i]);
     }
 
     if (items.isNotEmpty) {
@@ -633,18 +936,20 @@ class RecommendationService {
     return items;
   }
 
-  /// Interleaves trending singles and personalized songs into dedicated slots
-  /// ensuring trending songs are always represented and never crowded out.
-  static List<Song> blendIntoSlots({
+  static ({List<Song> songs, Map<String, String> slotOrigins}) _blendIntoSlotsWithOrigins({
     required List<Song> trendingPool,
     required List<Song> personalizedPool,
+    required Set<String> task2HistoryIds,
+    required Set<String> task3GenreIds,
   }) {
     final blended = <Song>[];
+    final slotOrigins = <String, String>{};
     final usedIds = <String>{};
 
-    void tryAdd(Song song) {
+    void tryAdd(Song song, String origin) {
       if (usedIds.add(song.id)) {
         blended.add(song);
+        slotOrigins[song.id] = origin;
       }
     }
 
@@ -656,7 +961,7 @@ class RecommendationService {
       while (taken < count && trendIdx < trendingPool.length) {
         final s = trendingPool[trendIdx++];
         if (!usedIds.contains(s.id)) {
-          tryAdd(s);
+          tryAdd(s, 'trending');
           taken++;
         }
       }
@@ -667,7 +972,12 @@ class RecommendationService {
       while (taken < count && persIdx < personalizedPool.length) {
         final s = personalizedPool[persIdx++];
         if (!usedIds.contains(s.id)) {
-          tryAdd(s);
+          final origin = task3GenreIds.contains(s.id)
+              ? 'personalized:Task3-genre'
+              : (task2HistoryIds.contains(s.id)
+                  ? 'personalized:Task2-history'
+                  : 'personalized');
+          tryAdd(s, origin);
           taken++;
         }
       }
@@ -691,7 +1001,21 @@ class RecommendationService {
       takePersonalized(1);
     }
 
-    return blended;
+    return (songs: blended, slotOrigins: slotOrigins);
+  }
+
+  /// Interleaves trending singles and personalized songs into dedicated slots
+  /// ensuring trending songs are always represented and never crowded out.
+  static List<Song> blendIntoSlots({
+    required List<Song> trendingPool,
+    required List<Song> personalizedPool,
+  }) {
+    return _blendIntoSlotsWithOrigins(
+      trendingPool: trendingPool,
+      personalizedPool: personalizedPool,
+      task2HistoryIds: const {},
+      task3GenreIds: const {},
+    ).songs;
   }
 
   /// Core Recommendation Algorithm: blends trending single songs with genre and artist recommendations
@@ -703,6 +1027,11 @@ class RecommendationService {
     final activeLanguages = (languages != null && languages.isNotEmpty)
         ? languages
         : DatabaseService.getMusicLanguages();
+    final hasHindi = activeLanguages.contains('Hindi');
+    final primaryConfig = getLanguageConfig(
+      activeLanguages.first,
+      allSelectedLanguages: activeLanguages,
+    );
 
     final tasteProfile = getUserTasteProfile();
 
@@ -712,17 +1041,49 @@ class RecommendationService {
     tasks.add(searchTrendingSinglesForLanguages(activeLanguages, mood: mood));
 
     // Task 2 & 3: Related tracks and dominant genre tracks if history exists
+    Song? historyTarget;
     if (tasteProfile.hasHistory) {
       final history = DatabaseService.getHistory();
       if (history.isNotEmpty) {
-        tasks.add(getRelatedTracksForRecentSong(history.first));
+        if (hasHindi) {
+          historyTarget = history.first;
+        } else {
+          // Skip Hindi history tracks when Hindi is NOT in activeLanguages
+          historyTarget = history.take(5).cast<Song?>().firstWhere(
+                (s) => s != null && !isLikelyHindiTrack(s),
+                orElse: () => null,
+              );
+        }
+      }
+      if (historyTarget != null) {
+        tasks.add(getRelatedTracksForRecentSong(
+          historyTarget,
+          gl: primaryConfig.gl,
+          hl: primaryConfig.hl,
+        ));
       } else {
         tasks.add(Future.value(<Song>[]));
       }
 
       final topGenre = tasteProfile.dominantGenre;
-      final lang = activeLanguages.isNotEmpty ? activeLanguages.first : 'English';
-      tasks.add(getGenreTracks(lang, topGenre));
+      // Fetch getGenreTracks across up to 3 selected languages in parallel
+      final targetLangs = activeLanguages.take(3).toList();
+      final genreTasks = targetLangs.map((l) {
+        final config = getLanguageConfig(l, allSelectedLanguages: activeLanguages);
+        return getGenreTracks(l, topGenre, gl: config.gl, hl: config.hl);
+      });
+      tasks.add(Future.wait(genreTasks).then((genreResultsList) {
+        final mergedGenreTracks = <Song>[];
+        final maxG = genreResultsList.fold<int>(0, (m, l) => l.length > m ? l.length : m);
+        for (int i = 0; i < maxG; i++) {
+          for (final list in genreResultsList) {
+            if (i < list.length) {
+              mergedGenreTracks.add(list[i]);
+            }
+          }
+        }
+        return mergedGenreTracks;
+      }));
     } else {
       tasks.add(Future.value(<Song>[]));
       tasks.add(Future.value(<Song>[]));
@@ -730,8 +1091,13 @@ class RecommendationService {
 
     final taskResults = await Future.wait(tasks);
     final trendingResults = taskResults[0];
-    final relatedResults = taskResults[1];
+    final rawRelatedResults = taskResults[1];
     final genreResults = taskResults[2];
+
+    // Guard Task 2 (history-related) from re-injecting Hindi songs when Hindi is unselected
+    final relatedResults = hasHindi
+        ? rawRelatedResults
+        : rawRelatedResults.where((s) => !isLikelyHindiTrack(s)).toList();
 
     // Separate into Trending Pool vs. Personalized Pool
     final trendingPool = <Song>[];
@@ -742,7 +1108,13 @@ class RecommendationService {
       }
     }
 
-    final personalizedCandidates = [...relatedResults, ...genreResults];
+    final task2Ids = relatedResults.map((s) => s.id).toSet();
+    final task3Ids = genreResults.map((s) => s.id).toSet();
+
+    // Put Task 3 (language-matched genre tracks) ahead when Hindi is not selected so history never dominates
+    final personalizedCandidates = hasHindi
+        ? [...relatedResults, ...genreResults]
+        : [...genreResults, ...relatedResults];
     final personalizedScored = <Song, double>{};
     for (final song in personalizedCandidates) {
       if (!isSingleSong(song)) continue;
@@ -760,6 +1132,15 @@ class RecommendationService {
         if (song.artist.toLowerCase().contains(artist.toLowerCase())) {
           score += 35.0;
           break;
+        }
+      }
+
+      // Prioritize multi-language genre tracks over generic related-history tracks when Hindi is unselected
+      if (!hasHindi) {
+        if (task3Ids.contains(song.id)) {
+          score += 20.0;
+        } else if (task2Ids.contains(song.id)) {
+          score -= 15.0;
         }
       }
 
@@ -782,10 +1163,31 @@ class RecommendationService {
       }
     }
 
-    // Slot-based interleaved blending
-    return blendIntoSlots(
+    final blendedResult = _blendIntoSlotsWithOrigins(
       trendingPool: trendingPool,
       personalizedPool: personalizedPool,
+      task2HistoryIds: task2Ids,
+      task3GenreIds: task3Ids,
     );
+
+    final historyDesc = historyTarget != null
+        ? '"${historyTarget.title}" (${historyTarget.id})'
+        : (tasteProfile.hasHistory ? 'skipped(hindi-only)' : 'none');
+    LogService.info(
+      'getPersonalizedQuickPicks activeLanguages=$activeLanguages mood=$mood historyTarget=$historyDesc Task1=${trendingPool.length} Task2=${relatedResults.length} Task3=${genreResults.length} personalized=${personalizedPool.length}',
+      tag: 'Feed',
+    );
+    final top6Log = blendedResult.songs.take(6).toList().asMap().entries.map((entry) {
+      final idx = entry.key;
+      final s = entry.value;
+      final origin = blendedResult.slotOrigins[s.id] ?? 'unknown';
+      return '#$idx "${s.title}" (${s.id}) [$origin]';
+    }).join(' | ');
+    LogService.info(
+      'Final Top 6 Quick Picks ($activeLanguages, mood=$mood): $top6Log',
+      tag: 'Feed',
+    );
+
+    return blendedResult.songs;
   }
 }

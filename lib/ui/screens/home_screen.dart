@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../models/browse_result.dart';
@@ -31,6 +32,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _feedRequestToken = 0;
   Timer? _preWarmTimer;
   String _activeMood = 'All';
+  List<String> _lastLoadedLanguages = [];
 
   final List<String> _moods = [
     'All',
@@ -45,14 +47,28 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _lastLoadedLanguages = DatabaseService.getMusicLanguages();
+    DatabaseService.musicLanguagesNotifier.addListener(_onLanguagesChanged);
     _checkAppUpdateSilently();
     _initializeHome();
   }
 
   @override
   void dispose() {
+    DatabaseService.musicLanguagesNotifier.removeListener(_onLanguagesChanged);
     _preWarmTimer?.cancel();
     super.dispose();
+  }
+
+  void _onLanguagesChanged() {
+    final current = DatabaseService.getMusicLanguages();
+    if (!listEquals(current, _lastLoadedLanguages)) {
+      _lastLoadedLanguages = current;
+      if (mounted) {
+        setState(() => _isLoading = true);
+        _loadFeed(_activeMood, true);
+      }
+    }
   }
 
   Future<void> _initializeHome() async {
@@ -63,8 +79,9 @@ class _HomeScreenState extends State<HomeScreen> {
       // Prompt user for language selection on first run before loading feed
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!mounted) return;
+        final tokenBefore = _feedRequestToken;
         await _checkFirstTimeLanguageSetup();
-        if (mounted) {
+        if (mounted && _feedRequestToken == tokenBefore) {
           await _loadFeed('All', false);
         }
       });
@@ -113,6 +130,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final requestToken = ++_feedRequestToken;
 
     final activeLangs = DatabaseService.getMusicLanguages();
+    _lastLoadedLanguages = activeLangs;
     final cacheKey = '$mood:${activeLangs.join(",")}';
 
     // 1. Instant display from cache (0ms perceived latency)
@@ -234,12 +252,16 @@ class _HomeScreenState extends State<HomeScreen> {
             tooltip: 'Music Languages',
             icon: const Icon(Icons.translate_rounded),
             onPressed: () {
+              final tokenBefore = _feedRequestToken;
               LanguageSelectionDialog.show(
                 context,
                 isDismissible: true,
                 onSaved: (selected) {
-                  setState(() => _isLoading = true);
-                  _loadFeed(_activeMood, true);
+                  // Only trigger a manual reload if musicLanguagesNotifier did not already start one
+                  if (_feedRequestToken == tokenBefore) {
+                    setState(() => _isLoading = true);
+                    _loadFeed(_activeMood, true);
+                  }
                 },
               );
             },

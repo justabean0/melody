@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/database_service.dart';
+import '../../services/innertube_service.dart';
+import '../../services/recommendation_service.dart';
 
 class MusicLanguage {
   final String name;
@@ -163,6 +165,8 @@ class _LanguageSelectionDialogState extends State<LanguageSelectionDialog> {
     final list = _selected.toList();
     await DatabaseService.setMusicLanguages(list);
     await DatabaseService.markLanguageOnboardingCompleted();
+    InnerTubeService.clearQuickPicksCache();
+    RecommendationService.clearCache();
     widget.onSaved?.call(list);
     if (mounted) {
       Navigator.of(context).pop();

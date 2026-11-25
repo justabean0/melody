@@ -43,7 +43,8 @@ class InnerTubeService {
   static String get gl => _gl;
   static String get hl => _hl;
 
-  static Map<String, String> _headers() {
+  static Map<String, String> _headers({String? gl}) {
+    final effectiveGl = (gl != null && gl.isNotEmpty) ? gl : _gl;
     final headers = <String, String>{
       'Content-Type': 'application/json',
       'User-Agent': defaultUserAgent,
@@ -54,24 +55,28 @@ class InnerTubeService {
       'Origin': originYouTubeMusic,
       'Referer': refererYouTubeMusic,
     };
-    if (visitorData != null && visitorData!.isNotEmpty) {
+    if (effectiveGl == 'IN' && visitorData != null && visitorData!.isNotEmpty) {
       headers['X-Goog-Visitor-Id'] = visitorData!;
     }
     return headers;
   }
 
-  static Map<String, dynamic> _clientContext() => {
-        'context': {
-          'client': {
-            'clientName': 'WEB_REMIX',
-            'clientVersion': clientVersion,
-            'hl': _hl,
-            'gl': _gl,
-            if (visitorData != null && visitorData!.isNotEmpty)
-              'visitorData': visitorData,
-          }
+  static Map<String, dynamic> _clientContext({String? gl, String? hl}) {
+    final effectiveGl = (gl != null && gl.isNotEmpty) ? gl : _gl;
+    final effectiveHl = (hl != null && hl.isNotEmpty) ? hl : _hl;
+    return {
+      'context': {
+        'client': {
+          'clientName': 'WEB_REMIX',
+          'clientVersion': clientVersion,
+          'hl': effectiveHl,
+          'gl': effectiveGl,
+          if (effectiveGl == 'IN' && visitorData != null && visitorData!.isNotEmpty)
+            'visitorData': visitorData,
         }
-      };
+      }
+    };
+  }
 
   /// Fetch and cache visitorData from https://music.youtube.com/sw.js_data
   static Future<String?> fetchVisitorData({bool forceRefresh = false}) async {
@@ -122,14 +127,14 @@ class InnerTubeService {
     String? gl,
     String? hl,
   }) async {
+    final effectiveGl = (gl != null && gl.isNotEmpty) ? gl : _gl;
+    final effectiveHl = (hl != null && hl.isNotEmpty) ? hl : _hl;
+
     try {
-      if (visitorData == null) {
+      if (effectiveGl == 'IN' && visitorData == null) {
         await fetchVisitorData();
       }
     } catch (_) {}
-
-    final effectiveGl = gl ?? _gl;
-    final effectiveHl = hl ?? _hl;
 
     final body = <String, dynamic>{
       'context': {
@@ -138,7 +143,7 @@ class InnerTubeService {
           'clientVersion': clientVersion,
           'hl': effectiveHl,
           'gl': effectiveGl,
-          if (visitorData != null && visitorData!.isNotEmpty)
+          if (effectiveGl == 'IN' && visitorData != null && visitorData!.isNotEmpty)
             'visitorData': visitorData,
         }
       },
@@ -150,7 +155,7 @@ class InnerTubeService {
     try {
       final response = await _httpClient.post(
         Uri.parse('$_baseUrl/browse'),
-        headers: _headers(),
+        headers: _headers(gl: effectiveGl),
         body: jsonEncode(body),
       );
 
@@ -1383,7 +1388,12 @@ class InnerTubeService {
   }
 
   /// Search music, albums, artists, playlists using real InnerTube POST endpoint
-  static Future<SearchResult> search(String query, {SearchFilter filter = SearchFilter.all}) async {
+  static Future<SearchResult> search(
+    String query, {
+    SearchFilter filter = SearchFilter.all,
+    String? gl,
+    String? hl,
+  }) async {
     final clean = query.trim();
     if (clean.isEmpty) return const SearchResult();
 
@@ -1400,13 +1410,14 @@ class InnerTubeService {
       return _searchViaSafeProxy(clean);
     }
 
+    final effectiveGl = (gl != null && gl.isNotEmpty) ? gl : _gl;
     try {
-      if (visitorData == null) {
+      if (effectiveGl == 'IN' && visitorData == null) {
         await fetchVisitorData();
       }
 
       final body = <String, dynamic>{
-        ..._clientContext(),
+        ..._clientContext(gl: effectiveGl, hl: hl),
         'query': clean,
       };
       if (filter.params != null) {
@@ -1415,7 +1426,7 @@ class InnerTubeService {
 
       final res = await _httpClient.post(
         Uri.parse('$_baseUrl/search'),
-        headers: _headers(),
+        headers: _headers(gl: effectiveGl),
         body: jsonEncode(body),
       ).timeout(const Duration(seconds: 8));
 
@@ -1689,10 +1700,18 @@ class InnerTubeService {
 
   /// Browse a Playlist by its [browseId] (e.g. 'PL...', 'RDCLAK5uy_...', or 'VL...').
   /// Normalizes [browseId] to ensure it starts with 'VL' before sending to InnerTube.
-  static Future<PlaylistBrowseResult?> browsePlaylist(String browseId) async {
+  static Future<PlaylistBrowseResult?> browsePlaylist(
+    String browseId, {
+    String? gl,
+    String? hl,
+  }) async {
     try {
       final normalizedBrowseId = browseId.startsWith('VL') ? browseId : 'VL$browseId';
-      final response = await _browse(browseId: normalizedBrowseId);
+      final response = await _browse(
+        browseId: normalizedBrowseId,
+        gl: gl,
+        hl: hl,
+      );
       if (response == null) return null;
 
       final sections = _extractSectionListContents(response);
@@ -1915,6 +1934,7 @@ class InnerTubeService {
       final response = await _browse(
         browseId: 'FEmusic_charts',
         formData: {'selectedValues': [countryCode]},
+        gl: countryCode,
         hl: hl,
       );
       if (response == null) return ChartsResult(countryCode: countryCode);
@@ -2155,6 +2175,12 @@ class InnerTubeService {
     }
   }
 
+  /// Clears in-memory quick picks cache
+  static void clearQuickPicksCache() {
+    _quickPicksMemoryCache.clear();
+    _quickPicksCacheTimestamp.clear();
+  }
+
   /// Fetch Quick Picks / Home feed songs personalized by chosen music languages and listened genre algorithm.
   /// Strictly filters for single songs and leverages collaborative + content-based recommendations.
   static Future<List<Song>> getQuickPicks({
@@ -2170,21 +2196,36 @@ class InnerTubeService {
 
     // 1. Fast cache hit: return immediately if available and within 3-minute TTL
     if (!forceRefresh) {
-      final cachedAt = _quickPicksCacheTimestamp[cacheKey];
+      final cachedAt = _quickPicksCacheTimestamp[cacheKey] ??
+          DatabaseService.getCachedFeedTimestamp(cacheKey);
       final isFresh = cachedAt != null && DateTime.now().difference(cachedAt) < _cacheTtl;
 
       if (isFresh &&
           _quickPicksMemoryCache.containsKey(cacheKey) &&
           _quickPicksMemoryCache[cacheKey]!.isNotEmpty) {
-        return _quickPicksMemoryCache[cacheKey]!;
+        final memHits = _quickPicksMemoryCache[cacheKey]!;
+        LogService.info(
+          'getQuickPicks cache=MEMORY key="$cacheKey" activeLanguages=$activeLanguages mood=$mood songs=${memHits.length}',
+          tag: 'Feed',
+        );
+        return memHits;
       }
       final diskCached = DatabaseService.getCachedFeed(cacheKey);
-      if (diskCached.isNotEmpty) {
+      if (diskCached.isNotEmpty && isFresh) {
         _quickPicksMemoryCache[cacheKey] = diskCached;
-        _quickPicksCacheTimestamp[cacheKey] = DateTime.now();
+        _quickPicksCacheTimestamp[cacheKey] = cachedAt;
+        LogService.info(
+          'getQuickPicks cache=DISK key="$cacheKey" activeLanguages=$activeLanguages mood=$mood songs=${diskCached.length}',
+          tag: 'Feed',
+        );
         return diskCached;
       }
     }
+
+    LogService.info(
+      'getQuickPicks cache=MISS(fresh) key="$cacheKey" activeLanguages=$activeLanguages mood=$mood forceRefresh=$forceRefresh',
+      tag: 'Feed',
+    );
 
     // 2. Fetch personalized single songs based on chosen languages & listened genre algorithm
     final songs = await RecommendationService.getPersonalizedQuickPicks(
