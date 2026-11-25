@@ -161,7 +161,7 @@ class DatabaseService {
         debugPrint('Error reading background playback setting from SQLite: $e');
       }
     }
-    return _prefs?.getBool(_backgroundPlaybackKey) ?? true;
+    return _prefs?.getBool(_backgroundPlaybackKey) ?? false;
   }
 
   static Future<void> setBackgroundPlaybackEnabled(bool enabled) async {

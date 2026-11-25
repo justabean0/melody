@@ -45,12 +45,12 @@ class BatteryService {
 
   /// Retrieves the current background playback preference from native SharedPreferences.
   static Future<bool> getNativeBackgroundPlaybackEnabled() async {
-    if (!_isSupportedPlatform) return true;
+    if (!_isSupportedPlatform) return false;
     try {
       final res = await _channel.invokeMethod<bool>('getBackgroundPlaybackEnabled');
-      return res ?? true;
+      return res ?? false;
     } catch (_) {
-      return true;
+      return false;
     }
   }
 }

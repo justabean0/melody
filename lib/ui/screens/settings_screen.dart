@@ -27,7 +27,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
   bool _isCheckingUpdate = false;
   String _currentVersion = '1.0.0';
   bool _isBatteryUnrestricted = true;
-  bool _backgroundPlayback = true;
+  bool _backgroundPlayback = false;
 
   @override
   void initState() {
@@ -397,7 +397,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
           SwitchListTile(
             secondary: const Icon(Icons.play_circle_outline_rounded),
             title: const Text('Background Playback'),
-            subtitle: const Text('Keep audio playing when app is minimized or screen is off'),
+            subtitle: const Text('Keep playback alive after swiping the app from Recents'),
             value: _backgroundPlayback,
             onChanged: (val) async {
               setState(() => _backgroundPlayback = val);

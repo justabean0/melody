@@ -7,6 +7,7 @@ import '../../providers/search_provider.dart';
 import '../../providers/playback_provider.dart';
 import '../components/song_tile.dart';
 import '../components/album_card.dart';
+import '../components/top_result_play_button.dart';
 import '../../widgets/skeleton_loaders.dart';
 import 'collection_detail_screen.dart';
 import 'artist_detail_screen.dart';
@@ -469,7 +470,13 @@ class _SearchScreenState extends State<SearchScreen> {
           : topResult.artist;
       badge = 'Song';
       imageUrl = topResult.thumbnailUrl;
-      onTap = () => playback.playSong(topResult);
+      onTap = () {
+        if (playback.currentSong?.id == topResult.id) {
+          playback.togglePlayPause();
+        } else {
+          playback.playSong(topResult);
+        }
+      };
     } else if (topResult is Artist) {
       title = topResult.name;
       subtitle = topResult.subscribers ?? 'Artist';
@@ -620,11 +627,7 @@ class _SearchScreenState extends State<SearchScreen> {
               ),
               const SizedBox(width: 8),
               if (topResult is Song)
-                IconButton.filledTonal(
-                  icon: const Icon(Icons.play_arrow_rounded),
-                  iconSize: 28,
-                  onPressed: onTap,
-                )
+                TopResultPlayButton(song: topResult)
               else
                 Icon(
                   Icons.chevron_right_rounded,

@@ -120,14 +120,14 @@ class MainActivity: FlutterActivity() {
                         }
                     }
                     "setBackgroundPlaybackEnabled" -> {
-                        val enabled = call.argument<Boolean>("enabled") ?: true
+                        val enabled = call.argument<Boolean>("enabled") ?: false
                         val prefs = context.getSharedPreferences(MediaNotificationService.PREFS_NAME, Context.MODE_PRIVATE)
                         prefs.edit().putBoolean(MediaNotificationService.KEY_BACKGROUND_PLAYBACK_ENABLED, enabled).apply()
                         result.success(true)
                     }
                     "getBackgroundPlaybackEnabled" -> {
                         val prefs = context.getSharedPreferences(MediaNotificationService.PREFS_NAME, Context.MODE_PRIVATE)
-                        val enabled = prefs.getBoolean(MediaNotificationService.KEY_BACKGROUND_PLAYBACK_ENABLED, true)
+                        val enabled = prefs.getBoolean(MediaNotificationService.KEY_BACKGROUND_PLAYBACK_ENABLED, false)
                         result.success(enabled)
                     }
                     else -> result.notImplemented()

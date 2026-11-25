@@ -84,7 +84,7 @@ class MediaNotificationService : Service() {
 
     fun isBackgroundPlaybackEnabled(): Boolean {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_BACKGROUND_PLAYBACK_ENABLED, true)
+        return prefs.getBoolean(KEY_BACKGROUND_PLAYBACK_ENABLED, false)
     }
 
     fun checkIdleTeardown() {

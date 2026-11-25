@@ -98,7 +98,7 @@ class MainScaffold extends StatefulWidget {
   State<MainScaffold> createState() => _MainScaffoldState();
 }
 
-class _MainScaffoldState extends State<MainScaffold> with WidgetsBindingObserver {
+class _MainScaffoldState extends State<MainScaffold> {
   int _currentIndex = 0;
 
   final List<Widget> _screens = const [
@@ -107,34 +107,6 @@ class _MainScaffoldState extends State<MainScaffold> with WidgetsBindingObserver
     LibraryScreen(),
     SettingsScreen(),
   ];
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.hidden ||
-        state == AppLifecycleState.detached) {
-      DatabaseService.getBackgroundPlaybackEnabled().then((bgEnabled) {
-        if (!bgEnabled && mounted) {
-          final playback = context.read<PlaybackProvider>();
-          if (playback.isPlaying) {
-            playback.togglePlayPause();
-          }
-        }
-      });
-    }
-  }
 
   @override
   Widget build(BuildContext context) {

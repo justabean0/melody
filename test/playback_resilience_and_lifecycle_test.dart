@@ -1,11 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:melody/main.dart';
+import 'package:melody/models/lyrics.dart';
 import 'package:melody/models/song.dart';
 import 'package:melody/providers/library_provider.dart';
+import 'package:melody/providers/playback_provider.dart';
+import 'package:melody/providers/search_provider.dart';
+import 'package:melody/providers/theme_provider.dart';
 import 'package:melody/services/anti_bot_service.dart';
 import 'package:melody/services/audio_cache_service.dart';
 import 'package:melody/services/audio_service.dart';
@@ -15,13 +21,82 @@ import 'package:melody/services/innertube_service.dart';
 import 'package:melody/services/native_extractor_service.dart';
 import 'package:melody/services/recommendation_service.dart';
 import 'package:melody/services/stream_resolver_service.dart';
+import 'package:melody/ui/screens/settings_screen.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+class _LifecycleFakePlaybackProvider extends ChangeNotifier implements PlaybackProvider {
+  Song? _currentSong;
+  bool _isPlaying = false;
+  int toggleCalls = 0;
+
+  void seedPlaying(Song song) {
+    _currentSong = song;
+    _isPlaying = true;
+    notifyListeners();
+  }
+
+  @override
+  Song? get currentSong => _currentSong;
+  @override
+  List<Song> get queue => _currentSong != null ? [_currentSong!] : const [];
+  @override
+  int get currentIndex => _currentSong != null ? 0 : -1;
+  @override
+  bool get isPlaying => _isPlaying;
+  @override
+  bool get isLoading => false;
+  @override
+  Duration get position => const Duration(seconds: 15);
+  @override
+  Duration get duration => const Duration(seconds: 180);
+  @override
+  MelodyLoopMode get loopMode => MelodyLoopMode.off;
+  @override
+  bool get isShuffle => false;
+  @override
+  LyricsData? get lyrics => null;
+  @override
+  bool get isLoadingLyrics => false;
+  @override
+  int get activeLyricIndex => -1;
+
+  @override
+  Future<void> togglePlayPause() async {
+    toggleCalls++;
+    _isPlaying = !_isPlaying;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> playSong(Song song, {List<Song>? contextQueue, int? startIndex}) async {}
+  @override
+  Future<void> playNext() async {}
+  @override
+  Future<void> playPrevious() async {}
+  @override
+  Future<void> seek(Duration position) async {}
+  @override
+  void toggleShuffle() {}
+  @override
+  void cycleLoopMode() {}
+  @override
+  void setPlaybackSpeed(double speed) {}
+  @override
+  void addToQueue(Song song) {}
+  @override
+  void playNextInQueue(Song song) {}
+  @override
+  void removeFromQueue(int index) {}
+  @override
+  void clearQueue() {}
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  bool bgPlaybackNative = true;
+  bool bgPlaybackNative = false;
 
   setUpAll(() {
     sqfliteFfiInit();
@@ -119,19 +194,120 @@ void main() {
       await DatabaseService.init();
     });
 
-    test('getBackgroundPlaybackEnabled defaults to true and setBackgroundPlaybackEnabled syncs to SQLite and native', () async {
+    test('getBackgroundPlaybackEnabled defaults to false, syncs to SQLite/native, and preserves existing preference', () async {
       final initial = await DatabaseService.getBackgroundPlaybackEnabled();
-      expect(initial, isTrue);
+      expect(initial, isFalse);
+      expect(bgPlaybackNative, isFalse);
+
+      await DatabaseService.setBackgroundPlaybackEnabled(true);
+      final afterEnable = await DatabaseService.getBackgroundPlaybackEnabled();
+      expect(afterEnable, isTrue);
+      expect(bgPlaybackNative, isTrue);
+
+      // Re-initializing DatabaseService must NOT overwrite user's saved true setting
+      await DatabaseService.init();
+      expect(await DatabaseService.getBackgroundPlaybackEnabled(), isTrue);
 
       await DatabaseService.setBackgroundPlaybackEnabled(false);
       final afterDisable = await DatabaseService.getBackgroundPlaybackEnabled();
       expect(afterDisable, isFalse);
       expect(bgPlaybackNative, isFalse);
+    });
 
-      await DatabaseService.setBackgroundPlaybackEnabled(true);
-      final afterReenable = await DatabaseService.getBackgroundPlaybackEnabled();
-      expect(afterReenable, isTrue);
-      expect(bgPlaybackNative, isTrue);
+    testWidgets('Minimizing app with Background Playback OFF does not pause or tear down playback', (tester) async {
+      InnerTubeService.clientOverride = MockClient((_) async => http.Response('{}', 200));
+      AntiBotService.reset();
+      InnerTubeService.clearQuickPicksCache();
+      RecommendationService.clearCache();
+      DatabaseService.setDatabaseForTesting(null);
+      SharedPreferences.setMockInitialValues({
+        'melody_auto_check_updates': false,
+        'melody_language_onboarding_v2_completed': true,
+        'melody_music_languages': ['English'],
+      });
+      final prefs = await SharedPreferences.getInstance();
+      DatabaseService.setPrefsForTesting(prefs);
+      expect(await DatabaseService.getBackgroundPlaybackEnabled(), isFalse);
+
+      final fakePlayback = _LifecycleFakePlaybackProvider();
+      fakePlayback.seedPlaying(const Song(
+        id: 'bg_test_song',
+        title: 'Keep Playing Track',
+        artist: 'Artist',
+        duration: 180,
+        thumbnailUrl: '',
+      ));
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider(create: (_) => ThemeProvider()),
+            ChangeNotifierProvider(create: (_) => LibraryProvider()),
+            ChangeNotifierProvider<PlaybackProvider>.value(value: fakePlayback),
+            ChangeNotifierProvider(create: (_) => SearchProvider()),
+          ],
+          child: const MaterialApp(
+            home: MainScaffold(),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Simulate minimizing / backgrounding the app while Background Playback is OFF
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(fakePlayback.isPlaying, isTrue);
+      expect(fakePlayback.toggleCalls, equals(0));
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      // Allow HomeScreen's initial 10s feed timeout timer to complete cleanly before teardown
+      await tester.pump(const Duration(seconds: 11));
+      await tester.pumpWidget(const SizedBox.shrink());
+      InnerTubeService.clientOverride = null;
+    });
+
+    testWidgets('SettingsScreen Background Playback switch defaults to false and shows Recents copy', (tester) async {
+      DatabaseService.setDatabaseForTesting(null);
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      DatabaseService.setPrefsForTesting(prefs);
+
+      final fakePlayback = _LifecycleFakePlaybackProvider();
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider(create: (_) => ThemeProvider()),
+            ChangeNotifierProvider(create: (_) => LibraryProvider()),
+            ChangeNotifierProvider<PlaybackProvider>.value(value: fakePlayback),
+            ChangeNotifierProvider(create: (_) => SearchProvider()),
+          ],
+          child: const MaterialApp(
+            home: SettingsScreen(),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.scrollUntilVisible(
+        find.text('Background Playback'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      final bgSwitch = tester.widget<SwitchListTile>(
+        find.widgetWithText(SwitchListTile, 'Background Playback'),
+      );
+      expect(bgSwitch.value, isFalse);
+      expect(
+        find.text('Keep playback alive after swiping the app from Recents'),
+        findsOneWidget,
+      );
     });
 
     test('savePlaybackSession and getLastPlaybackSession round-trip correctly', () async {
@@ -888,6 +1064,7 @@ void main() {
   group('AudioService Notification Progress & Pause Live Position Tests', () {
     test('AudioService.pause() captures live position before updating notification', () async {
       final audioService = MelodyAudioService();
+      audioService.init();
       Map<dynamic, dynamic>? lastNotifArgs;
 
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -918,7 +1095,19 @@ void main() {
       expect(lastNotifArgs!['isPlaying'], isFalse);
       expect(lastNotifArgs!['positionMs'], equals(audioService.position.inMilliseconds));
 
-      await audioService.stop();
+      // Simulate onTaskRemoved -> ACTION_STOP ('stop') cleanup when Background Playback is OFF
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
+        'com.melody.music/playback',
+        const StandardMethodCodec().encodeMethodCall(
+          const MethodCall('onNotificationAction', 'stop'),
+        ),
+        (_) {},
+      );
+      await Future.delayed(const Duration(milliseconds: 50));
+
+      expect(audioService.isPlaying, isFalse);
+      expect(audioService.isPausedByUser, isTrue);
+      expect(audioService.position, equals(Duration.zero));
     });
   });
 }
