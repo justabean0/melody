@@ -22,9 +22,23 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     super.dispose();
   }
 
+  Color _successColor(ColorScheme colorScheme) {
+    return colorScheme.brightness == Brightness.dark
+        ? const Color(0xFF66BB6A)
+        : const Color(0xFF1B6E2D);
+  }
+
+  Color _warningColor(ColorScheme colorScheme) {
+    return colorScheme.brightness == Brightness.dark
+        ? const Color(0xFFFFB74D)
+        : const Color(0xFF8A5300);
+  }
+
   void _copyToClipboard() {
     final report = LogService.exportAllLogs();
     Clipboard.setData(ClipboardData(text: report));
+    final colorScheme = Theme.of(context).colorScheme;
+    final successBg = _successColor(colorScheme);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: const Row(
@@ -34,7 +48,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             Expanded(child: Text('Diagnostic logs copied to clipboard!')),
           ],
         ),
-        backgroundColor: Colors.green.shade700,
+        backgroundColor: successBg,
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         duration: const Duration(seconds: 4),
@@ -47,7 +61,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     if (!mounted) return;
     if (!success) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open share sheet. Please try Copy or Upload.')),
+        const SnackBar(
+          content: Text('Could not open share sheet. Please try Copy or Upload.'),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   }
@@ -55,6 +72,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   Future<void> _saveToDownloads() async {
     final path = await LogService.saveLogToDownloads();
     if (!mounted) return;
+    final colorScheme = Theme.of(context).colorScheme;
     if (path != null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -65,7 +83,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
               Expanded(child: Text('Saved log file to $path')),
             ],
           ),
-          backgroundColor: Colors.green.shade700,
+          backgroundColor: _successColor(colorScheme),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           duration: const Duration(seconds: 5),
@@ -73,7 +91,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to save to Downloads.')),
+        const SnackBar(
+          content: Text('Failed to save to Downloads.'),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   }
@@ -83,17 +104,18 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     final url = await LogService.uploadLogToCloud();
     if (!mounted) return;
     setState(() => _isUploading = false);
+    final colorScheme = Theme.of(context).colorScheme;
 
     if (url != null) {
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
+          title: Row(
             children: [
-              Icon(Icons.cloud_done_rounded, color: Colors.green),
-              SizedBox(width: 8),
-              Text('Log Uploaded'),
+              Icon(Icons.cloud_done_rounded, color: _successColor(colorScheme)),
+              const SizedBox(width: 8),
+              const Text('Log Uploaded'),
             ],
           ),
           content: Column(
@@ -109,12 +131,16 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  color: colorScheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: SelectableText(
                   url,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.blueAccent),
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    color: colorScheme.primary,
+                  ),
                 ),
               ),
             ],
@@ -127,7 +153,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 Clipboard.setData(ClipboardData(text: url));
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Download URL copied to clipboard!')),
+                  const SnackBar(
+                    content: Text('Download URL copied to clipboard!'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
                 );
               },
             ),
@@ -149,9 +178,11 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   }
 
   void _confirmClear() {
+    final colorScheme = Theme.of(context).colorScheme;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Clear Diagnostic Logs?'),
         content: const Text('This will wipe all currently recorded runtime logs in this session.'),
         actions: [
@@ -160,7 +191,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             child: const Text('Cancel'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            style: FilledButton.styleFrom(
+              backgroundColor: colorScheme.error,
+              foregroundColor: colorScheme.onError,
+            ),
             onPressed: () {
               setState(() {
                 LogService.clear();
@@ -250,7 +284,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       label: 'Errors',
                       count: errorCount.toString(),
                       icon: Icons.error_outline_rounded,
-                      color: Colors.redAccent,
+                      color: colorScheme.error,
                       onTap: () => setState(() {
                         _selectedFilter =
                             _selectedFilter == LogLevel.error ? null : LogLevel.error;
@@ -262,7 +296,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       label: 'Warnings',
                       count: warnCount.toString(),
                       icon: Icons.warning_amber_rounded,
-                      color: Colors.amber,
+                      color: _warningColor(colorScheme),
                       onTap: () => setState(() {
                         _selectedFilter =
                             _selectedFilter == LogLevel.warning ? null : LogLevel.warning;
@@ -283,6 +317,11 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                     prefixIcon: const Icon(Icons.search, size: 20),
                     suffixIcon: _searchQuery.isNotEmpty
                         ? IconButton(
+                            tooltip: 'Clear filter',
+                            constraints: const BoxConstraints(
+                              minWidth: 48,
+                              minHeight: 48,
+                            ),
                             icon: const Icon(Icons.clear, size: 18),
                             onPressed: () {
                               _searchController.clear();
@@ -304,7 +343,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: colorScheme.surfaceContainerHighest.withAlpha(120),
+                    color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(
@@ -314,7 +353,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       Expanded(
                         child: Text(
                           'You can send or upload the log file below to download it on your PC.',
-                          style: TextStyle(fontSize: 11, color: theme.textTheme.bodySmall?.color),
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontSize: 11.5,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
                         ),
                       ),
                     ],
@@ -331,13 +373,19 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.description_outlined, size: 48, color: Colors.grey.shade400),
+                            Icon(
+                              Icons.description_outlined,
+                              size: 48,
+                              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                            ),
                             const SizedBox(height: 12),
                             Text(
                               _searchQuery.isNotEmpty
                                   ? 'No matching log entries found.'
                                   : 'No logs recorded yet.',
-                              style: const TextStyle(color: Colors.grey),
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: colorScheme.onSurfaceVariant,
+                              ),
                             ),
                           ],
                         ),
@@ -348,7 +396,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                         separatorBuilder: (_, __) => const Divider(height: 1),
                         itemBuilder: (context, index) {
                           final item = filteredLogs[index];
-                          return _buildLogTile(item);
+                          return _buildLogTile(item, theme, colorScheme);
                         },
                       ),
               ),
@@ -371,6 +419,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       icon: const Icon(Icons.share_rounded, size: 18),
                       label: const Text('Send / Share File'),
                       style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 48),
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
@@ -390,6 +439,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                           : const Icon(Icons.cloud_upload_rounded, size: 18),
                       label: Text(_isUploading ? 'Uploading...' : 'Get Download Link'),
                       style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 48),
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
@@ -397,7 +447,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 8),
               // Secondary row: Copy to Clipboard & Save to Downloads
               Row(
                 children: [
@@ -407,7 +457,8 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       icon: const Icon(Icons.copy_rounded, size: 16),
                       label: const Text('Copy to Clipboard', style: TextStyle(fontSize: 12)),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        minimumSize: const Size(0, 48),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                     ),
@@ -419,7 +470,8 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       icon: const Icon(Icons.download_rounded, size: 16),
                       label: const Text('Save to Downloads', style: TextStyle(fontSize: 12)),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        minimumSize: const Size(0, 48),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                     ),
@@ -484,12 +536,16 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
-  Widget _buildLogTile(LogEntry item) {
+  Widget _buildLogTile(
+    LogEntry item,
+    ThemeData theme,
+    ColorScheme colorScheme,
+  ) {
     final color = switch (item.level) {
-      LogLevel.error => Colors.redAccent,
-      LogLevel.warning => Colors.amber,
-      LogLevel.info => Colors.blueAccent,
-      LogLevel.debug => Colors.purpleAccent,
+      LogLevel.error => colorScheme.error,
+      LogLevel.warning => _warningColor(colorScheme),
+      LogLevel.info => colorScheme.primary,
+      LogLevel.debug => colorScheme.tertiary,
     };
 
     final icon = switch (item.level) {
@@ -504,6 +560,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             title: Row(
               children: [
                 Icon(icon, color: color, size: 20),
@@ -511,7 +568,9 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 Expanded(
                   child: Text(
                     '[${item.tag}] ${item.formattedTime}',
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ],
@@ -533,7 +592,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                   Clipboard.setData(ClipboardData(text: item.toString()));
                   Navigator.pop(ctx);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Log entry copied to clipboard.')),
+                    const SnackBar(
+                      content: Text('Log entry copied to clipboard.'),
+                      behavior: SnackBarBehavior.floating,
+                    ),
                   );
                 },
                 child: const Text('Copy Entry'),
@@ -580,7 +642,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       const SizedBox(width: 6),
                       Text(
                         item.formattedTime,
-                        style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          fontSize: 10,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ],
                   ),
@@ -589,7 +654,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                     item.message,
                     maxLines: 3,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12),
+                    style: theme.textTheme.bodySmall?.copyWith(fontSize: 12),
                   ),
                   if (item.error != null) ...[
                     const SizedBox(height: 2),
@@ -597,7 +662,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       'Error: ${item.error}',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11, color: Colors.redAccent),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontSize: 11,
+                        color: colorScheme.error,
+                      ),
                     ),
                   ],
                 ],

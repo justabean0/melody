@@ -27,7 +27,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
     final liked = library.likedSongs;
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final bottomPadding = 24.0 + MediaQuery.paddingOf(context).bottom;
+    const double bottomPadding = 24.0;
 
     return Scaffold(
       appBar: AppBar(
@@ -64,7 +64,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
                 icon: const Icon(Icons.play_arrow_rounded, size: 20),
                 label: const Text('Play All'),
                 style: FilledButton.styleFrom(
-                  minimumSize: const Size(0, 42),
+                  minimumSize: const Size(0, 48),
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                 ),
                 onPressed: () {

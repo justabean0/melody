@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../models/song.dart';
 import '../../providers/playback_provider.dart';
 import '../../providers/theme_provider.dart';
+import '../../utils/thumbnail_utils.dart';
 import '../screens/player_screen.dart';
 
 class MiniPlayer extends StatelessWidget {
@@ -59,66 +60,79 @@ class MiniPlayer extends StatelessWidget {
                     padding: const EdgeInsets.fromLTRB(12, 9, 8, 6),
                     child: Row(
                       children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: song.hasRemoteThumbnail
-                              ? CachedNetworkImage(
-                                  imageUrl: song.thumbnailUrl,
-                                  width: 44,
-                                  height: 44,
-                                  fit: BoxFit.cover,
-                                  placeholder: (_, __) => Container(
-                                    width: 44,
-                                    height: 44,
-                                    color: colorScheme.surfaceContainerHighest,
-                                  ),
-                                  errorWidget: (_, __, ___) => Container(
-                                    width: 44,
-                                    height: 44,
-                                    color: colorScheme.surfaceContainerHighest,
-                                    child: Icon(
-                                      Icons.music_note_rounded,
-                                      color: colorScheme.onSurfaceVariant,
-                                    ),
-                                  ),
-                                )
-                              : Container(
-                                  width: 44,
-                                  height: 44,
-                                  color: colorScheme.surfaceContainerHighest,
-                                  child: Icon(
-                                    Icons.music_note_rounded,
-                                    color: colorScheme.primary,
-                                  ),
-                                ),
-                        ),
-                        const SizedBox(width: 12),
                         Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                song.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  fontSize: 14.5,
-                                  fontWeight: FontWeight.w600,
-                                  color: colorScheme.onSurface,
+                          child: Semantics(
+                            container: true,
+                            label: 'Now playing ${song.title} by ${song.artist}. Open player',
+                            child: Row(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: song.hasRemoteThumbnail
+                                      ? CachedNetworkImage(
+                                          imageUrl: ThumbnailUtils.upgradeUrl(
+                                            song.thumbnailUrl,
+                                            size: 544,
+                                          ),
+                                          width: 44,
+                                          height: 44,
+                                          fit: BoxFit.cover,
+                                          placeholder: (_, __) => Container(
+                                            width: 44,
+                                            height: 44,
+                                            color: colorScheme.surfaceContainerHighest,
+                                          ),
+                                          errorWidget: (_, __, ___) => Container(
+                                            width: 44,
+                                            height: 44,
+                                            color: colorScheme.surfaceContainerHighest,
+                                            child: Icon(
+                                              Icons.music_note_rounded,
+                                              color: colorScheme.onSurfaceVariant,
+                                            ),
+                                          ),
+                                        )
+                                      : Container(
+                                          width: 44,
+                                          height: 44,
+                                          color: colorScheme.surfaceContainerHighest,
+                                          child: Icon(
+                                            Icons.music_note_rounded,
+                                            color: colorScheme.primary,
+                                          ),
+                                        ),
                                 ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                song.artist,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  fontSize: 12,
-                                  color: colorScheme.onSurfaceVariant,
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        song.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.bodyMedium?.copyWith(
+                                          fontSize: 14.5,
+                                          fontWeight: FontWeight.w600,
+                                          color: colorScheme.onSurface,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        song.artist,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          fontSize: 12,
+                                          color: colorScheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                         const SizedBox(width: 20),
@@ -182,13 +196,13 @@ class _MiniPlayerPlayPauseButton extends StatelessWidget {
               ),
               if (state.isLoading)
                 SizedBox(
-                  width: 44,
-                  height: 44,
+                  width: 30,
+                  height: 30,
                   child: IgnorePointer(
                     child: CircularProgressIndicator(
                       strokeWidth: 2.2,
                       valueColor: AlwaysStoppedAnimation<Color>(
-                        colorScheme.primary.withValues(alpha: 0.75),
+                        colorScheme.onPrimary.withValues(alpha: 0.9),
                       ),
                     ),
                   ),

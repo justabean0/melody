@@ -96,79 +96,72 @@ class _SettingsScreenState extends State<SettingsScreen>
     }
   }
 
+  static const String _defaultUpdateSource =
+      'https://api.github.com/repos/justabean0/melody/releases/latest';
+
+  Color _successColor(ColorScheme colorScheme) {
+    return colorScheme.brightness == Brightness.dark
+        ? const Color(0xFF66BB6A)
+        : const Color(0xFF1B6E2D);
+  }
+
+  Color _warningColor(ColorScheme colorScheme) {
+    return colorScheme.brightness == Brightness.dark
+        ? const Color(0xFFFFB74D)
+        : const Color(0xFF8A5300);
+  }
+
   void _editUpdateSourceDialog() {
-    final controller = TextEditingController(text: _updateSource);
-    showDialog(
+    showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Update Source URL'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Enter a GitHub Release endpoint or direct manifest URL:',
-              style: TextStyle(fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              style: const TextStyle(fontSize: 13),
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText:
-                    'https://api.github.com/repos/owner/repo/releases/latest',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final newUrl = controller.text.trim();
-              if (newUrl.isNotEmpty) {
-                setState(() => _updateSource = newUrl);
-                DatabaseService.setUpdateSource(newUrl);
-              }
-              Navigator.pop(ctx);
-            },
-            child: const Text('Save'),
-          ),
-        ],
+      builder: (ctx) => _UpdateSourceDialog(
+        initialUrl: _updateSource,
+        defaultUrl: _defaultUpdateSource,
+        onSaved: (newUrl) {
+          setState(() => _updateSource = newUrl);
+          DatabaseService.setUpdateSource(newUrl);
+        },
       ),
     );
   }
 
   void _showInnerTubeDetailsDialog() {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final successColor = _successColor(colorScheme);
+    final warningColor = _warningColor(colorScheme);
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Row(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
           children: [
-            Icon(Icons.tune_rounded, color: Colors.blueAccent),
-            SizedBox(width: 10),
-            Text('InnerTube Engine Health'),
+            Icon(Icons.tune_rounded, color: colorScheme.primary),
+            const SizedBox(width: 10),
+            const Expanded(child: Text('InnerTube Engine Health')),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'YouTube requires client version strings to process playback requests. '
               'When Google deprecates older strings, Melody alerts you and automatically '
               'rotates through safe fallback profiles.',
-              style: TextStyle(fontSize: 13),
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontSize: 13,
+                color: colorScheme.onSurfaceVariant,
+              ),
             ),
             const SizedBox(height: 16),
-            const Text(
+            Text(
               'Client Profiles Pool:',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              style: theme.textTheme.labelLarge?.copyWith(
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
             ),
             const SizedBox(height: 8),
             ...InnerTubeVersionManager.allProfiles.map((p) {
@@ -188,29 +181,33 @@ class _SettingsScreenState extends State<SettingsScreen>
                               : Icons.circle_outlined),
                       size: 16,
                       color: isDeprecated
-                          ? Colors.red
-                          : (isCurrent ? Colors.green : Colors.grey),
+                          ? colorScheme.error
+                          : (isCurrent
+                              ? successColor
+                              : colorScheme.onSurfaceVariant),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         '${p.clientName} v${p.clientVersion}',
-                        style: TextStyle(
+                        style: theme.textTheme.bodySmall?.copyWith(
                           fontSize: 12,
                           fontWeight:
                               isCurrent ? FontWeight.bold : FontWeight.normal,
                           decoration:
                               isDeprecated ? TextDecoration.lineThrough : null,
-                          color: isDeprecated ? Colors.grey : null,
+                          color: isDeprecated
+                              ? colorScheme.onSurfaceVariant
+                              : colorScheme.onSurface,
                         ),
                       ),
                     ),
                     if (isCurrent)
-                      const Text(
+                      Text(
                         'ACTIVE',
-                        style: TextStyle(
+                        style: theme.textTheme.labelSmall?.copyWith(
                           fontSize: 10,
-                          color: Colors.green,
+                          color: successColor,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -223,12 +220,15 @@ class _SettingsScreenState extends State<SettingsScreen>
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: Colors.amber.shade900.withAlpha(40),
+                  color: warningColor.withValues(alpha: 0.14),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
                   'Warning: ${InnerTubeVersionManager.outdatedReason ?? 'Outdated string detected'}',
-                  style: const TextStyle(fontSize: 11, color: Colors.amber),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: 11,
+                    color: warningColor,
+                  ),
                 ),
               ),
             ],
@@ -244,6 +244,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 const SnackBar(
                   content:
                       Text('InnerTube client profiles reset & re-enabled.'),
+                  behavior: SnackBarBehavior.floating,
                 ),
               );
             },
@@ -290,11 +291,10 @@ class _SettingsScreenState extends State<SettingsScreen>
     final themeProvider = context.watch<ThemeProvider>();
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final isDark = colorScheme.brightness == Brightness.dark;
     final bottomPadding = 172.0 + MediaQuery.paddingOf(context).bottom;
-    final batteryColor = _isBatteryUnrestricted
-        ? Colors.green
-        : (isDark ? const Color(0xFFFFB74D) : Colors.amber.shade800);
+    final successColor = _successColor(colorScheme);
+    final warningColor = _warningColor(colorScheme);
+    final batteryColor = _isBatteryUnrestricted ? successColor : warningColor;
 
     return Scaffold(
       body: SafeArea(
@@ -548,6 +548,8 @@ class _SettingsScreenState extends State<SettingsScreen>
                   title: const Text('Music Languages'),
                   subtitle: Text(
                     DatabaseService.getMusicLanguages().join(', '),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: colorScheme.onSurfaceVariant),
                   ),
                   trailing: Icon(
@@ -686,32 +688,32 @@ class _SettingsScreenState extends State<SettingsScreen>
                     '${InnerTubeVersionManager.currentProfile.clientName} v${InnerTubeVersionManager.currentProfile.clientVersion}',
                     style: TextStyle(color: colorScheme.onSurfaceVariant),
                   ),
-                  trailing: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: InnerTubeVersionManager.isOutdatedWarningActive
-                          ? Colors.amber.withValues(alpha: 0.16)
-                          : Colors.green.withValues(alpha: 0.16),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: InnerTubeVersionManager.isOutdatedWarningActive
-                            ? Colors.amber
-                            : Colors.green,
-                      ),
-                    ),
-                    child: Text(
-                      InnerTubeVersionManager.isOutdatedWarningActive
-                          ? 'Outdated'
-                          : 'Healthy',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: InnerTubeVersionManager.isOutdatedWarningActive
-                            ? Colors.amber
-                            : Colors.green,
-                      ),
-                    ),
+                  trailing: Builder(
+                    builder: (_) {
+                      final isOutdated =
+                          InnerTubeVersionManager.isOutdatedWarningActive;
+                      final badgeColor =
+                          isOutdated ? warningColor : successColor;
+                      return Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: badgeColor.withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: badgeColor),
+                        ),
+                        child: Text(
+                          isOutdated ? 'Outdated' : 'Healthy',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: badgeColor,
+                          ),
+                        ),
+                      );
+                    },
                   ),
                   onTap: _showInnerTubeDetailsDialog,
                 ),
@@ -749,18 +751,18 @@ class _SettingsScreenState extends State<SettingsScreen>
                               vertical: 3,
                             ),
                             decoration: BoxDecoration(
-                              color: Colors.redAccent.withValues(alpha: 0.16),
+                              color: colorScheme.errorContainer,
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                color: Colors.redAccent,
+                                color: colorScheme.error.withValues(alpha: 0.45),
                                 width: 1,
                               ),
                             ),
                             child: Text(
                               '$errCount error${errCount > 1 ? "s" : ""}',
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 11,
-                                color: Colors.redAccent,
+                                color: colorScheme.onErrorContainer,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
@@ -1085,6 +1087,104 @@ class _SettingsMenuPill<T> extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _UpdateSourceDialog extends StatefulWidget {
+  final String initialUrl;
+  final String defaultUrl;
+  final ValueChanged<String> onSaved;
+
+  const _UpdateSourceDialog({
+    required this.initialUrl,
+    required this.defaultUrl,
+    required this.onSaved,
+  });
+
+  @override
+  State<_UpdateSourceDialog> createState() => _UpdateSourceDialogState();
+}
+
+class _UpdateSourceDialogState extends State<_UpdateSourceDialog> {
+  late final TextEditingController _controller;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialUrl);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final newUrl = _controller.text.trim();
+    final uri = Uri.tryParse(newUrl);
+    if (uri == null ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.host.isEmpty) {
+      setState(() => _errorText = 'Enter a valid http(s) URL');
+      return;
+    }
+    widget.onSaved(newUrl);
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: const Text('Update Source URL'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Enter a GitHub Release endpoint or direct manifest URL:',
+            style: TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.done,
+            style: const TextStyle(fontSize: 13),
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              hintText: 'https://api.github.com/repos/owner/repo/releases/latest',
+              errorText: _errorText,
+            ),
+            onChanged: (_) {
+              if (_errorText != null) setState(() => _errorText = null);
+            },
+            onSubmitted: (_) => _save(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            _controller.text = widget.defaultUrl;
+            _controller.selection =
+                TextSelection.collapsed(offset: _controller.text.length);
+            if (_errorText != null) setState(() => _errorText = null);
+          },
+          child: const Text('Reset'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _save,
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }

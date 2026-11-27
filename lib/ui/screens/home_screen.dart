@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -234,23 +235,26 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           children: [
             _buildBrandHeader(theme, colorScheme),
+            _buildMoodChips(colorScheme),
             Expanded(
               child: RefreshIndicator(
                 onRefresh: () async {
                   if (_isLoading) return;
-                  unawaited(_loadFeed(_activeMood, true));
+                  await _loadFeed(_activeMood, true);
                 },
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 250),
                   child: _isLoading
-                      ? const HomeFeedSkeleton(key: ValueKey('home_skeleton'))
+                      ? const HomeFeedSkeleton(
+                          key: ValueKey('home_skeleton'),
+                          showMoodChips: false,
+                        )
                       : _hasError && _quickPicks.isEmpty
                           ? _buildErrorState(theme, colorScheme, bottomPadding)
                           : ListView(
                               key: const ValueKey('home_content'),
                               padding: EdgeInsets.only(bottom: bottomPadding),
                               children: [
-                                _buildMoodChips(colorScheme),
                                 const SizedBox(height: 18),
                                 _buildQuickPicksHeader(theme, colorScheme, playback),
                                 const SizedBox(height: 6),
@@ -430,8 +434,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildMoodChips(ColorScheme colorScheme) {
+    final textScaler = MediaQuery.textScalerOf(context);
+    final chipStripHeight = math.max(48.0, 28.0 + textScaler.scale(20.0));
+
     return SizedBox(
-      height: 48,
+      height: chipStripHeight,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -441,8 +448,8 @@ class _HomeScreenState extends State<HomeScreen> {
           final mood = _moods[index];
           final isSelected = _activeMood == mood;
           return Center(
-            child: SizedBox(
-              height: 48,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
               child: FilterChip(
                 label: Text(
                   mood,
@@ -482,6 +489,7 @@ class _HomeScreenState extends State<HomeScreen> {
     ColorScheme colorScheme,
     PlaybackProvider playback,
   ) {
+    final hasSongs = _quickPicks.isNotEmpty;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0),
       child: Row(
@@ -501,41 +509,51 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(width: 8),
-          InkWell(
-            onTap: _quickPicks.isNotEmpty
-                ? () => playback.playSong(_quickPicks.first,
-                    contextQueue: _quickPicks)
-                : null,
-            borderRadius: BorderRadius.circular(999),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(minHeight: 48),
-              child: Center(
-                child: Container(
-                  constraints: const BoxConstraints(minHeight: 32),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.play_arrow_rounded,
-                        size: 16,
-                        color: colorScheme.onPrimaryContainer,
+          Semantics(
+            button: true,
+            enabled: hasSongs,
+            label: 'Play all quick picks',
+            child: Opacity(
+              opacity: hasSongs ? 1.0 : 0.45,
+              child: InkWell(
+                onTap: hasSongs
+                    ? () => playback.playSong(_quickPicks.first,
+                        contextQueue: _quickPicks)
+                    : null,
+                borderRadius: BorderRadius.circular(999),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 48),
+                  child: Center(
+                    child: Container(
+                      constraints: const BoxConstraints(minHeight: 32),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 13,
+                        vertical: 6,
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Play all',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w600,
-                          color: colorScheme.onPrimaryContainer,
-                        ),
+                      decoration: BoxDecoration(
+                        color: colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(999),
                       ),
-                    ],
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.play_arrow_rounded,
+                            size: 16,
+                            color: colorScheme.onPrimaryContainer,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Play all',
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: colorScheme.onPrimaryContainer,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),

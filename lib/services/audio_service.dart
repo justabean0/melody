@@ -73,6 +73,9 @@ class MelodyAudioService {
   Duration _duration = Duration.zero;
   Duration get duration => _duration;
 
+  double _playbackSpeed = 1.0;
+  double get playbackSpeed => _playbackSpeed;
+
   Duration _lastTrackedPosition = Duration.zero;
   int _pendingListeningMs = 0;
   Song? _activeSessionSong;
@@ -396,6 +399,11 @@ class MelodyAudioService {
       if (localUri != null) {
         final localSource = _createAudioSource(localUri);
         await _player.setAudioSource(localSource).timeout(const Duration(seconds: 8));
+        if ((_playbackSpeed - 1.0).abs() > 0.01) {
+          try {
+            await _player.setSpeed(_playbackSpeed);
+          } catch (_) {}
+        }
 
         if (opToken != _playOperationToken || _isPausedByUser) {
           try {
@@ -432,6 +440,11 @@ class MelodyAudioService {
         try {
           final source = _createAudioSource(playableUrl);
           await _player.setAudioSource(source).timeout(const Duration(seconds: 8));
+          if ((_playbackSpeed - 1.0).abs() > 0.01) {
+            try {
+              await _player.setSpeed(_playbackSpeed);
+            } catch (_) {}
+          }
 
           if (opToken != _playOperationToken || _isPausedByUser) {
             try {
@@ -481,6 +494,11 @@ class MelodyAudioService {
 
           try {
             await _player.setAudioSource(directFallbackSource).timeout(const Duration(seconds: 10));
+            if ((_playbackSpeed - 1.0).abs() > 0.01) {
+              try {
+                await _player.setSpeed(_playbackSpeed);
+              } catch (_) {}
+            }
             if (opToken != _playOperationToken || _isPausedByUser) {
               try {
                 await _player.pause();
@@ -782,6 +800,11 @@ class MelodyAudioService {
 
       try {
         await _player.setAudioSource(directSource, initialPosition: position).timeout(const Duration(seconds: 10));
+        if ((_playbackSpeed - 1.0).abs() > 0.01) {
+          try {
+            await _player.setSpeed(_playbackSpeed);
+          } catch (_) {}
+        }
         if (opToken != _playOperationToken || _isPausedByUser) {
           try {
             await _player.pause();
@@ -928,7 +951,13 @@ class MelodyAudioService {
   }
 
   Future<void> setPlaybackSpeed(double speed) async {
-    await _player.setSpeed(speed);
+    final clamped = speed.clamp(0.5, 2.5).toDouble();
+    _playbackSpeed = clamped;
+    try {
+      await _player.setSpeed(clamped);
+    } catch (e) {
+      debugPrint('AudioService: setSpeed($clamped) skipped: $e');
+    }
     _stateChangeController.add(null);
   }
 

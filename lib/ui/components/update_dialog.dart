@@ -87,13 +87,17 @@ class _UpdateDialogState extends State<UpdateDialog> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   'Update Available',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                    color: colorScheme.onSurface,
+                  ),
                 ),
                 Text(
                   'v${info.currentVersion} ➔ v${info.latestVersion}',
-                  style: TextStyle(
+                  style: theme.textTheme.labelLarge?.copyWith(
                     fontSize: 13,
                     color: colorScheme.primary,
                     fontWeight: FontWeight.w600,
@@ -115,18 +119,29 @@ class _UpdateDialogState extends State<UpdateDialog> {
                 padding: const EdgeInsets.only(bottom: 10),
                 child: Row(
                   children: [
-                    Icon(Icons.download_outlined, size: 16, color: colorScheme.outline),
+                    Icon(
+                      Icons.download_outlined,
+                      size: 16,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
                     const SizedBox(width: 6),
                     Text(
                       'Size: ${_formatBytes(info.apkSize!)}',
-                      style: TextStyle(fontSize: 12, color: colorScheme.outline),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontSize: 12,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ),
               ),
-            const Text(
+            Text(
               "What's New:",
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+                color: colorScheme.onSurface,
+              ),
             ),
             const SizedBox(height: 6),
             ConstrainedBox(
@@ -135,7 +150,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: colorScheme.surfaceContainerHighest.withAlpha(128),
+                  color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: SingleChildScrollView(
@@ -143,7 +158,11 @@ class _UpdateDialogState extends State<UpdateDialog> {
                     info.changelog.trim().isNotEmpty
                         ? info.changelog.trim()
                         : '• Bug fixes and performance improvements.',
-                    style: const TextStyle(fontSize: 13, height: 1.4),
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontSize: 13,
+                      height: 1.4,
+                      color: colorScheme.onSurface,
+                    ),
                   ),
                 ),
               ),
@@ -151,12 +170,19 @@ class _UpdateDialogState extends State<UpdateDialog> {
             const SizedBox(height: 12),
             Row(
               children: [
-                Icon(Icons.open_in_browser_rounded, size: 16, color: colorScheme.outline),
+                Icon(
+                  Icons.open_in_browser_rounded,
+                  size: 16,
+                  color: colorScheme.onSurfaceVariant,
+                ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
                     'Opens download in external browser',
-                    style: TextStyle(fontSize: 12, color: colorScheme.outline),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontSize: 12,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
               ],
@@ -165,7 +191,10 @@ class _UpdateDialogState extends State<UpdateDialog> {
               const SizedBox(height: 10),
               Text(
                 _errorMessage!,
-                style: TextStyle(color: colorScheme.error, fontSize: 12),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colorScheme.error,
+                  fontSize: 12,
+                ),
               ),
             ],
           ],
@@ -179,10 +208,13 @@ class _UpdateDialogState extends State<UpdateDialog> {
         FilledButton.icon(
           onPressed: _isLaunching ? null : _handleDownload,
           icon: _isLaunching
-              ? const SizedBox(
+              ? SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: colorScheme.onPrimary,
+                  ),
                 )
               : const Icon(Icons.open_in_browser_rounded, size: 18),
           label: const Text('Download Update'),

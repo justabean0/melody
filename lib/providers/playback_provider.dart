@@ -6,6 +6,19 @@ import '../services/audio_service.dart';
 import '../services/lyrics_service.dart';
 
 class PlaybackProvider extends ChangeNotifier {
+  static final Expando<double> _speedByProvider =
+      Expando<double>('melody_playback_speed');
+
+  /// Returns the most recently applied playback speed for [provider] without
+  /// adding instance getters that would break `implements PlaybackProvider` mocks.
+  static double speedOf(PlaybackProvider provider) =>
+      _speedByProvider[provider] ?? 1.0;
+
+  /// Records the latest playback speed for [provider] across UI rebuilds/reopens.
+  static void rememberSpeed(PlaybackProvider provider, double speed) {
+    _speedByProvider[provider] = speed;
+  }
+
   final MelodyAudioService _audioService = MelodyAudioService();
 
   Song? get currentSong => _audioService.currentSong;
@@ -30,6 +43,7 @@ class PlaybackProvider extends ChangeNotifier {
   StreamSubscription? _songSub;
 
   PlaybackProvider() {
+    _speedByProvider[this] = _audioService.playbackSpeed;
     _audioService.init();
 
     _posSub = _audioService.onPositionChange.listen((_) {
@@ -131,6 +145,7 @@ class PlaybackProvider extends ChangeNotifier {
   }
 
   void setPlaybackSpeed(double speed) {
+    _speedByProvider[this] = speed;
     _audioService.setPlaybackSpeed(speed);
   }
 

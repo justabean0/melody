@@ -130,6 +130,7 @@ class SongTile extends StatelessWidget {
             ),
           ),
           trailing: PopupMenuButton<String>(
+            tooltip: 'Track options',
             icon: Icon(Icons.more_vert_rounded, color: colorScheme.onSurfaceVariant),
             constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
             onSelected: (value) {
@@ -237,116 +238,245 @@ class SongTile extends StatelessWidget {
   }
 
   void _showAddToPlaylistDialog(BuildContext context, Song song) {
-    final library = context.read<LibraryProvider>();
-    final playlists = library.playlists;
+    final parentContext = context;
+    final colorScheme = Theme.of(context).colorScheme;
 
-    showModalBottomSheet(
+    showModalBottomSheet<void>(
       context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: colorScheme.surfaceContainerLow,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (ctx) {
+      builder: (sheetCtx) {
+        final theme = Theme.of(sheetCtx);
+        final sheetColors = theme.colorScheme;
+        final library = sheetCtx.watch<LibraryProvider>();
+        final playlists = library.playlists;
+        final maxSheetHeight = MediaQuery.sizeOf(sheetCtx).height * 0.72;
+
         return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 12),
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.grey.withAlpha(80),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const Padding(
-                padding: EdgeInsets.all(16.0),
-                child: Text(
-                  'Add to Playlist',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-              ),
-              ListTile(
-                leading: const CircleAvatar(
-                  child: Icon(Icons.add),
-                ),
-                title: const Text('New Playlist'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _showCreatePlaylistDialog(context, song);
-                },
-              ),
-              const Divider(),
-              if (playlists.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(24.0),
-                  child: Text('No custom playlists yet'),
-                )
-              else
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: playlists.length,
-                    itemBuilder: (_, i) {
-                      final p = playlists[i];
-                      return ListTile(
-                        leading: const Icon(Icons.playlist_play),
-                        title: Text(p.title),
-                        subtitle: Text('${p.songs.length} tracks'),
-                        onTap: () {
-                          library.addSongToPlaylist(p.id, song);
-                          Navigator.pop(ctx);
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Added to ${p.title}')),
-                          );
-                        },
-                      );
-                    },
+          top: false,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxSheetHeight),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                  child: Text(
+                    'Add to Playlist',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: sheetColors.onSurface,
+                    ),
                   ),
                 ),
-            ],
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+                  minTileHeight: 52,
+                  leading: CircleAvatar(
+                    backgroundColor: sheetColors.primaryContainer,
+                    child: Icon(
+                      Icons.add_rounded,
+                      color: sheetColors.onPrimaryContainer,
+                    ),
+                  ),
+                  title: Text(
+                    'New Playlist',
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    showCreatePlaylistDialog(
+                      parentContext,
+                      title: 'Create Playlist',
+                      initialSong: song,
+                    );
+                  },
+                ),
+                const Divider(),
+                if (playlists.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(24.0),
+                    child: Text(
+                      'No custom playlists yet',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: sheetColors.onSurfaceVariant,
+                      ),
+                    ),
+                  )
+                else
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.only(bottom: 12),
+                      itemCount: playlists.length,
+                      itemBuilder: (_, i) {
+                        final p = playlists[i];
+                        final countLabel =
+                            '${p.songs.length} ${p.songs.length == 1 ? 'track' : 'tracks'}';
+                        return ListTile(
+                          contentPadding:
+                              const EdgeInsets.symmetric(horizontal: 20),
+                          minTileHeight: 52,
+                          leading: Icon(
+                            Icons.playlist_play_rounded,
+                            color: sheetColors.primary,
+                          ),
+                          title: Text(
+                            p.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            countLabel,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: sheetColors.onSurfaceVariant,
+                            ),
+                          ),
+                          onTap: () {
+                            library.addSongToPlaylist(p.id, song);
+                            Navigator.pop(sheetCtx);
+                            ScaffoldMessenger.maybeOf(parentContext)?.showSnackBar(
+                              SnackBar(
+                                content: Text('Added to ${p.title}'),
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
           ),
         );
       },
     );
   }
+}
 
-  void _showCreatePlaylistDialog(BuildContext context, Song song) {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Create Playlist'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Playlist Name'),
+/// Shared modal dialog for creating a playlist (optionally seeding [initialSong]),
+/// with proper TextEditingController disposal and non-empty validation.
+Future<void> showCreatePlaylistDialog(
+  BuildContext context, {
+  String title = 'New Playlist',
+  Song? initialSong,
+}) {
+  return showDialog<void>(
+    context: context,
+    builder: (ctx) => _CreatePlaylistDialog(
+      title: title,
+      parentContext: context,
+      initialSong: initialSong,
+    ),
+  );
+}
+
+class _CreatePlaylistDialog extends StatefulWidget {
+  final String title;
+  final BuildContext parentContext;
+  final Song? initialSong;
+
+  const _CreatePlaylistDialog({
+    required this.title,
+    required this.parentContext,
+    this.initialSong,
+  });
+
+  @override
+  State<_CreatePlaylistDialog> createState() => _CreatePlaylistDialogState();
+}
+
+class _CreatePlaylistDialogState extends State<_CreatePlaylistDialog> {
+  final TextEditingController _controller = TextEditingController();
+  String? _errorText;
+  bool _isSaving = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_isSaving) return;
+    final name = _controller.text.trim();
+    if (name.isEmpty) {
+      setState(() => _errorText = 'Enter a playlist name');
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+      _errorText = null;
+    });
+
+    final library = context.read<LibraryProvider>();
+    await library.createPlaylist(name);
+    if (widget.initialSong != null && library.playlists.isNotEmpty) {
+      await library.addSongToPlaylist(
+        library.playlists.last.id,
+        widget.initialSong!,
+      );
+    }
+
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    if (widget.initialSong != null && widget.parentContext.mounted) {
+      ScaffoldMessenger.maybeOf(widget.parentContext)?.showSnackBar(
+        SnackBar(
+          content: Text('Created playlist $name'),
+          behavior: SnackBarBehavior.floating,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              final title = controller.text.trim();
-              if (title.isNotEmpty) {
-                final library = context.read<LibraryProvider>();
-                await library.createPlaylist(title);
-                if (library.playlists.isNotEmpty) {
-                  await library.addSongToPlaylist(library.playlists.last.id, song);
-                }
-                if (context.mounted) {
-                  Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Created playlist $title')),
-                  );
-                }
-              }
-            },
-            child: const Text('Create'),
-          ),
-        ],
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canSubmit = _controller.text.trim().isNotEmpty && !_isSaving;
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Text(widget.title),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.sentences,
+        textInputAction: TextInputAction.done,
+        decoration: InputDecoration(
+          hintText: widget.initialSong != null
+              ? 'Playlist Name'
+              : 'Enter playlist title',
+          errorText: _errorText,
+        ),
+        onChanged: (_) {
+          if (_errorText != null) {
+            setState(() => _errorText = null);
+          } else {
+            setState(() {});
+          }
+        },
+        onSubmitted: (_) => _submit(),
       ),
+      actions: [
+        TextButton(
+          onPressed: _isSaving ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: canSubmit ? _submit : null,
+          child: const Text('Create'),
+        ),
+      ],
     );
   }
 }

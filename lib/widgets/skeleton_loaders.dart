@@ -48,42 +48,28 @@ class _ShimmerState extends State<Shimmer> with SingleTickerProviderStateMixin {
       return widget.child;
     }
 
-    final colorScheme = Theme.of(context).colorScheme;
-    final isDark = colorScheme.brightness == Brightness.dark;
-    final baseColor = colorScheme.surfaceContainerHigh;
-    final midColor = isDark
-        ? colorScheme.surfaceContainerHighest
-        : colorScheme.surfaceContainer;
-    final highlightColor = isDark
-        ? Color.lerp(colorScheme.surfaceContainerHighest, colorScheme.onSurface, 0.08)!
-        : colorScheme.surfaceContainerLow;
-
-    return AnimatedBuilder(
+    return _ShimmerScope(
       animation: _controller,
-      builder: (context, child) {
-        final v = _controller.value;
-        return ShaderMask(
-          blendMode: BlendMode.srcATop,
-          shaderCallback: (bounds) {
-            return LinearGradient(
-              begin: Alignment(-2.0 + 4.0 * v, -0.3),
-              end: Alignment(-0.5 + 4.0 * v, 0.3),
-              colors: [
-                baseColor,
-                midColor,
-                highlightColor,
-                midColor,
-                baseColor,
-              ],
-              stops: const [0.0, 0.25, 0.5, 0.75, 1.0],
-            ).createShader(bounds);
-          },
-          child: child,
-        );
-      },
       child: widget.child,
     );
   }
+}
+
+class _ShimmerScope extends InheritedWidget {
+  final Animation<double> animation;
+
+  const _ShimmerScope({
+    required this.animation,
+    required super.child,
+  });
+
+  static Animation<double>? maybeOf(BuildContext context) {
+    return context.dependOnInheritedWidgetOfExactType<_ShimmerScope>()?.animation;
+  }
+
+  @override
+  bool updateShouldNotify(covariant _ShimmerScope oldWidget) =>
+      oldWidget.animation != animation;
 }
 
 /// Generic skeleton block with custom dimensions, border radius, or circular shape.
@@ -115,17 +101,64 @@ class SkeletonBox extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      width: width,
-      height: height,
-      margin: margin,
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHigh,
-        shape: shape,
-        borderRadius: shape == BoxShape.circle
-            ? null
-            : (borderRadius ?? BorderRadius.circular(8)),
-      ),
+    final isDark = colorScheme.brightness == Brightness.dark;
+    final baseColor = colorScheme.surfaceContainerHigh;
+    final midColor = isDark
+        ? colorScheme.surfaceContainerHighest
+        : colorScheme.surfaceContainer;
+    final highlightColor = isDark
+        ? Color.lerp(
+            colorScheme.surfaceContainerHighest,
+            colorScheme.onSurface,
+            0.08,
+          )!
+        : colorScheme.surfaceContainerLow;
+    final resolvedBorderRadius =
+        shape == BoxShape.circle ? null : (borderRadius ?? BorderRadius.circular(8));
+
+    final animation = MediaQuery.disableAnimationsOf(context)
+        ? null
+        : _ShimmerScope.maybeOf(context);
+
+    if (animation == null) {
+      return Container(
+        width: width,
+        height: height,
+        margin: margin,
+        decoration: BoxDecoration(
+          color: baseColor,
+          shape: shape,
+          borderRadius: resolvedBorderRadius,
+        ),
+      );
+    }
+
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (context, _) {
+        final v = animation.value;
+        return Container(
+          width: width,
+          height: height,
+          margin: margin,
+          decoration: BoxDecoration(
+            shape: shape,
+            borderRadius: resolvedBorderRadius,
+            gradient: LinearGradient(
+              begin: Alignment(-2.0 + 4.0 * v, -0.3),
+              end: Alignment(-0.5 + 4.0 * v, 0.3),
+              colors: [
+                baseColor,
+                midColor,
+                highlightColor,
+                midColor,
+                baseColor,
+              ],
+              stops: const [0.0, 0.25, 0.5, 0.75, 1.0],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -246,10 +279,15 @@ class _SkeletonMediaShelf extends StatelessWidget {
 }
 
 /// Layout-matched skeleton loader for the Home feed.
-/// Renders mood chips, Quick Picks header + Play all pill, 4-row horizontal column
-/// with next-column peek, Featured & Trending 140dp cards, and Albums shelf.
+/// Renders mood chips (when [showMoodChips] is true), Quick Picks header + Play all pill,
+/// 4-row horizontal column with next-column peek, Featured & Trending 138dp cards, and Albums shelf.
 class HomeFeedSkeleton extends StatelessWidget {
-  const HomeFeedSkeleton({super.key});
+  final bool showMoodChips;
+
+  const HomeFeedSkeleton({
+    super.key,
+    this.showMoodChips = true,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -263,30 +301,30 @@ class HomeFeedSkeleton extends StatelessWidget {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: EdgeInsets.only(bottom: bottomPadding),
           children: [
-            // Mood Chips Row (48dp height matching HomeScreen)
-            SizedBox(
-              height: 48,
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                physics: const NeverScrollableScrollPhysics(),
-                child: Row(
-                  children: List.generate(
-                    7,
-                    (i) => Padding(
-                      padding: const EdgeInsets.only(right: 8.0),
-                      child: Center(
-                        child: SkeletonBox(
-                          width: 58 + (i % 3) * 16.0,
-                          height: 34,
-                          borderRadius: BorderRadius.circular(999),
+            if (showMoodChips)
+              SizedBox(
+                height: 48,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  physics: const NeverScrollableScrollPhysics(),
+                  child: Row(
+                    children: List.generate(
+                      7,
+                      (i) => Padding(
+                        padding: const EdgeInsets.only(right: 8.0),
+                        child: Center(
+                          child: SkeletonBox(
+                            width: 58 + (i % 3) * 16.0,
+                            height: 34,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
 
             const SizedBox(height: 18),
 
@@ -364,9 +402,9 @@ class HomeFeedSkeleton extends StatelessWidget {
 
             const SizedBox(height: 12),
 
-            // Featured & Trending 140dp square cards with 2-line captions
+            // Featured & Trending 138dp square cards with 2-line captions
             const _SkeletonMediaShelf(
-              cardSize: 140,
+              cardSize: 138,
               showSecondCaptionLine: true,
               itemCount: 4,
             ),
@@ -388,9 +426,9 @@ class HomeFeedSkeleton extends StatelessWidget {
 
             const SizedBox(height: 12),
 
-            // Albums 140dp square cards with 2-line captions
+            // Albums 138dp square cards with 2-line captions
             const _SkeletonMediaShelf(
-              cardSize: 140,
+              cardSize: 138,
               showSecondCaptionLine: true,
               itemCount: 4,
             ),
@@ -555,14 +593,14 @@ class CollectionDetailSkeleton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final bottomPadding = 172.0 + MediaQuery.paddingOf(context).bottom;
+    const double bottomPadding = 24.0;
 
     return ColoredBox(
       color: colorScheme.surface,
       child: Shimmer(
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: EdgeInsets.only(bottom: bottomPadding),
+          padding: const EdgeInsets.only(bottom: bottomPadding),
           children: [
             const SizedBox(height: 16),
 
@@ -661,14 +699,14 @@ class ArtistDetailSkeleton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final bottomPadding = 172.0 + MediaQuery.paddingOf(context).bottom;
+    const double bottomPadding = 24.0;
 
     return ColoredBox(
       color: colorScheme.surface,
       child: Shimmer(
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: EdgeInsets.only(bottom: bottomPadding),
+          padding: const EdgeInsets.only(bottom: bottomPadding),
           children: [
             const SizedBox(height: 20),
 

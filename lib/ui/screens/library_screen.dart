@@ -226,7 +226,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                   style: TextButton.styleFrom(
                     minimumSize: const Size(48, 48),
                   ),
-                  onPressed: library.clearHistory,
+                  onPressed: () => _confirmClearHistory(context, library),
                 ),
               ],
             ),
@@ -540,7 +540,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                               _showPlaylistDetails(
                                   context, p, playback, library);
                             } else if (val == 'delete') {
-                              library.deletePlaylist(p.id);
+                              _confirmDeletePlaylist(context, library, p);
                             }
                           },
                           itemBuilder: (_) => const [
@@ -589,36 +589,78 @@ class _LibraryScreenState extends State<LibraryScreen>
     );
   }
 
-  void _showCreatePlaylistDialog(
-      BuildContext context, LibraryProvider library) {
-    final controller = TextEditingController();
-    showDialog(
+  Future<void> _confirmClearHistory(
+    BuildContext context,
+    LibraryProvider library,
+  ) async {
+    final colorScheme = Theme.of(context).colorScheme;
+    final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('New Playlist'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Enter playlist title'),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Clear playback history?'),
+        content: const Text(
+          'This removes all tracks from your Overview listening history.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () => Navigator.of(ctx).pop(false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () {
-              final t = controller.text.trim();
-              if (t.isNotEmpty) {
-                library.createPlaylist(t);
-                Navigator.pop(ctx);
-              }
-            },
-            child: const Text('Create'),
+            style: FilledButton.styleFrom(
+              backgroundColor: colorScheme.error,
+              foregroundColor: colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Clear'),
           ),
         ],
       ),
     );
+    if (confirmed == true) {
+      await library.clearHistory();
+    }
+  }
+
+  Future<void> _confirmDeletePlaylist(
+    BuildContext context,
+    LibraryProvider library,
+    Playlist playlist,
+  ) async {
+    final colorScheme = Theme.of(context).colorScheme;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Delete "${playlist.title}"?'),
+        content: const Text(
+          'This playlist and its track list will be permanently removed.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: colorScheme.error,
+              foregroundColor: colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await library.deletePlaylist(playlist.id);
+    }
+  }
+
+  void _showCreatePlaylistDialog(
+      BuildContext context, LibraryProvider library) {
+    showCreatePlaylistDialog(context, title: 'New Playlist');
   }
 
   void _showPlaylistDetails(
@@ -630,6 +672,7 @@ class _LibraryScreenState extends State<LibraryScreen>
     final sheetColor = Theme.of(context).colorScheme.surfaceContainerLow;
     showModalBottomSheet(
       context: context,
+      useSafeArea: true,
       isScrollControlled: true,
       backgroundColor: sheetColor,
       shape: const RoundedRectangleBorder(
@@ -751,9 +794,45 @@ class _PlaylistDetailsSheetState extends State<_PlaylistDetailsSheet> {
           const Divider(),
           Expanded(
             child: playlist.songs.isEmpty
-                ? const Center(child: Text('Playlist is empty'))
+                ? SingleChildScrollView(
+                    controller: scrollController,
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: EdgeInsets.fromLTRB(
+                      24,
+                      48,
+                      24,
+                      24 + MediaQuery.paddingOf(context).bottom,
+                    ),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.queue_music_rounded,
+                            size: 44,
+                            color: colorScheme.onSurfaceVariant
+                                .withValues(alpha: 0.45),
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Playlist is empty',
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
                 : ListView.builder(
                     controller: scrollController,
+                    padding: EdgeInsets.only(
+                      bottom: 16 + MediaQuery.paddingOf(context).bottom,
+                    ),
                     itemCount: playlist.songs.length,
                     itemBuilder: (_, i) {
                       final song = playlist.songs[i];
@@ -812,6 +891,7 @@ class _LocalMusicTabState extends State<_LocalMusicTab>
     _localAudio = widget.localAudioService ?? LocalAudioService();
     _downloadService = widget.downloadService ?? DownloadService();
     _downloadService.addListener(_onDownloadServiceUpdated);
+    _initialized = _localAudio.hasPermission || _localAudio.tracks.isNotEmpty;
     unawaited(_syncPermissionAndScan());
   }
 
@@ -850,13 +930,19 @@ class _LocalMusicTabState extends State<_LocalMusicTab>
   }
 
   Future<void> _syncPermissionAndScan() async {
-    final status = await _localAudio.getPermissionStatus();
+    final status = await _localAudio.getPermissionStatus().timeout(
+          const Duration(milliseconds: 400),
+          onTimeout: () => AudioPermissionStatus(
+            granted: _localAudio.hasPermission,
+            permanentlyDenied: _localAudio.isPermanentlyDenied,
+          ),
+        );
+    if (mounted && !_initialized) {
+      setState(() => _initialized = true);
+    }
     if (status.granted) {
       await _localAudio.scanLocalAudio();
       await _downloadService.reconcileWithMediaStore();
-    }
-    if (mounted && !_initialized) {
-      setState(() => _initialized = true);
     }
   }
 
@@ -876,6 +962,20 @@ class _LocalMusicTabState extends State<_LocalMusicTab>
     return ListenableBuilder(
       listenable: _localAudio,
       builder: (_, __) {
+        if (!_initialized &&
+            !_localAudio.hasPermission &&
+            _localAudio.tracks.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: EdgeInsets.only(bottom: widget.bottomPadding * 0.5),
+              child: Semantics(
+                label: 'Checking local audio permission',
+                child: const CircularProgressIndicator(),
+              ),
+            ),
+          );
+        }
+
         if (!_localAudio.hasPermission) {
           return Center(
             child: SingleChildScrollView(
@@ -1029,6 +1129,52 @@ class _LocalMusicTabState extends State<_LocalMusicTab>
                       selected: _filter == _LocalAudioFilter.downloads,
                       onSelected: (_) =>
                           setState(() => _filter = _LocalAudioFilter.downloads),
+                    ),
+                  ],
+                ),
+              ),
+            if (songs.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
+                child: Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.tonalIcon(
+                      key: const Key('local_play_all_button'),
+                      icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                      label: const Text('Play All'),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                      ),
+                      onPressed: () {
+                        if (playback.isShuffle) {
+                          playback.toggleShuffle();
+                        }
+                        playback.playSong(
+                          songs.first,
+                          contextQueue: songs,
+                          startIndex: 0,
+                        );
+                      },
+                    ),
+                    OutlinedButton.icon(
+                      key: const Key('local_shuffle_button'),
+                      icon: const Icon(Icons.shuffle_rounded, size: 18),
+                      label: const Text('Shuffle'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                      ),
+                      onPressed: () {
+                        final shuffled = List<Song>.from(songs)..shuffle();
+                        playback.playSong(
+                          shuffled.first,
+                          contextQueue: shuffled,
+                          startIndex: 0,
+                        );
+                      },
                     ),
                   ],
                 ),
@@ -1262,6 +1408,7 @@ class _PlaytimeHeroCard extends StatefulWidget {
 
 class _PlaytimeHeroCardState extends State<_PlaytimeHeroCard> {
   bool _isExpanded = false;
+  bool _showAllLogs = false;
   _PlaytimeScope _scope = _PlaytimeScope.daily;
   int? _selectedBarIndex;
 
@@ -1270,6 +1417,7 @@ class _PlaytimeHeroCardState extends State<_PlaytimeHeroCard> {
       _isExpanded = !_isExpanded;
       if (!_isExpanded) {
         _selectedBarIndex = null;
+        _showAllLogs = false;
       }
     });
   }
@@ -1330,6 +1478,7 @@ class _PlaytimeHeroCardState extends State<_PlaytimeHeroCard> {
     final isDark = colorScheme.brightness == Brightness.dark;
     final disableAnimations = MediaQuery.disableAnimationsOf(context);
     final library = widget.library;
+    final playback = context.read<PlaybackProvider>();
 
     final isDaily = _scope == _PlaytimeScope.daily;
     final buckets = isDaily
@@ -1627,34 +1776,58 @@ class _PlaytimeHeroCardState extends State<_PlaytimeHeroCard> {
                             ],
                           ),
                         ),
-                        Container(
+                        InkWell(
                           key: const Key('playtime_inspected_readout'),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 5,
-                          ),
-                          decoration: BoxDecoration(
-                            color: selectedBucket != null
-                                ? colorScheme.primaryContainer
-                                    .withValues(alpha: 0.72)
-                                : colorScheme.surfaceContainerHigh
-                                    .withValues(alpha: 0.65),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            selectedBucket != null
-                                ? '${selectedBucket.label} • ${DatabaseService.formatCompactPlaytime(selectedBucket.seconds)}'
-                                : (isDaily ? 'Last 7 days' : 'Last 6 months'),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: selectedBucket != null
+                              ? () => setState(() => _selectedBarIndex = null)
+                              : null,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
                               color: selectedBucket != null
-                                  ? colorScheme.onPrimaryContainer
-                                  : colorScheme.onSurfaceVariant,
-                              fontFeatures: const [
-                                FontFeature.tabularFigures(),
+                                  ? colorScheme.primaryContainer
+                                      .withValues(alpha: 0.72)
+                                  : colorScheme.surfaceContainerHigh
+                                      .withValues(alpha: 0.65),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    selectedBucket != null
+                                        ? '${selectedBucket.label} • ${DatabaseService.formatCompactPlaytime(selectedBucket.seconds)}'
+                                        : (isDaily
+                                            ? 'Last 7 days'
+                                            : 'Last 6 months'),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style:
+                                        theme.textTheme.labelMedium?.copyWith(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: selectedBucket != null
+                                          ? colorScheme.onPrimaryContainer
+                                          : colorScheme.onSurfaceVariant,
+                                      fontFeatures: const [
+                                        FontFeature.tabularFigures(),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                if (selectedBucket != null) ...[
+                                  const SizedBox(width: 4),
+                                  Icon(
+                                    Icons.close_rounded,
+                                    size: 14,
+                                    color: colorScheme.onPrimaryContainer,
+                                  ),
+                                ],
                               ],
                             ),
                           ),
@@ -1725,115 +1898,181 @@ class _PlaytimeHeroCardState extends State<_PlaytimeHeroCard> {
                         ),
                       )
                     else
-                      ConstrainedBox(
+                      Column(
                         key: const Key('playtime_logs_list'),
-                        constraints: const BoxConstraints(maxHeight: 220),
-                        child: ListView.separated(
-                          shrinkWrap: true,
-                          physics: const ClampingScrollPhysics(),
-                          itemCount: math.min(logs.length, 20),
-                          separatorBuilder: (_, __) => const SizedBox(height: 6),
-                          itemBuilder: (_, i) {
-                            final log = logs[i];
-                            return Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 8,
-                              ),
-                              decoration: BoxDecoration(
-                                color: colorScheme.surfaceContainerHigh
-                                    .withValues(alpha: 0.42),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Row(
-                                children: [
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: log.thumbnailUrl.isNotEmpty &&
-                                            log.thumbnailUrl.startsWith('http')
-                                        ? CachedNetworkImage(
-                                            imageUrl: ThumbnailUtils.upgradeUrl(
-                                              log.thumbnailUrl,
-                                              size: 226,
-                                            ),
-                                            width: 36,
-                                            height: 36,
-                                            fit: BoxFit.cover,
-                                            placeholder: (_, __) => Container(
-                                              width: 36,
-                                              height: 36,
-                                              color: colorScheme
-                                                  .surfaceContainerHighest,
-                                            ),
-                                            errorWidget: (_, __, ___) =>
-                                                _playLogArtFallback(colorScheme),
-                                          )
-                                        : _playLogArtFallback(colorScheme),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Text(
-                                          log.title,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: theme.textTheme.bodyMedium
-                                              ?.copyWith(
-                                            fontSize: 13.5,
-                                            fontWeight: FontWeight.w600,
-                                            color: colorScheme.onSurface,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          ...List.generate(
+                            math.min(logs.length, _showAllLogs ? 20 : 5),
+                            (i) {
+                              final log = logs[i];
+                              return Padding(
+                                padding: EdgeInsets.only(top: i == 0 ? 0 : 6),
+                                child: Semantics(
+                                  button: true,
+                                  label: 'Play ${log.title} by ${log.artist}',
+                                  child: Material(
+                                    color: colorScheme.surfaceContainerHigh
+                                        .withValues(alpha: 0.42),
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(12),
+                                      onTap: () {
+                                        playback.playSong(
+                                          Song(
+                                            id: log.songId,
+                                            title: log.title,
+                                            artist: log.artist,
+                                            thumbnailUrl: log.thumbnailUrl,
+                                          ),
+                                        );
+                                      },
+                                      child: ConstrainedBox(
+                                        constraints:
+                                            const BoxConstraints(minHeight: 52),
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 8,
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              ClipRRect(
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                                child: log.thumbnailUrl
+                                                            .isNotEmpty &&
+                                                        log.thumbnailUrl
+                                                            .startsWith('http')
+                                                    ? CachedNetworkImage(
+                                                        imageUrl: ThumbnailUtils
+                                                            .upgradeUrl(
+                                                          log.thumbnailUrl,
+                                                          size: 226,
+                                                        ),
+                                                        width: 36,
+                                                        height: 36,
+                                                        fit: BoxFit.cover,
+                                                        placeholder: (_, __) =>
+                                                            Container(
+                                                          width: 36,
+                                                          height: 36,
+                                                          color: colorScheme
+                                                              .surfaceContainerHighest,
+                                                        ),
+                                                        errorWidget: (_, __,
+                                                                ___) =>
+                                                            _playLogArtFallback(
+                                                                colorScheme),
+                                                      )
+                                                    : _playLogArtFallback(
+                                                        colorScheme),
+                                              ),
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    Text(
+                                                      log.title,
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: theme
+                                                          .textTheme.bodyMedium
+                                                          ?.copyWith(
+                                                        fontSize: 13.5,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                        color: colorScheme
+                                                            .onSurface,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 2),
+                                                    Text(
+                                                      '${log.artist} • ${_formatPlayLogTime(log.playedAt, now)}',
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: theme
+                                                          .textTheme.bodySmall
+                                                          ?.copyWith(
+                                                        fontSize: 11.5,
+                                                        color: colorScheme
+                                                            .onSurfaceVariant,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                  horizontal: 8,
+                                                  vertical: 4,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: colorScheme
+                                                      .primaryContainer
+                                                      .withValues(alpha: 0.72),
+                                                  borderRadius:
+                                                      BorderRadius.circular(
+                                                          999),
+                                                ),
+                                                child: Text(
+                                                  DatabaseService
+                                                      .formatCompactPlaytime(
+                                                    log.durationSeconds,
+                                                  ),
+                                                  maxLines: 1,
+                                                  style: theme
+                                                      .textTheme.labelSmall
+                                                      ?.copyWith(
+                                                    fontSize: 11.5,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: colorScheme
+                                                        .onPrimaryContainer,
+                                                    fontFeatures: const [
+                                                      FontFeature
+                                                          .tabularFigures(),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          '${log.artist} • ${_formatPlayLogTime(log.playedAt, now)}',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: theme.textTheme.bodySmall
-                                              ?.copyWith(
-                                            fontSize: 11.5,
-                                            color: colorScheme.onSurfaceVariant,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: colorScheme.primaryContainer
-                                          .withValues(alpha: 0.72),
-                                      borderRadius: BorderRadius.circular(999),
-                                    ),
-                                    child: Text(
-                                      DatabaseService.formatCompactPlaytime(
-                                        log.durationSeconds,
-                                      ),
-                                      maxLines: 1,
-                                      style:
-                                          theme.textTheme.labelSmall?.copyWith(
-                                        fontSize: 11.5,
-                                        fontWeight: FontWeight.w700,
-                                        color: colorScheme.onPrimaryContainer,
-                                        fontFeatures: const [
-                                          FontFeature.tabularFigures(),
-                                        ],
                                       ),
                                     ),
                                   ),
-                                ],
+                                ),
+                              );
+                            },
+                          ),
+                          if (logs.length > 5) ...[
+                            const SizedBox(height: 6),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton(
+                                style: TextButton.styleFrom(
+                                  minimumSize: const Size(0, 48),
+                                ),
+                                onPressed: () => setState(
+                                  () => _showAllLogs = !_showAllLogs,
+                                ),
+                                child: Text(
+                                  _showAllLogs
+                                      ? 'Show less'
+                                      : 'Show all (${math.min(logs.length, 20)})',
+                                ),
                               ),
-                            );
-                          },
-                        ),
+                            ),
+                          ],
+                        ],
                       ),
                   ],
                 ),
@@ -1885,7 +2124,7 @@ class _PlaytimeScopeChip extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         onTap: onTap,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 36, minWidth: 64),
+          constraints: const BoxConstraints(minHeight: 44, minWidth: 68),
           child: AnimatedContainer(
             duration: disableAnimations
                 ? Duration.zero
@@ -1987,8 +2226,12 @@ class _PlaytimeBarChart extends StatelessWidget {
                               width: 20,
                               height: maxBarHeight,
                               decoration: BoxDecoration(
-                                color: colorScheme.surfaceContainerHigh
-                                    .withValues(alpha: 0.35),
+                                color: colorScheme.surfaceContainerHighest
+                                    .withValues(
+                                  alpha: colorScheme.brightness == Brightness.dark
+                                      ? 0.48
+                                      : 0.72,
+                                ),
                                 borderRadius: BorderRadius.circular(8),
                               ),
                             ),

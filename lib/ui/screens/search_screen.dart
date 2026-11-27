@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -29,6 +30,47 @@ class _SearchScreenState extends State<SearchScreen> {
     super.dispose();
   }
 
+  void _submitSearch(SearchProvider search, String query) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    _controller.text = query;
+    _controller.selection = TextSelection.collapsed(offset: query.length);
+    search.performSearch(query);
+  }
+
+  Future<void> _confirmClearHistory(
+    BuildContext context,
+    SearchProvider search,
+  ) async {
+    final colorScheme = Theme.of(context).colorScheme;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Clear recent searches?'),
+        content: const Text(
+          'This will remove all items from your search history.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: colorScheme.error,
+              foregroundColor: colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await search.clearHistory();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final search = context.watch<SearchProvider>();
@@ -36,6 +78,9 @@ class _SearchScreenState extends State<SearchScreen> {
     final colorScheme = theme.colorScheme;
     final playback = context.read<PlaybackProvider>();
     final bottomPadding = 172.0 + MediaQuery.paddingOf(context).bottom;
+    final textScaler = MediaQuery.textScalerOf(context);
+    final searchBarMaxHeight = math.max(56.0, 32.0 + textScaler.scale(24.0));
+    final chipStripHeight = math.max(48.0, 28.0 + textScaler.scale(20.0));
 
     return Scaffold(
       body: SafeArea(
@@ -51,8 +96,10 @@ class _SearchScreenState extends State<SearchScreen> {
                 backgroundColor:
                     WidgetStatePropertyAll(colorScheme.surfaceContainerHigh),
                 side: const WidgetStatePropertyAll(BorderSide.none),
-                constraints:
-                    const BoxConstraints(minHeight: 48, maxHeight: 48),
+                constraints: BoxConstraints(
+                  minHeight: 48,
+                  maxHeight: searchBarMaxHeight,
+                ),
                 shape: const WidgetStatePropertyAll(StadiumBorder()),
                 padding: const WidgetStatePropertyAll(
                   EdgeInsets.only(left: 16, right: 6),
@@ -98,13 +145,13 @@ class _SearchScreenState extends State<SearchScreen> {
                   setState(() {});
                   search.onQueryChanged(text);
                 },
-                onSubmitted: (text) => search.performSearch(text),
+                onSubmitted: (text) => _submitSearch(search, text),
               ),
             ),
 
             // Filter Chips
             SizedBox(
-              height: 48,
+              height: chipStripHeight,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -114,8 +161,8 @@ class _SearchScreenState extends State<SearchScreen> {
                   final f = SearchFilter.values[index];
                   final isSelected = search.filter == f;
                   return Center(
-                    child: SizedBox(
-                      height: 48,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(minHeight: 48),
                       child: FilterChip(
                         label: Text(
                           f.label,
@@ -243,7 +290,7 @@ class _SearchScreenState extends State<SearchScreen> {
                 ),
                 const SizedBox(width: 8),
                 TextButton(
-                  onPressed: () => search.clearHistory(),
+                  onPressed: () => _confirmClearHistory(context, search),
                   child: const Text('Clear all', style: TextStyle(fontSize: 12)),
                 ),
               ],
@@ -264,10 +311,7 @@ class _SearchScreenState extends State<SearchScreen> {
                   padding: const EdgeInsets.all(12),
                   onPressed: () => search.removeFromHistory(item),
                 ),
-                onTap: () {
-                  _controller.text = item;
-                  search.performSearch(item);
-                },
+                onTap: () => _submitSearch(search, item),
               )),
         ],
       );
@@ -303,10 +347,7 @@ class _SearchScreenState extends State<SearchScreen> {
                   padding: const EdgeInsets.all(12),
                   onPressed: () => search.removeFromHistory(item),
                 ),
-                onTap: () {
-                  _controller.text = item;
-                  search.performSearch(item);
-                },
+                onTap: () => _submitSearch(search, item),
               )),
         ],
         if (suggestions.isNotEmpty) ...[
@@ -334,13 +375,12 @@ class _SearchScreenState extends State<SearchScreen> {
                   padding: const EdgeInsets.all(12),
                   onPressed: () {
                     _controller.text = suggestion;
+                    _controller.selection =
+                        TextSelection.collapsed(offset: suggestion.length);
                     search.onQueryChanged(suggestion);
                   },
                 ),
-                onTap: () {
-                  _controller.text = suggestion;
-                  search.performSearch(suggestion);
-                },
+                onTap: () => _submitSearch(search, suggestion),
               )),
         ],
       ],
@@ -358,7 +398,64 @@ class _SearchScreenState extends State<SearchScreen> {
     final results = search.results;
 
     if (results.isEmpty) {
-      return const Center(child: Text('No results found'));
+      final hasSpecificFilter = search.filter != SearchFilter.all;
+      final activeQuery = search.query.trim();
+      return Center(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(24, 24, 24, bottomPadding * 0.6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.search_off_rounded,
+                size: 56,
+                color: colorScheme.onSurfaceVariant.withValues(alpha: 0.45),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                activeQuery.isNotEmpty
+                    ? 'No results for "$activeQuery"'
+                    : 'No results found',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                hasSpecificFilter
+                    ? 'Try searching across all categories or adjusting your keywords.'
+                    : 'Check your spelling or try a different song, album, or artist.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              if (hasSpecificFilter) ...[
+                const SizedBox(height: 18),
+                FilledButton.tonalIcon(
+                  onPressed: () {
+                    search.setFilter(SearchFilter.all);
+                    final q = _controller.text.trim().isNotEmpty
+                        ? _controller.text
+                        : search.query;
+                    if (q.trim().isNotEmpty) {
+                      search.performSearch(q);
+                    }
+                  },
+                  icon: const Icon(Icons.filter_alt_off_rounded, size: 18),
+                  label: const Text('Search in All'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 48),
+                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
     }
 
     return ListView(

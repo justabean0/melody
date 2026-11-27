@@ -10,6 +10,7 @@ import '../../services/innertube_service.dart';
 import '../../widgets/skeleton_loaders.dart';
 import '../components/album_card.dart';
 import '../components/song_tile.dart';
+import 'artist_detail_screen.dart';
 import '../../utils/thumbnail_utils.dart';
 
 class CollectionDetailScreen extends StatefulWidget {
@@ -34,9 +35,64 @@ class CollectionDetailScreen extends StatefulWidget {
 
 class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
   bool _isLoading = true;
+  bool _isResolvingArtist = false;
   String? _errorMessage;
   AlbumBrowseResult? _album;
   PlaylistBrowseResult? _playlist;
+
+  Future<void> _openCollectionArtist() async {
+    final artistName = _displaySubtitle.trim();
+    if (!widget.isAlbum ||
+        artistName.isEmpty ||
+        artistName.toLowerCase() == 'unknown artist' ||
+        _isResolvingArtist) {
+      return;
+    }
+
+    final directId = _album?.artistId?.trim();
+    if (directId != null && directId.isNotEmpty) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ArtistDetailScreen(
+            browseId: directId,
+            name: artistName,
+          ),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isResolvingArtist = true);
+    Artist? resolved;
+    try {
+      resolved = await InnerTubeService.resolveArtistByName(artistName);
+    } catch (_) {
+      resolved = null;
+    }
+
+    if (!mounted) return;
+    setState(() => _isResolvingArtist = false);
+
+    if (resolved != null && resolved.browseId.isNotEmpty) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ArtistDetailScreen(
+            browseId: resolved!.browseId,
+            name: resolved.name.isNotEmpty ? resolved.name : artistName,
+            thumbnailUrl: resolved.thumbnailUrl,
+          ),
+        ),
+      );
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Could not load artist page for $artistName.'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -221,16 +277,21 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
     final songs = _songs;
     final thumb = _displayThumbnail;
     final otherVersions = _album?.otherVersions ?? const [];
+    final description =
+        (_album?.description ?? _playlist?.description)?.trim() ?? '';
+    final canOpenArtist = widget.isAlbum &&
+        _displaySubtitle.trim().isNotEmpty &&
+        _displaySubtitle.trim().toLowerCase() != 'unknown artist';
 
     return RefreshIndicator(
       key: const ValueKey('content'),
       onRefresh: () async {
         if (_isLoading) return;
-        unawaited(_loadCollection());
+        await _loadCollection();
       },
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 120),
+        padding: const EdgeInsets.only(bottom: 24),
         children: [
           const SizedBox(height: 16),
 
@@ -290,16 +351,67 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
           // Subtitle / Creator
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24.0),
-            child: Text(
-              _displaySubtitle,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w500,
-              ),
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
+            child: canOpenArtist
+                ? Center(
+                    child: Semantics(
+                      button: true,
+                      label: 'Open artist $_displaySubtitle',
+                      child: InkWell(
+                        key: const Key('collection_artist_button'),
+                        onTap: _isResolvingArtist ? null : _openCollectionArtist,
+                        borderRadius: BorderRadius.circular(12),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(minHeight: 48),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    _displaySubtitle,
+                                    style: theme.textTheme.bodyLarge?.copyWith(
+                                      color: colorScheme.primary,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                if (_isResolvingArtist)
+                                  SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: colorScheme.primary,
+                                    ),
+                                  )
+                                else
+                                  Icon(
+                                    Icons.chevron_right_rounded,
+                                    size: 18,
+                                    color: colorScheme.primary,
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                : Text(
+                    _displaySubtitle,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
           ),
 
           const SizedBox(height: 4),
@@ -321,8 +433,10 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
           // Action Buttons: Play All & Shuffle
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            child: Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 14,
+              runSpacing: 10,
               children: [
                 FilledButton.icon(
                   style: FilledButton.styleFrom(
@@ -343,7 +457,6 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
                   icon: const Icon(Icons.play_arrow_rounded),
                   label: const Text('Play'),
                 ),
-                const SizedBox(width: 14),
                 FilledButton.tonalIcon(
                   style: FilledButton.styleFrom(
                     minimumSize: const Size(130, 48),
@@ -416,7 +529,7 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
               ),
             ),
             SizedBox(
-              height: 210,
+              height: 138.0 + 14.0 + MediaQuery.textScalerOf(context).scale(44.0),
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -442,6 +555,36 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
                     },
                   );
                 },
+              ),
+            ),
+          ],
+
+          if (description.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                'About',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Container(
+                padding: const EdgeInsets.all(16.0),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Text(
+                  description,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.4,
+                  ),
+                ),
               ),
             ),
           ],

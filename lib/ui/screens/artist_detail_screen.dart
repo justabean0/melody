@@ -183,11 +183,11 @@ class _ArtistDetailScreenState extends State<ArtistDetailScreen> {
       key: const ValueKey('content'),
       onRefresh: () async {
         if (_isLoading) return;
-        unawaited(_loadArtist());
+        await _loadArtist();
       },
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 120),
+        padding: const EdgeInsets.only(bottom: 24),
         children: [
           const SizedBox(height: 20),
 
@@ -261,8 +261,10 @@ class _ArtistDetailScreenState extends State<ArtistDetailScreen> {
           if (topSongs.isNotEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+              child: Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 14,
+                runSpacing: 10,
                 children: [
                   FilledButton.icon(
                     style: FilledButton.styleFrom(
@@ -281,7 +283,6 @@ class _ArtistDetailScreenState extends State<ArtistDetailScreen> {
                     icon: const Icon(Icons.play_arrow_rounded),
                     label: const Text('Play Songs'),
                   ),
-                  const SizedBox(width: 14),
                   FilledButton.tonalIcon(
                     style: FilledButton.styleFrom(
                       minimumSize: const Size(130, 48),
@@ -340,7 +341,7 @@ class _ArtistDetailScreenState extends State<ArtistDetailScreen> {
               ),
             ),
             SizedBox(
-              height: 140.0 + 14.0 + MediaQuery.textScalerOf(context).scale(44.0),
+              height: 138.0 + 14.0 + MediaQuery.textScalerOf(context).scale(44.0),
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -385,7 +386,7 @@ class _ArtistDetailScreenState extends State<ArtistDetailScreen> {
               ),
             ),
             SizedBox(
-              height: 140.0 + 14.0 + MediaQuery.textScalerOf(context).scale(44.0),
+              height: 138.0 + 14.0 + MediaQuery.textScalerOf(context).scale(44.0),
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16.0),

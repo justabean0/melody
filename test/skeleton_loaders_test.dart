@@ -200,7 +200,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('HomeFeedSkeleton matches home feed layout (4-row peek column + 140dp cards) at 360dp and 1.4x scale in Dark and Light modes', (tester) async {
+    testWidgets('HomeFeedSkeleton matches home feed layout (4-row peek column + 138dp cards) at 360dp and 1.4x scale in Dark and Light modes', (tester) async {
       tester.view.physicalSize = const Size(360, 780);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
@@ -245,12 +245,28 @@ void main() {
         final firstColColumn = firstCol.child as Column;
         expect(firstColColumn.children.length, equals(4));
 
-        // Verify 140dp square shelf cards exist for Featured & Trending / Albums
-        final cards140 = tester.widgetList<SkeletonBox>(find.byType(SkeletonBox)).where(
-              (box) => box.width == 140 && box.height == 140,
+        // Verify 138dp square shelf cards exist for Featured & Trending / Albums
+        final cards138 = tester.widgetList<SkeletonBox>(find.byType(SkeletonBox)).where(
+              (box) => box.width == 138 && box.height == 138,
             );
-        expect(cards140.length, greaterThanOrEqualTo(4));
+        expect(cards138.length, greaterThanOrEqualTo(4));
       }
+    });
+
+    testWidgets('HomeFeedSkeleton supports showMoodChips = false when mood chips are pinned externally', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: HomeFeedSkeleton(showMoodChips: false),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      final chipPills = tester.widgetList<SkeletonBox>(find.byType(SkeletonBox)).where(
+            (box) => box.height == 34,
+          );
+      expect(chipPills, isEmpty);
     });
 
     testWidgets('SearchResultsSkeleton matches headerless search layout (Top Result play circle + 80dp Artists) in Dark and Light modes', (tester) async {

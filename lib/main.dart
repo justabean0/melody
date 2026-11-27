@@ -209,27 +209,35 @@ class _MainScaffoldState extends State<MainScaffold> {
     final isKeyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
 
     return _SystemUiOverlaySync(
-      child: Scaffold(
-        extendBody: true,
-        body: Stack(
-          children: [
-            RepaintBoundary(
-              child: IndexedStack(
-                index: _currentIndex,
-                children: _screens,
+      child: PopScope(
+        canPop: _currentIndex == 0,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && _currentIndex != 0) {
+            _onSelectTab(0);
+          }
+        },
+        child: Scaffold(
+          extendBody: true,
+          body: Stack(
+            children: [
+              RepaintBoundary(
+                child: IndexedStack(
+                  index: _currentIndex,
+                  children: _screens,
+                ),
               ),
-            ),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: _FloatingBottomDock(
-                selectedIndex: _currentIndex,
-                onSelectTab: _onSelectTab,
-                showNavBar: !isKeyboardOpen,
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: _FloatingBottomDock(
+                  selectedIndex: _currentIndex,
+                  onSelectTab: _onSelectTab,
+                  showNavBar: !isKeyboardOpen,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -306,17 +314,22 @@ class _FloatingBottomDock extends StatelessWidget {
                     14,
                     showNavBar ? 10 : 8,
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (hasSong) const RepaintBoundary(child: MiniPlayer()),
-                      if (hasSong && showNavBar) const SizedBox(height: 10),
-                      if (showNavBar)
-                        _FloatingNavBar(
-                          selectedIndex: selectedIndex,
-                          onSelectTab: onSelectTab,
-                        ),
-                    ],
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 560),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (hasSong) const RepaintBoundary(child: MiniPlayer()),
+                          if (hasSong && showNavBar) const SizedBox(height: 10),
+                          if (showNavBar)
+                            _FloatingNavBar(
+                              selectedIndex: selectedIndex,
+                              onSelectTab: onSelectTab,
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
