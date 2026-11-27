@@ -121,6 +121,7 @@ class MiniPlayer extends StatelessWidget {
                             ],
                           ),
                         ),
+                        const SizedBox(width: 20),
                         const _MiniPlayerPlayPauseButton(),
                         IconButton(
                           tooltip: 'Next track',

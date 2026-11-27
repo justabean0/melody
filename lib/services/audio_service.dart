@@ -75,6 +75,8 @@ class MelodyAudioService {
 
   Duration _lastTrackedPosition = Duration.zero;
   int _pendingListeningMs = 0;
+  Song? _activeSessionSong;
+  String? _activeSessionKey;
 
   final _songChangeController = StreamController<Song?>.broadcast();
   Stream<Song?> get onSongChange => _songChangeController.stream;
@@ -332,7 +334,13 @@ class MelodyAudioService {
     final secs = _pendingListeningMs ~/ 1000;
     if (secs > 0) {
       _pendingListeningMs = resetRemainder ? 0 : (_pendingListeningMs % 1000);
-      unawaited(DatabaseService.recordListeningSeconds(secs));
+      unawaited(
+        DatabaseService.recordListeningSeconds(
+          secs,
+          song: _activeSessionSong ?? _currentSong,
+          sessionKey: _activeSessionKey,
+        ),
+      );
     } else if (resetRemainder) {
       _pendingListeningMs = 0;
     }
@@ -356,6 +364,9 @@ class MelodyAudioService {
     if (opToken != _playOperationToken || _isPausedByUser) return;
 
     _currentSong = _queue[_currentIndex];
+    _activeSessionSong = _currentSong;
+    _activeSessionKey =
+        'plog_${DateTime.now().microsecondsSinceEpoch}_${_currentSong!.id}';
 
     // 2. Immediately reset position and initialize duration to current song metadata
     _position = Duration.zero;
@@ -686,6 +697,8 @@ class MelodyAudioService {
   Future<void> stop() async {
     _captureListeningProgress(_player.position, maxDeltaMs: 5000);
     _flushListeningTime(resetRemainder: true);
+    _activeSessionSong = null;
+    _activeSessionKey = null;
     _isPausedByUser = true;
     _playOperationToken++;
     _needsStreamRecovery = false;

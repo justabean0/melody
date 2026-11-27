@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../models/song.dart';
 import '../../providers/library_provider.dart';
 import '../../providers/playback_provider.dart';
+import '../../services/database_service.dart';
 import '../../services/download_service.dart';
 import '../../services/local_audio_service.dart';
 import '../../utils/thumbnail_utils.dart';
@@ -72,42 +73,51 @@ class _LibraryScreenState extends State<LibraryScreen>
             ),
             const SizedBox(height: 19),
 
-            // Pill 3-tab bar + subtle 1px hairline divider beneath
+            // Segmented 3-tab pill bar with in-place cross-fade (no sliding bullet indicator)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
               child: Container(
-                height: 44,
+                height: 48,
                 padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
                   color: isDark
                       ? colorScheme.surfaceContainerLow
                       : colorScheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(22),
+                  borderRadius: BorderRadius.circular(24),
                 ),
-                child: TabBar(
-                  controller: _tabController,
-                  dividerColor: Colors.transparent,
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  splashBorderRadius: BorderRadius.circular(18),
-                  indicator: BoxDecoration(
-                    color: colorScheme.primary,
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  labelColor: colorScheme.onPrimary,
-                  unselectedLabelColor: colorScheme.onSurfaceVariant,
-                  labelStyle: const TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  unselectedLabelStyle: const TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w500,
-                  ),
-                  tabs: const [
-                    Tab(text: 'Overview'),
-                    Tab(text: 'Playlists'),
-                    Tab(text: 'Local'),
-                  ],
+                child: AnimatedBuilder(
+                  animation: _tabController.animation != null
+                      ? Listenable.merge([_tabController, _tabController.animation!])
+                      : _tabController,
+                  builder: (context, _) {
+                    final activeIndex = _tabController.indexIsChanging
+                        ? _tabController.index
+                        : (_tabController.animation?.value.round() ??
+                                _tabController.index)
+                            .clamp(0, 2);
+                    return Row(
+                      children: [
+                        _LibrarySegmentTab(
+                          key: const Key('library_tab_overview'),
+                          label: 'Overview',
+                          selected: activeIndex == 0,
+                          onTap: () => _tabController.animateTo(0),
+                        ),
+                        _LibrarySegmentTab(
+                          key: const Key('library_tab_playlists'),
+                          label: 'Playlists',
+                          selected: activeIndex == 1,
+                          onTap: () => _tabController.animateTo(1),
+                        ),
+                        _LibrarySegmentTab(
+                          key: const Key('library_tab_local'),
+                          label: 'Local',
+                          selected: activeIndex == 2,
+                          onTap: () => _tabController.animateTo(2),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
@@ -124,7 +134,6 @@ class _LibraryScreenState extends State<LibraryScreen>
                   _buildOverviewTab(
                     context,
                     library,
-                    playback,
                     theme,
                     colorScheme,
                     bottomPadding,
@@ -154,184 +163,24 @@ class _LibraryScreenState extends State<LibraryScreen>
   Widget _buildOverviewTab(
     BuildContext context,
     LibraryProvider library,
-    PlaybackProvider playback,
     ThemeData theme,
     ColorScheme colorScheme,
     double bottomPadding,
   ) {
-    final liked = library.likedSongs;
     final history = library.history;
-    final isDark = colorScheme.brightness == Brightness.dark;
-    final heroColor = isDark
-        ? Color.lerp(
-            colorScheme.surfaceContainerLow,
-            colorScheme.primaryContainer,
-            0.42,
-          )!
-        : colorScheme.primaryContainer.withValues(alpha: 0.55);
 
     return ListView(
       padding: EdgeInsets.fromLTRB(0, 20, 0, bottomPadding),
       children: [
-        // Hero Liked Songs Card (card body opens LikedSongsScreen; Play plays sequentially)
+        // Split Playtime Hero Card with expandable Daily/Monthly bar chart & play logs
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Material(
-            color: heroColor,
-            borderRadius: BorderRadius.circular(20),
-            child: InkWell(
-              key: const Key('library_liked_songs_card'),
-              borderRadius: BorderRadius.circular(20),
-              onTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const LikedSongsScreen(),
-                  ),
-                );
-              },
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-                child: Row(
-                  children: [
-                    _LikedArtworkBadge(colorScheme: colorScheme),
-                    const SizedBox(width: 15),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            'Liked Songs',
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontSize: 19,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: -0.2,
-                              color: colorScheme.onSurface,
-                            ),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            '${liked.length} ${liked.length == 1 ? 'song' : 'songs'}',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              fontSize: 13,
-                              color: colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: Center(
-                        child: IconButton.filled(
-                          tooltip: 'Play Liked Songs',
-                          onPressed: liked.isNotEmpty
-                              ? () {
-                                  if (playback.isShuffle) {
-                                    playback.toggleShuffle();
-                                  }
-                                  playback.playSong(
-                                    liked.first,
-                                    contextQueue: liked,
-                                    startIndex: 0,
-                                  );
-                                }
-                              : null,
-                          style: IconButton.styleFrom(
-                            fixedSize: const Size(46, 46),
-                            minimumSize: const Size(46, 46),
-                            backgroundColor: colorScheme.primary,
-                            foregroundColor: colorScheme.onPrimary,
-                            disabledBackgroundColor:
-                                colorScheme.primary.withValues(alpha: 0.28),
-                            disabledForegroundColor:
-                                colorScheme.onPrimary.withValues(alpha: 0.55),
-                            padding: EdgeInsets.zero,
-                          ),
-                          icon: const Icon(Icons.play_arrow_rounded, size: 24),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        // Monthly Listening Time Sparkline Card (live via LibraryProvider)
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: colorScheme.primaryContainer.withValues(alpha: 0.72),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.bar_chart_rounded,
-                    size: 22,
-                    color: colorScheme.primary,
-                  ),
-                ),
-                const SizedBox(width: 13),
-                Expanded(
-                  child: Text.rich(
-                    TextSpan(
-                      children: [
-                        TextSpan(
-                          text: library.monthlyListeningLabel,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                            color: colorScheme.onSurface,
-                          ),
-                        ),
-                        TextSpan(
-                          text: ' played this month',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontSize: 14,
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 96,
-                  height: 40,
-                  child: CustomPaint(
-                    painter: _ListeningSparklinePainter(
-                      series: library.dailyListeningSeries,
-                      lineColor: colorScheme.primary,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          child: _PlaytimeHeroCard(library: library),
         ),
 
         const SizedBox(height: 20),
 
-        // History Section (replacing Recently Liked)
+        // History Section
         if (history.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
@@ -403,59 +252,16 @@ class _LibraryScreenState extends State<LibraryScreen>
     ColorScheme colorScheme,
     double bottomPadding,
   ) {
+    final liked = library.likedSongs;
     final playlists = library.playlists;
-
-    if (playlists.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(24, 24, 24, bottomPadding * 0.65),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer.withValues(alpha: 0.65),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.queue_music_rounded,
-                  size: 30,
-                  color: colorScheme.onPrimaryContainer,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'No custom playlists yet',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: colorScheme.onSurface,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Create one to organize your music',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 18),
-              FilledButton.tonalIcon(
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('Create Playlist'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size(0, 48),
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                ),
-                onPressed: () => _showCreatePlaylistDialog(context, library),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+    final isDark = colorScheme.brightness == Brightness.dark;
+    final favCardColor = isDark
+        ? Color.lerp(
+            colorScheme.surfaceContainerLow,
+            colorScheme.primaryContainer,
+            0.42,
+          )!
+        : colorScheme.primaryContainer.withValues(alpha: 0.55);
 
     return ListView(
       padding: EdgeInsets.fromLTRB(16, 14, 16, bottomPadding),
@@ -466,7 +272,9 @@ class _LibraryScreenState extends State<LibraryScreen>
           children: [
             Expanded(
               child: Text(
-                'Your Playlists · ${playlists.length}',
+                playlists.isEmpty
+                    ? 'Your Playlists'
+                    : 'Your Playlists · ${playlists.length}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.bodyMedium?.copyWith(
@@ -513,114 +321,258 @@ class _LibraryScreenState extends State<LibraryScreen>
           ],
         ),
         const SizedBox(height: 10),
-        ...playlists.map((p) {
-          final hasRemoteCover = p.songs.isNotEmpty && p.songs.first.hasRemoteThumbnail;
-          final coverUrl = hasRemoteCover
-              ? ThumbnailUtils.upgradeUrl(p.songs.first.thumbnailUrl, size: 544)
-              : '';
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Material(
+
+        // Pinned default Favourite Songs playlist card (no delete button)
+        Material(
+          color: favCardColor,
+          borderRadius: BorderRadius.circular(18),
+          child: InkWell(
+            key: const Key('library_favourite_songs_card'),
+            borderRadius: BorderRadius.circular(18),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const LikedSongsScreen(),
+                ),
+              );
+            },
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 10, 12),
+              child: Row(
+                children: [
+                  _LikedArtworkBadge(
+                    colorScheme: colorScheme,
+                    size: 56,
+                    borderRadius: 12,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'Favourite Songs',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontSize: 16.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: -0.2,
+                            color: colorScheme.onSurface,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          '${liked.length} ${liked.length == 1 ? 'song' : 'songs'}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontSize: 12.5,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: Center(
+                      child: IconButton.filled(
+                        tooltip: 'Play Favourite Songs',
+                        onPressed: liked.isNotEmpty
+                            ? () {
+                                if (playback.isShuffle) {
+                                  playback.toggleShuffle();
+                                }
+                                playback.playSong(
+                                  liked.first,
+                                  contextQueue: liked,
+                                  startIndex: 0,
+                                );
+                              }
+                            : null,
+                        style: IconButton.styleFrom(
+                          fixedSize: const Size(42, 42),
+                          minimumSize: const Size(42, 42),
+                          backgroundColor: colorScheme.primary,
+                          foregroundColor: colorScheme.onPrimary,
+                          disabledBackgroundColor:
+                              colorScheme.primary.withValues(alpha: 0.28),
+                          disabledForegroundColor:
+                              colorScheme.onPrimary.withValues(alpha: 0.55),
+                          padding: EdgeInsets.zero,
+                        ),
+                        icon: const Icon(Icons.play_arrow_rounded, size: 22),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        if (playlists.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+            decoration: BoxDecoration(
               color: colorScheme.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(16),
-              child: InkWell(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Column(
+              children: [
+                Icon(
+                  Icons.queue_music_rounded,
+                  size: 28,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'No custom playlists yet',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Create one to organize your music',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                FilledButton.tonalIcon(
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: const Text('Create Playlist'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 48),
+                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                  ),
+                  onPressed: () => _showCreatePlaylistDialog(context, library),
+                ),
+              ],
+            ),
+          )
+        else
+          ...playlists.map((p) {
+            final hasRemoteCover =
+                p.songs.isNotEmpty && p.songs.first.hasRemoteThumbnail;
+            final coverUrl = hasRemoteCover
+                ? ThumbnailUtils.upgradeUrl(p.songs.first.thumbnailUrl,
+                    size: 544)
+                : '';
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Material(
+                color: colorScheme.surfaceContainerLow,
                 borderRadius: BorderRadius.circular(16),
-                onTap: () => _showPlaylistDetails(context, p, playback, library),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 6, 12),
-                  child: Row(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: coverUrl.isNotEmpty
-                            ? CachedNetworkImage(
-                                imageUrl: coverUrl,
-                                width: 56,
-                                height: 56,
-                                fit: BoxFit.cover,
-                                placeholder: (_, __) => Container(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: () =>
+                      _showPlaylistDetails(context, p, playback, library),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 6, 12),
+                    child: Row(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: coverUrl.isNotEmpty
+                              ? CachedNetworkImage(
+                                  imageUrl: coverUrl,
                                   width: 56,
                                   height: 56,
-                                  color: colorScheme.primaryContainer,
+                                  fit: BoxFit.cover,
+                                  placeholder: (_, __) => Container(
+                                    width: 56,
+                                    height: 56,
+                                    color: colorScheme.primaryContainer,
+                                  ),
+                                  errorWidget: (_, __, ___) =>
+                                      _playlistArtFallback(colorScheme),
+                                )
+                              : _playlistArtFallback(colorScheme),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                p.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyLarge?.copyWith(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                  color: colorScheme.onSurface,
                                 ),
-                                errorWidget: (_, __, ___) =>
-                                    _playlistArtFallback(colorScheme),
-                              )
-                            : _playlistArtFallback(colorScheme),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              p.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodyLarge?.copyWith(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                                color: colorScheme.onSurface,
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                '${p.songs.length} ${p.songs.length == 1 ? 'song' : 'songs'}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  fontSize: 12.5,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        PopupMenuButton<String>(
+                          icon: Icon(
+                            Icons.more_vert_rounded,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                          constraints:
+                              const BoxConstraints(minWidth: 48, minHeight: 48),
+                          onSelected: (val) {
+                            if (val == 'open') {
+                              _showPlaylistDetails(
+                                  context, p, playback, library);
+                            } else if (val == 'delete') {
+                              library.deletePlaylist(p.id);
+                            }
+                          },
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(
+                              value: 'open',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.playlist_play_rounded, size: 20),
+                                  SizedBox(width: 12),
+                                  Text('Open Playlist'),
+                                ],
                               ),
                             ),
-                            const SizedBox(height: 3),
-                            Text(
-                              '${p.songs.length} ${p.songs.length == 1 ? 'song' : 'songs'}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                fontSize: 12.5,
-                                color: colorScheme.onSurfaceVariant,
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.delete_outline_rounded, size: 20),
+                                  SizedBox(width: 12),
+                                  Text('Delete Playlist'),
+                                ],
                               ),
                             ),
                           ],
                         ),
-                      ),
-                      PopupMenuButton<String>(
-                        icon: Icon(
-                          Icons.more_vert_rounded,
-                          color: colorScheme.onSurfaceVariant,
-                        ),
-                        constraints:
-                            const BoxConstraints(minWidth: 48, minHeight: 48),
-                        onSelected: (val) {
-                          if (val == 'open') {
-                            _showPlaylistDetails(context, p, playback, library);
-                          } else if (val == 'delete') {
-                            library.deletePlaylist(p.id);
-                          }
-                        },
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(
-                            value: 'open',
-                            child: Row(
-                              children: [
-                                Icon(Icons.playlist_play_rounded, size: 20),
-                                SizedBox(width: 12),
-                                Text('Open Playlist'),
-                              ],
-                            ),
-                          ),
-                          PopupMenuItem(
-                            value: 'delete',
-                            child: Row(
-                              children: [
-                                Icon(Icons.delete_outline_rounded, size: 20),
-                                SizedBox(width: 12),
-                                Text('Delete Playlist'),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-          );
-        }),
+            );
+          }),
       ],
     );
   }
@@ -675,85 +627,155 @@ class _LibraryScreenState extends State<LibraryScreen>
     PlaybackProvider playback,
     LibraryProvider library,
   ) {
+    final sheetColor = Theme.of(context).colorScheme.surfaceContainerLow;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      backgroundColor: sheetColor,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.7,
-        maxChildSize: 0.95,
-        minChildSize: 0.4,
-        expand: false,
-        builder: (_, scrollController) => Column(
-          children: [
-            const SizedBox(height: 12),
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Theme.of(context)
-                    .colorScheme
-                    .onSurfaceVariant
-                    .withValues(alpha: 0.3),
-                borderRadius: BorderRadius.circular(2),
-              ),
+      builder: (_) => _PlaylistDetailsSheet(
+        playlistId: playlist.id,
+        initialPlaylist: playlist,
+      ),
+    );
+  }
+}
+
+class _PlaylistDetailsSheet extends StatefulWidget {
+  final String playlistId;
+  final Playlist initialPlaylist;
+
+  const _PlaylistDetailsSheet({
+    required this.playlistId,
+    required this.initialPlaylist,
+  });
+
+  @override
+  State<_PlaylistDetailsSheet> createState() => _PlaylistDetailsSheetState();
+}
+
+class _PlaylistDetailsSheetState extends State<_PlaylistDetailsSheet> {
+  final ValueNotifier<String?> _openSwipeRowId = ValueNotifier<String?>(null);
+
+  @override
+  void dispose() {
+    _openSwipeRowId.dispose();
+    super.dispose();
+  }
+
+  Future<void> _removeSong(Playlist playlist, Song song) async {
+    await context
+        .read<LibraryProvider>()
+        .removeSongFromPlaylist(playlist.id, song.id);
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text('Removed "${song.title}" from ${playlist.title}'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final library = context.watch<LibraryProvider>();
+    final playback = context.read<PlaybackProvider>();
+    final colorScheme = Theme.of(context).colorScheme;
+    final sheetColor = colorScheme.surfaceContainerLow;
+    final playlist = library.playlists
+            .where((p) => p.id == widget.playlistId)
+            .firstOrNull ??
+        widget.initialPlaylist;
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.7,
+      maxChildSize: 0.95,
+      minChildSize: 0.4,
+      expand: false,
+      builder: (_, scrollController) => Column(
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(2),
             ),
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          playlist.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        playlist.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
                         ),
-                        Text('${playlist.songs.length} tracks'),
-                      ],
-                    ),
-                  ),
-                  if (playlist.songs.isNotEmpty)
-                    FilledButton.icon(
-                      icon: const Icon(Icons.play_arrow_rounded),
-                      label: const Text('Play All'),
-                      onPressed: () {
-                        playback.playSong(
-                          playlist.songs.first,
-                          contextQueue: playlist.songs,
-                          startIndex: 0,
-                        );
-                        Navigator.pop(ctx);
-                      },
-                    ),
-                ],
-              ),
-            ),
-            const Divider(),
-            Expanded(
-              child: playlist.songs.isEmpty
-                  ? const Center(child: Text('Playlist is empty'))
-                  : ListView.builder(
-                      controller: scrollController,
-                      itemCount: playlist.songs.length,
-                      itemBuilder: (_, i) => SongTile(
-                        song: playlist.songs[i],
-                        contextQueue: playlist.songs,
-                        index: i,
                       ),
-                    ),
+                      Text(
+                        '${playlist.songs.length} ${playlist.songs.length == 1 ? 'track' : 'tracks'}',
+                      ),
+                    ],
+                  ),
+                ),
+                if (playlist.songs.isNotEmpty)
+                  FilledButton.icon(
+                    icon: const Icon(Icons.play_arrow_rounded),
+                    label: const Text('Play All'),
+                    onPressed: () {
+                      playback.playSong(
+                        playlist.songs.first,
+                        contextQueue: playlist.songs,
+                        startIndex: 0,
+                      );
+                      Navigator.pop(context);
+                    },
+                  ),
+              ],
             ),
-          ],
-        ),
+          ),
+          const Divider(),
+          Expanded(
+            child: playlist.songs.isEmpty
+                ? const Center(child: Text('Playlist is empty'))
+                : ListView.builder(
+                    controller: scrollController,
+                    itemCount: playlist.songs.length,
+                    itemBuilder: (_, i) {
+                      final song = playlist.songs[i];
+                      return SwipeToRevealDelete(
+                        key: ValueKey('playlist_swipe_${playlist.id}_${song.id}'),
+                        rowId: song.id,
+                        openRowId: _openSwipeRowId,
+                        backgroundColor: sheetColor,
+                        deleteTooltip: 'Remove from playlist',
+                        onDelete: () => _removeSong(playlist, song),
+                        child: SongTile(
+                          song: song,
+                          contextQueue: playlist.songs,
+                          index: i,
+                          removeFromPlaylistLabel: 'Remove from playlist',
+                          onRemoveFromPlaylist: () => _removeSong(playlist, song),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
       ),
     );
   }
@@ -1068,10 +1090,77 @@ class _LocalMusicTabState extends State<_LocalMusicTab>
   }
 }
 
+class _LibrarySegmentTab extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _LibrarySegmentTab({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final baseStyle = theme.textTheme.labelLarge ?? const TextStyle();
+
+    return Expanded(
+      child: Semantics(
+        label: label,
+        selected: selected,
+        button: true,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            height: double.infinity,
+            decoration: BoxDecoration(
+              color: selected ? colorScheme.primary : Colors.transparent,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOutCubic,
+                style: baseStyle.copyWith(
+                  fontSize: 13.5,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  color: selected
+                      ? colorScheme.onPrimary
+                      : colorScheme.onSurfaceVariant,
+                ),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _LikedArtworkBadge extends StatelessWidget {
   final ColorScheme colorScheme;
+  final double size;
+  final double borderRadius;
 
-  const _LikedArtworkBadge({required this.colorScheme});
+  const _LikedArtworkBadge({
+    required this.colorScheme,
+    this.size = 56,
+    this.borderRadius = 12,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1080,19 +1169,19 @@ class _LikedArtworkBadge extends StatelessWidget {
     final endColor = Color.lerp(colorScheme.primary, colorScheme.tertiary, 0.5)!;
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(borderRadius),
       child: SizedBox(
-        width: 76,
-        height: 76,
+        width: size,
+        height: size,
         child: CustomPaint(
           painter: _LikedSunsetMountainPainter(
             colors: [startColor, midColor, endColor],
           ),
-          child: const Center(
+          child: Center(
             child: Icon(
               Icons.favorite_rounded,
               color: Colors.white,
-              size: 32,
+              size: size * 0.44,
             ),
           ),
         ),
@@ -1160,13 +1249,807 @@ class _LikedSunsetMountainPainter extends CustomPainter {
       oldDelegate.colors != colors;
 }
 
+enum _PlaytimeScope { daily, monthly }
+
+class _PlaytimeHeroCard extends StatefulWidget {
+  final LibraryProvider library;
+
+  const _PlaytimeHeroCard({required this.library});
+
+  @override
+  State<_PlaytimeHeroCard> createState() => _PlaytimeHeroCardState();
+}
+
+class _PlaytimeHeroCardState extends State<_PlaytimeHeroCard> {
+  bool _isExpanded = false;
+  _PlaytimeScope _scope = _PlaytimeScope.daily;
+  int? _selectedBarIndex;
+
+  void _toggleExpanded() {
+    setState(() {
+      _isExpanded = !_isExpanded;
+      if (!_isExpanded) {
+        _selectedBarIndex = null;
+      }
+    });
+  }
+
+  void _selectScope(_PlaytimeScope scope) {
+    if (_scope == scope) return;
+    setState(() {
+      _scope = scope;
+      _selectedBarIndex = null;
+    });
+  }
+
+  void _onBarTap(int index) {
+    setState(() {
+      _selectedBarIndex = _selectedBarIndex == index ? null : index;
+    });
+  }
+
+  String _formatPlayLogTime(DateTime playedAt, DateTime now) {
+    final diff = now.difference(playedAt);
+    if (diff.inSeconds < 60 && !diff.isNegative) {
+      return 'Just now';
+    }
+    if (diff.inMinutes < 60 && !diff.isNegative) {
+      return '${diff.inMinutes}m ago';
+    }
+    final hour12 = playedAt.hour % 12 == 0 ? 12 : playedAt.hour % 12;
+    final minuteStr = playedAt.minute.toString().padLeft(2, '0');
+    final amPm = playedAt.hour >= 12 ? 'PM' : 'AM';
+    final timeStr = '$hour12:$minuteStr $amPm';
+
+    final today = DateTime(now.year, now.month, now.day);
+    final logDay = DateTime(playedAt.year, playedAt.month, playedAt.day);
+    final dayDiff = today.difference(logDay).inDays;
+    if (dayDiff == 0) return 'Today, $timeStr';
+    if (dayDiff == 1) return 'Yesterday, $timeStr';
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${months[playedAt.month - 1]} ${playedAt.day}, $timeStr';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = colorScheme.brightness == Brightness.dark;
+    final disableAnimations = MediaQuery.disableAnimationsOf(context);
+    final library = widget.library;
+
+    final isDaily = _scope == _PlaytimeScope.daily;
+    final buckets = isDaily
+        ? library.dailyPlaytimeBuckets
+        : library.monthlyPlaytimeBuckets;
+    final validSelectedIndex = (_selectedBarIndex != null &&
+            _selectedBarIndex! >= 0 &&
+            _selectedBarIndex! < buckets.length)
+        ? _selectedBarIndex
+        : null;
+    final selectedBucket =
+        validSelectedIndex != null ? buckets[validSelectedIndex] : null;
+
+    final int activeSeconds = selectedBucket != null
+        ? selectedBucket.seconds
+        : (isDaily
+            ? library.todayListeningSeconds
+            : library.monthlyListeningSeconds);
+    final split = DatabaseService.formatSplitPlaytime(activeSeconds);
+    final trendSeries = buckets.map((b) => b.seconds).toList();
+    final logs = library.recentPlayLogs;
+    final now = DateTime.now();
+
+    final periodTitle = selectedBucket != null
+        ? selectedBucket.label
+        : (isDaily ? 'Today' : 'This Month');
+
+    return Material(
+      key: const Key('library_playtime_hero_card'),
+      color: colorScheme.surfaceContainerLow,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(22),
+        side: BorderSide(
+          color: colorScheme.outlineVariant.withValues(
+            alpha: isDark ? 0.28 : 0.45,
+          ),
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: AnimatedSize(
+        duration: disableAnimations
+            ? Duration.zero
+            : const Duration(milliseconds: 240),
+        curve: Curves.easeOutCubic,
+        alignment: Alignment.topCenter,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Collapsed split hero header (tap anywhere to expand/collapse)
+            Semantics(
+              label:
+                  'Playtime ${split.summary}. ${_isExpanded ? 'Collapse' : 'Expand'} details',
+              expanded: _isExpanded,
+              button: true,
+              child: InkWell(
+                key: const Key('playtime_hero_toggle'),
+                onTap: _toggleExpanded,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      // Left (~58%): Header + live trend sparkline
+                      Expanded(
+                        flex: 58,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    'Playtime',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: theme.textTheme.titleMedium?.copyWith(
+                                      fontSize: 15.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: colorScheme.onSurface,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: colorScheme.primaryContainer
+                                        .withValues(alpha: 0.72),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: Text(
+                                    isDaily ? 'Daily' : 'Monthly',
+                                    maxLines: 1,
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: colorScheme.onPrimaryContainer,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            SizedBox(
+                              height: 52,
+                              width: double.infinity,
+                              child: CustomPaint(
+                                key: const Key('playtime_trend_graph'),
+                                painter: _ListeningSparklinePainter(
+                                  series: trendSeries,
+                                  lineColor: colorScheme.primary,
+                                  selectedIndex: validSelectedIndex,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // Subtle vertical divider
+                      Container(
+                        width: 1,
+                        height: 76,
+                        margin: const EdgeInsets.symmetric(horizontal: 12),
+                        color: colorScheme.outlineVariant.withValues(
+                          alpha: isDark ? 0.32 : 0.55,
+                        ),
+                      ),
+
+                      // Right (~42%): Stacked two-line counter + expand chevron
+                      Expanded(
+                        flex: 42,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    periodTitle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: theme.textTheme.labelMedium?.copyWith(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: selectedBucket != null
+                                          ? colorScheme.primary
+                                          : colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ),
+                                AnimatedRotation(
+                                  turns: _isExpanded ? 0.5 : 0.0,
+                                  duration: disableAnimations
+                                      ? Duration.zero
+                                      : const Duration(milliseconds: 200),
+                                  curve: Curves.easeOutCubic,
+                                  child: Icon(
+                                    Icons.keyboard_arrow_down_rounded,
+                                    key: const Key('playtime_expand_chevron'),
+                                    size: 20,
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text.rich(
+                                TextSpan(
+                                  children: [
+                                    TextSpan(
+                                      text: split.primaryValue,
+                                      style: theme.textTheme.headlineSmall
+                                          ?.copyWith(
+                                        fontSize: 24,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: -0.6,
+                                        height: 1.05,
+                                        color: colorScheme.onSurface,
+                                        fontFeatures: const [
+                                          FontFeature.tabularFigures(),
+                                        ],
+                                      ),
+                                    ),
+                                    TextSpan(
+                                      text: ' ${split.primaryUnit}',
+                                      style:
+                                          theme.textTheme.labelLarge?.copyWith(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: colorScheme.primary,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                maxLines: 1,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text.rich(
+                                TextSpan(
+                                  children: [
+                                    TextSpan(
+                                      text: split.secondaryValue,
+                                      style:
+                                          theme.textTheme.titleMedium?.copyWith(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w700,
+                                        height: 1.1,
+                                        color: colorScheme.onSurfaceVariant,
+                                        fontFeatures: const [
+                                          FontFeature.tabularFigures(),
+                                        ],
+                                      ),
+                                    ),
+                                    TextSpan(
+                                      text: ' ${split.secondaryUnit}',
+                                      style:
+                                          theme.textTheme.labelMedium?.copyWith(
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w500,
+                                        color: colorScheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                maxLines: 1,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+            // Expanded interactive bar chart & detailed play logs
+            if (_isExpanded) ...[
+              Divider(
+                height: 1,
+                thickness: 1,
+                color: colorScheme.outlineVariant.withValues(
+                  alpha: isDark ? 0.25 : 0.45,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      alignment: WrapAlignment.spaceBetween,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(3),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHigh,
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _PlaytimeScopeChip(
+                                key: const Key('playtime_scope_daily'),
+                                label: 'Daily',
+                                selected: isDaily,
+                                onTap: () => _selectScope(_PlaytimeScope.daily),
+                              ),
+                              _PlaytimeScopeChip(
+                                key: const Key('playtime_scope_monthly'),
+                                label: 'Monthly',
+                                selected: !isDaily,
+                                onTap: () =>
+                                    _selectScope(_PlaytimeScope.monthly),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          key: const Key('playtime_inspected_readout'),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: selectedBucket != null
+                                ? colorScheme.primaryContainer
+                                    .withValues(alpha: 0.72)
+                                : colorScheme.surfaceContainerHigh
+                                    .withValues(alpha: 0.65),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            selectedBucket != null
+                                ? '${selectedBucket.label} • ${DatabaseService.formatCompactPlaytime(selectedBucket.seconds)}'
+                                : (isDaily ? 'Last 7 days' : 'Last 6 months'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: selectedBucket != null
+                                  ? colorScheme.onPrimaryContainer
+                                  : colorScheme.onSurfaceVariant,
+                              fontFeatures: const [
+                                FontFeature.tabularFigures(),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    _PlaytimeBarChart(
+                      buckets: buckets,
+                      selectedIndex: validSelectedIndex,
+                      onSelectBar: _onBarTap,
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Recent Play Logs',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w700,
+                              color: colorScheme.onSurface,
+                            ),
+                          ),
+                        ),
+                        if (logs.isNotEmpty)
+                          Text(
+                            '${logs.length} ${logs.length == 1 ? 'session' : 'sessions'}',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (logs.isEmpty)
+                      Container(
+                        key: const Key('playtime_logs_empty'),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 14,
+                        ),
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerHigh
+                              .withValues(alpha: 0.45),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.headphones_rounded,
+                              size: 20,
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'No listening sessions logged yet',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else
+                      ConstrainedBox(
+                        key: const Key('playtime_logs_list'),
+                        constraints: const BoxConstraints(maxHeight: 220),
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          physics: const ClampingScrollPhysics(),
+                          itemCount: math.min(logs.length, 20),
+                          separatorBuilder: (_, __) => const SizedBox(height: 6),
+                          itemBuilder: (_, i) {
+                            final log = logs[i];
+                            return Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                color: colorScheme.surfaceContainerHigh
+                                    .withValues(alpha: 0.42),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: log.thumbnailUrl.isNotEmpty &&
+                                            log.thumbnailUrl.startsWith('http')
+                                        ? CachedNetworkImage(
+                                            imageUrl: ThumbnailUtils.upgradeUrl(
+                                              log.thumbnailUrl,
+                                              size: 226,
+                                            ),
+                                            width: 36,
+                                            height: 36,
+                                            fit: BoxFit.cover,
+                                            placeholder: (_, __) => Container(
+                                              width: 36,
+                                              height: 36,
+                                              color: colorScheme
+                                                  .surfaceContainerHighest,
+                                            ),
+                                            errorWidget: (_, __, ___) =>
+                                                _playLogArtFallback(colorScheme),
+                                          )
+                                        : _playLogArtFallback(colorScheme),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          log.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: theme.textTheme.bodyMedium
+                                              ?.copyWith(
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w600,
+                                            color: colorScheme.onSurface,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '${log.artist} • ${_formatPlayLogTime(log.playedAt, now)}',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: theme.textTheme.bodySmall
+                                              ?.copyWith(
+                                            fontSize: 11.5,
+                                            color: colorScheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: colorScheme.primaryContainer
+                                          .withValues(alpha: 0.72),
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: Text(
+                                      DatabaseService.formatCompactPlaytime(
+                                        log.durationSeconds,
+                                      ),
+                                      maxLines: 1,
+                                      style:
+                                          theme.textTheme.labelSmall?.copyWith(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: colorScheme.onPrimaryContainer,
+                                        fontFeatures: const [
+                                          FontFeature.tabularFigures(),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _playLogArtFallback(ColorScheme colorScheme) {
+    return Container(
+      width: 36,
+      height: 36,
+      color: colorScheme.surfaceContainerHighest,
+      child: Icon(
+        Icons.music_note_rounded,
+        size: 18,
+        color: colorScheme.primary,
+      ),
+    );
+  }
+}
+
+class _PlaytimeScopeChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _PlaytimeScopeChip({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final disableAnimations = MediaQuery.disableAnimationsOf(context);
+
+    return Semantics(
+      label: label,
+      selected: selected,
+      button: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 36, minWidth: 64),
+          child: AnimatedContainer(
+            duration: disableAnimations
+                ? Duration.zero
+                : const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+            decoration: BoxDecoration(
+              color: selected ? colorScheme.primary : Colors.transparent,
+              borderRadius: BorderRadius.circular(15),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              label,
+              maxLines: 1,
+              style: theme.textTheme.labelMedium?.copyWith(
+                fontSize: 12.5,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                color: selected
+                    ? colorScheme.onPrimary
+                    : colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlaytimeBarChart extends StatelessWidget {
+  final List<PlaytimeBucket> buckets;
+  final int? selectedIndex;
+  final ValueChanged<int> onSelectBar;
+
+  const _PlaytimeBarChart({
+    required this.buckets,
+    required this.selectedIndex,
+    required this.onSelectBar,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final disableAnimations = MediaQuery.disableAnimationsOf(context);
+    final maxSeconds = buckets.fold<int>(0, (prev, b) => math.max(prev, b.seconds));
+    const double maxBarHeight = 96.0;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: List.generate(buckets.length, (i) {
+        final bucket = buckets[i];
+        final isSelected = selectedIndex == i;
+        final isCurrentBucket = selectedIndex == null && i == buckets.length - 1;
+        final isHighlighted = isSelected || isCurrentBucket;
+
+        final double barHeight;
+        if (bucket.seconds <= 0 || maxSeconds <= 0) {
+          barHeight = 6.0;
+        } else {
+          barHeight = ((bucket.seconds / maxSeconds) * maxBarHeight)
+              .clamp(14.0, maxBarHeight);
+        }
+
+        final Color barColor;
+        if (isSelected) {
+          barColor = colorScheme.primary;
+        } else if (selectedIndex != null) {
+          barColor = colorScheme.primary.withValues(alpha: 0.28);
+        } else if (isCurrentBucket) {
+          barColor = colorScheme.primary;
+        } else {
+          barColor = colorScheme.primary.withValues(alpha: 0.45);
+        }
+
+        return Expanded(
+          child: Semantics(
+            label:
+                '${bucket.label}: ${DatabaseService.formatCompactPlaytime(bucket.seconds)}',
+            selected: isSelected,
+            button: true,
+            child: GestureDetector(
+              key: Key('playtime_bar_${bucket.key}'),
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onSelectBar(i),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      height: maxBarHeight,
+                      child: Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Stack(
+                          alignment: Alignment.bottomCenter,
+                          children: [
+                            Container(
+                              width: 20,
+                              height: maxBarHeight,
+                              decoration: BoxDecoration(
+                                color: colorScheme.surfaceContainerHigh
+                                    .withValues(alpha: 0.35),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            AnimatedContainer(
+                              duration: disableAnimations
+                                  ? Duration.zero
+                                  : const Duration(milliseconds: 220),
+                              curve: Curves.easeOutCubic,
+                              width: 20,
+                              height: barHeight,
+                              decoration: BoxDecoration(
+                                color: barColor,
+                                borderRadius: const BorderRadius.vertical(
+                                  top: Radius.circular(8),
+                                  bottom: Radius.circular(4),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      height: 18,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          bucket.label,
+                          maxLines: 1,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            fontSize: 11.5,
+                            fontWeight:
+                                isHighlighted ? FontWeight.w700 : FontWeight.w500,
+                            color: isHighlighted
+                                ? colorScheme.primary
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+}
+
 class _ListeningSparklinePainter extends CustomPainter {
   final List<int> series;
   final Color lineColor;
+  final int? selectedIndex;
 
   const _ListeningSparklinePainter({
     required this.series,
     required this.lineColor,
+    this.selectedIndex,
   });
 
   @override
@@ -1227,14 +2110,19 @@ class _ListeningSparklinePainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round;
     canvas.drawPath(linePath, strokePaint);
 
-    final end = points.last;
+    final focusIdx = (selectedIndex != null &&
+            selectedIndex! >= 0 &&
+            selectedIndex! < points.length)
+        ? selectedIndex!
+        : points.length - 1;
+    final focusPoint = points[focusIdx];
     canvas.drawCircle(
-      end,
+      focusPoint,
       5.5,
       Paint()..color = lineColor.withValues(alpha: 0.28),
     );
     canvas.drawCircle(
-      end,
+      focusPoint,
       3.2,
       Paint()..color = lineColor,
     );
@@ -1243,6 +2131,7 @@ class _ListeningSparklinePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ListeningSparklinePainter oldDelegate) =>
       oldDelegate.lineColor != lineColor ||
+      oldDelegate.selectedIndex != selectedIndex ||
       oldDelegate.series.length != series.length ||
       !_listIntEquals(oldDelegate.series, series);
 

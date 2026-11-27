@@ -4,8 +4,21 @@ import '../../providers/library_provider.dart';
 import '../../providers/playback_provider.dart';
 import '../components/song_tile.dart';
 
-class LikedSongsScreen extends StatelessWidget {
+class LikedSongsScreen extends StatefulWidget {
   const LikedSongsScreen({super.key});
+
+  @override
+  State<LikedSongsScreen> createState() => _LikedSongsScreenState();
+}
+
+class _LikedSongsScreenState extends State<LikedSongsScreen> {
+  final ValueNotifier<String?> _openSwipeRowId = ValueNotifier<String?>(null);
+
+  @override
+  void dispose() {
+    _openSwipeRowId.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -24,7 +37,7 @@ class LikedSongsScreen extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'Liked Songs',
+              'Favourite Songs',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.titleLarge?.copyWith(
@@ -93,7 +106,7 @@ class LikedSongsScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        'No liked songs yet',
+                        'No favourite songs yet',
                         style: theme.textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.w700,
                           color: colorScheme.onSurface,
@@ -101,7 +114,7 @@ class LikedSongsScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        'Tap the heart icon on any track to save it to your Liked Songs.',
+                        'Tap the heart icon on any track to save it to your Favourite Songs.',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodyMedium?.copyWith(
                           color: colorScheme.onSurfaceVariant,
@@ -114,11 +127,22 @@ class LikedSongsScreen extends StatelessWidget {
             : ListView.builder(
                 padding: EdgeInsets.fromLTRB(0, 8, 0, bottomPadding),
                 itemCount: liked.length,
-                itemBuilder: (_, index) => SongTile(
-                  song: liked[index],
-                  contextQueue: liked,
-                  index: index,
-                ),
+                itemBuilder: (_, index) {
+                  final song = liked[index];
+                  return SwipeToRevealDelete(
+                    key: ValueKey('liked_swipe_${song.id}'),
+                    rowId: song.id,
+                    openRowId: _openSwipeRowId,
+                    backgroundColor: colorScheme.surface,
+                    deleteTooltip: 'Remove from Favourite Songs',
+                    onDelete: () => library.toggleLike(song),
+                    child: SongTile(
+                      song: song,
+                      contextQueue: liked,
+                      index: index,
+                    ),
+                  );
+                },
               ),
       ),
     );

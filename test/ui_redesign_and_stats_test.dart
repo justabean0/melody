@@ -20,9 +20,11 @@ import 'package:melody/services/recommendation_service.dart';
 import 'package:melody/services/stream_resolver_service.dart';
 import 'package:melody/ui/components/album_card.dart';
 import 'package:melody/ui/components/mini_player.dart';
+import 'package:melody/ui/components/song_tile.dart';
 import 'package:melody/ui/components/top_result_play_button.dart';
 import 'package:melody/ui/screens/home_screen.dart';
 import 'package:melody/ui/screens/library_screen.dart';
+import 'package:melody/ui/screens/liked_songs_screen.dart';
 import 'package:melody/ui/screens/search_screen.dart';
 import 'package:melody/ui/screens/settings_screen.dart';
 import 'package:provider/provider.dart';
@@ -226,8 +228,10 @@ void main() {
     _TestPlaybackProvider? playbackProvider,
     SearchProvider? searchProvider,
     double textScale = 1.0,
+    Size size = const Size(412, 915),
+    bool disableAnimations = false,
   }) {
-    tester.view.physicalSize = const Size(412, 915);
+    tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
@@ -250,6 +254,7 @@ void main() {
         builder: (context, widget) => MediaQuery(
           data: MediaQuery.of(context).copyWith(
             textScaler: TextScaler.linear(textScale),
+            disableAnimations: disableAnimations,
           ),
           child: widget!,
         ),
@@ -456,7 +461,7 @@ void main() {
       expect(artistCards.first.size, equals(80));
     });
 
-    testWidgets('LibraryScreen Overview displays Hero Liked card + monthly stats + sparkline + History and Playlists displays round + button', (tester) async {
+    testWidgets('LibraryScreen Overview displays monthly stats + sparkline + History without Liked card, and Playlists pins Favourite Songs above custom playlists', (tester) async {
       await DatabaseService.toggleLike(
         const Song(id: 'fav_1', title: 'Alfaaz', artist: 'Hamza Malik', thumbnailUrl: ''),
       );
@@ -479,35 +484,55 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // LibraryScreen displays Overview, Playlists, and Local tabs
+      // LibraryScreen displays Overview, Playlists, and Local tabs without TabBar sliding indicator
+      expect(find.byType(TabBar), findsNothing);
       expect(find.text('Overview'), findsOneWidget);
       expect(find.text('Playlists'), findsOneWidget);
       expect(find.text('Local'), findsOneWidget);
       expect(find.text('Favorites'), findsNothing);
 
-      // No + New pill in top header
+      // Overview no longer contains Liked Songs / Favourite Songs hero card or + New
       expect(find.text('+ New'), findsNothing);
-      expect(find.text('Liked Songs'), findsOneWidget);
-      expect(find.text('1 song'), findsOneWidget);
-      expect(find.textContaining('36h'), findsOneWidget);
-      expect(find.textContaining('played this month'), findsOneWidget);
+      expect(find.text('Liked Songs'), findsNothing);
+      expect(find.text('Favourite Songs'), findsNothing);
+      expect(find.byKey(const Key('library_playtime_hero_card')), findsOneWidget);
+      expect(find.text('Playtime'), findsOneWidget);
+      expect(find.text('36 hr'), findsOneWidget);
+      expect(find.text('0 min'), findsOneWidget);
       expect(find.text('History'), findsOneWidget);
       expect(find.text('Sajni'), findsOneWidget);
       expect(find.text('Recently Liked'), findsNothing);
 
-      // Tapping Liked Songs Play button starts favorites queue sequentially from index 0
-      await tester.tap(find.byTooltip('Play Liked Songs'));
-      await tester.pump();
-      expect(playback.playSongCalls, equals(1));
-      expect(playback.lastQueue?.length, equals(1));
-
-      // Switch to Playlists tab -> shows "Your Playlists · 1" and circular + button
+      // Switch to Playlists tab -> shows "Your Playlists · 1", circular + button, and pinned Favourite Songs above custom playlists
       await tester.tap(find.text('Playlists'));
       await tester.pumpAndSettle();
 
       expect(find.text('Your Playlists · 1'), findsOneWidget);
+      expect(find.text('Favourite Songs'), findsOneWidget);
+      expect(find.text('1 song'), findsOneWidget);
       expect(find.text('Late Night Drive'), findsOneWidget);
       expect(find.byTooltip('New Playlist'), findsOneWidget);
+      expect(find.byTooltip('Play Favourite Songs'), findsOneWidget);
+
+      final favCardRect =
+          tester.getRect(find.byKey(const Key('library_favourite_songs_card')));
+      final customPlaylistRect = tester.getRect(find.text('Late Night Drive'));
+      expect(favCardRect.top, lessThan(customPlaylistRect.top));
+
+      // Pinned Favourite Songs card has no delete button
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('library_favourite_songs_card')),
+          matching: find.byType(PopupMenuButton<String>),
+        ),
+        findsNothing,
+      );
+
+      // Tapping Favourite Songs Play button starts favorites queue sequentially from index 0
+      await tester.tap(find.byTooltip('Play Favourite Songs'));
+      await tester.pump();
+      expect(playback.playSongCalls, equals(1));
+      expect(playback.lastQueue?.length, equals(1));
 
       await tester.tap(find.byTooltip('New Playlist'));
       await tester.pumpAndSettle();
@@ -1102,6 +1127,881 @@ void main() {
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump(const Duration(seconds: 11));
+    });
+
+    testWidgets('Library Playlists pins Favourite Songs with 0 custom playlists and tapping opens Favourite Songs screen', (tester) async {
+      await DatabaseService.toggleLike(
+        const Song(id: 'fav_only_1', title: 'Track A', artist: 'Artist A', thumbnailUrl: ''),
+      );
+      await DatabaseService.toggleLike(
+        const Song(id: 'fav_only_2', title: 'Track B', artist: 'Artist B', thumbnailUrl: ''),
+      );
+
+      final library = LibraryProvider();
+      final playback = _TestPlaybackProvider();
+
+      await tester.pumpWidget(
+        wrapPhone(
+          tester: tester,
+          child: const LibraryScreen(),
+          libraryProvider: library,
+          playbackProvider: playback,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Playlists'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Your Playlists'), findsOneWidget);
+      expect(find.byTooltip('New Playlist'), findsOneWidget);
+      expect(find.text('Favourite Songs'), findsOneWidget);
+      expect(find.text('2 songs'), findsOneWidget);
+      expect(find.text('No custom playlists yet'), findsOneWidget);
+      expect(find.text('Create Playlist'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('library_favourite_songs_card')));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(LikedSongsScreen), findsOneWidget);
+      expect(find.text('Favourite Songs'), findsOneWidget);
+      expect(find.text('Track A'), findsOneWidget);
+      expect(find.text('Track B'), findsOneWidget);
+    });
+
+    testWidgets('Library tabs update active pill in place from Overview to Local without sliding over Playlists', (tester) async {
+      final library = LibraryProvider();
+      final playback = _TestPlaybackProvider();
+
+      await tester.pumpWidget(
+        wrapPhone(
+          tester: tester,
+          child: const LibraryScreen(),
+          libraryProvider: library,
+          playbackProvider: playback,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // No TabBar sliding indicator widget
+      expect(find.byType(TabBar), findsNothing);
+
+      final themeColorScheme =
+          Theme.of(tester.element(find.byType(LibraryScreen))).colorScheme;
+
+      Color? pillColorFor(String keyName) {
+        final animContainer = tester.widget<AnimatedContainer>(
+          find.descendant(
+            of: find.byKey(Key(keyName)),
+            matching: find.byType(AnimatedContainer),
+          ),
+        );
+        expect(animContainer.duration, equals(const Duration(milliseconds: 180)));
+        expect(animContainer.curve, equals(Curves.easeOutCubic));
+        return (animContainer.decoration as BoxDecoration?)?.color;
+      }
+
+      expect(pillColorFor('library_tab_overview'), equals(themeColorScheme.primary));
+      expect(pillColorFor('library_tab_playlists'), equals(Colors.transparent));
+      expect(pillColorFor('library_tab_local'), equals(Colors.transparent));
+
+      // Switch directly from Overview (0) to Local (2) and check intermediate frames
+      await tester.tap(find.byKey(const Key('library_tab_local')));
+      await tester.pump();
+      expect(pillColorFor('library_tab_overview'), equals(Colors.transparent));
+      expect(pillColorFor('library_tab_playlists'), equals(Colors.transparent));
+      expect(pillColorFor('library_tab_local'), equals(themeColorScheme.primary));
+
+      await tester.pump(const Duration(milliseconds: 80));
+      expect(pillColorFor('library_tab_playlists'), equals(Colors.transparent));
+      expect(pillColorFor('library_tab_local'), equals(themeColorScheme.primary));
+
+      await tester.pumpAndSettle();
+      expect(pillColorFor('library_tab_overview'), equals(Colors.transparent));
+      expect(pillColorFor('library_tab_playlists'), equals(Colors.transparent));
+      expect(pillColorFor('library_tab_local'), equals(themeColorScheme.primary));
+      expect(find.text('Access Local Music'), findsOneWidget);
+    });
+
+    testWidgets('FloatingNavBar renders only one active pill and disables Material focus/hover overlays across Search focus lifecycle', (tester) async {
+      await DatabaseService.saveCachedFeed('All:English', const [
+        Song(id: 'nav_ghost_1', title: 'Track 1', artist: 'Artist 1', duration: 180, thumbnailUrl: ''),
+      ]);
+
+      await tester.pumpWidget(
+        wrapPhone(tester: tester, child: const MainScaffold()),
+      );
+      await tester.pump();
+
+      final colorScheme =
+          Theme.of(tester.element(find.byType(MainScaffold))).colorScheme;
+
+      // Verify every nav destination InkWell disables focus, hover, highlight, and splash overlays
+      for (final label in ['Home', 'Search', 'Library', 'Settings']) {
+        final inkWell = tester.widget<InkWell>(
+          find.descendant(
+            of: find.byTooltip(label),
+            matching: find.byType(InkWell),
+          ),
+        );
+        expect(inkWell.canRequestFocus, isFalse);
+        expect(inkWell.splashColor, equals(Colors.transparent));
+        expect(inkWell.highlightColor, equals(Colors.transparent));
+        expect(inkWell.hoverColor, equals(Colors.transparent));
+        expect(inkWell.focusColor, equals(Colors.transparent));
+        expect(inkWell.splashFactory, equals(NoSplash.splashFactory));
+        expect(inkWell.overlayColor?.resolve({}), equals(Colors.transparent));
+      }
+
+      int activePillCount() {
+        int count = 0;
+        for (final label in ['Home', 'Search', 'Library', 'Settings']) {
+          if (find.byKey(Key('nav_active_pill_$label')).evaluate().isNotEmpty) {
+            final container = tester.widget<Container>(
+              find.byKey(Key('nav_active_pill_$label')),
+            );
+            final deco = container.decoration as BoxDecoration?;
+            if (deco?.color == colorScheme.primaryContainer) {
+              count++;
+            }
+          }
+        }
+        return count;
+      }
+
+      expect(activePillCount(), equals(1));
+      expect(find.byKey(const Key('nav_active_pill_Home')), findsOneWidget);
+
+      // Tap Search, focus SearchBar, open/close keyboard, then switch to Library
+      await tester.tap(find.byTooltip('Search'));
+      await tester.pumpAndSettle();
+      expect(activePillCount(), equals(1));
+      expect(find.byKey(const Key('nav_active_pill_Search')), findsOneWidget);
+
+      await tester.tap(find.byType(SearchBar));
+      await tester.pump();
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      await tester.pump();
+      tester.view.viewInsets = FakeViewPadding.zero;
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Library'));
+      await tester.pumpAndSettle();
+
+      expect(activePillCount(), equals(1));
+      expect(find.byKey(const Key('nav_active_pill_Library')), findsOneWidget);
+      expect(find.byKey(const Key('nav_active_pill_Search')), findsNothing);
+      expect(find.byKey(const Key('nav_active_pill_Home')), findsNothing);
+      expect(find.byKey(const Key('nav_active_pill_Settings')), findsNothing);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 11));
+    });
+
+    testWidgets('MiniPlayer enforces >= 20dp gap between text column and play/pause button at 360dp and 1.4x text scale without overflow', (tester) async {
+      final playback = _TestPlaybackProvider()
+        ..setActive(
+          song: const Song(
+            id: 'mp_long_1',
+            title: 'An Extraordinarily Long Song Title That Must Ellipsize Cleanly',
+            artist: 'An Extraordinarily Long Artist Credits String With Multiple Collaborators',
+            duration: 245,
+            thumbnailUrl: '',
+          ),
+          isPlaying: true,
+          position: const Duration(seconds: 30),
+          duration: const Duration(seconds: 245),
+        );
+
+      await tester.pumpWidget(
+        wrapPhone(
+          tester: tester,
+          size: const Size(360, 780),
+          textScale: 1.4,
+          playbackProvider: playback,
+          child: const Scaffold(
+            body: Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: 14),
+                child: MiniPlayer(),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+
+      final titleFinder = find.text(
+        'An Extraordinarily Long Song Title That Must Ellipsize Cleanly',
+      );
+      final textColumnFinder = find.ancestor(
+        of: titleFinder,
+        matching: find.byType(Column),
+      ).first;
+      final pauseButtonFinder = find.descendant(
+        of: find.byType(MiniPlayer),
+        matching: find.byTooltip('Pause'),
+      );
+
+      final textRect = tester.getRect(textColumnFinder);
+      final pauseRect = tester.getRect(pauseButtonFinder);
+      expect(pauseRect.left - textRect.right, greaterThanOrEqualTo(20.0));
+    });
+
+    testWidgets('SongTile renders animated equalizer bars while playing, pauses cleanly, respects disableAnimations, scopes rebuilds via Selector, and disposes cleanly', (tester) async {
+      const songA = Song(
+        id: 'eq_a',
+        title: 'First Track',
+        artist: 'Artist One',
+        duration: 200,
+        thumbnailUrl: '',
+      );
+      const songB = Song(
+        id: 'eq_b',
+        title: 'Second Track',
+        artist: 'Artist Two',
+        duration: 210,
+        thumbnailUrl: '',
+      );
+
+      final playback = _TestPlaybackProvider()
+        ..setActive(
+          song: songA,
+          isPlaying: true,
+          duration: const Duration(seconds: 200),
+        );
+      final library = LibraryProvider();
+
+      await tester.pumpWidget(
+        wrapPhone(
+          tester: tester,
+          playbackProvider: playback,
+          libraryProvider: library,
+          child: const Scaffold(
+            body: Column(
+              children: [
+                SongTile(song: songA),
+                SongTile(song: songB),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Active playing song shows equalizer bars; inactive song does not
+      expect(find.byKey(const Key('playing_equalizer_bars_eq_a')), findsOneWidget);
+      expect(find.byKey(const Key('playing_equalizer_bars_eq_b')), findsNothing);
+
+      final eqPaintFinder = find.descendant(
+        of: find.byKey(const Key('playing_equalizer_bars_eq_a')),
+        matching: find.byType(CustomPaint),
+      );
+      expect(eqPaintFinder, findsOneWidget);
+
+      // Verify animated progress advances smoothly while playing
+      final painterFrame0 = tester.widget<CustomPaint>(eqPaintFinder).painter as dynamic;
+      final progress0 = painterFrame0.progress as double;
+      await tester.pump(const Duration(milliseconds: 250));
+      final painterFrame1 = tester.widget<CustomPaint>(eqPaintFinder).painter as dynamic;
+      final progress1 = painterFrame1.progress as double;
+      expect(progress1, isNot(equals(progress0)));
+
+      // Position-only updates must NOT rebuild any SongTile ListTile
+      final tileABeforeSeek = tester.widget<ListTile>(
+        find.ancestor(of: find.text('First Track'), matching: find.byType(ListTile)),
+      );
+      final tileBBeforeSeek = tester.widget<ListTile>(
+        find.ancestor(of: find.text('Second Track'), matching: find.byType(ListTile)),
+      );
+      await playback.seek(const Duration(seconds: 45));
+      await tester.pump();
+      expect(
+        identical(
+          tileABeforeSeek,
+          tester.widget<ListTile>(
+            find.ancestor(of: find.text('First Track'), matching: find.byType(ListTile)),
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        identical(
+          tileBBeforeSeek,
+          tester.widget<ListTile>(
+            find.ancestor(of: find.text('Second Track'), matching: find.byType(ListTile)),
+          ),
+        ),
+        isTrue,
+      );
+
+      // Play/pause toggle rebuilds ONLY matching SongTile (songA) and never songB
+      await playback.togglePlayPause();
+      await tester.pumpAndSettle(); // Succeeds cleanly -> ticker stopped on pause!
+
+      expect(
+        identical(
+          tileABeforeSeek,
+          tester.widget<ListTile>(
+            find.ancestor(of: find.text('First Track'), matching: find.byType(ListTile)),
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        identical(
+          tileBBeforeSeek,
+          tester.widget<ListTile>(
+            find.ancestor(of: find.text('Second Track'), matching: find.byType(ListTile)),
+          ),
+        ),
+        isTrue,
+      );
+      expect(find.byKey(const Key('playing_equalizer_bars_eq_a')), findsOneWidget);
+
+      // Respects MediaQuery.disableAnimations when actively playing (settles cleanly)
+      await playback.togglePlayPause();
+      await tester.pumpWidget(
+        wrapPhone(
+          tester: tester,
+          disableAnimations: true,
+          playbackProvider: playback,
+          libraryProvider: library,
+          child: const Scaffold(
+            body: Column(
+              children: [
+                SongTile(song: songA),
+                SongTile(song: songB),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('playing_equalizer_bars_eq_a')), findsOneWidget);
+
+      // Switching away or disposing leaves zero ticker leaks
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('SettingsScreen replaces DropdownButton with fixed-anchor PopupMenuPosition.under menus for Theme Mode and Streaming Quality', (tester) async {
+      final themeProvider = ThemeProvider()..setThemeMode(ThemeMode.system);
+
+      await tester.pumpWidget(
+        wrapPhone(
+          tester: tester,
+          themeProvider: themeProvider,
+          child: const SettingsScreen(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Zero DropdownButton widgets anywhere in SettingsScreen
+      expect(find.byType(DropdownButton<ThemeMode>), findsNothing);
+      expect(find.byType(DropdownButton<String>), findsNothing);
+      expect(find.byType(DropdownButtonHideUnderline), findsNothing);
+
+      final themeMenu = tester.widget<PopupMenuButton<ThemeMode>>(
+        find.byKey(const Key('settings_theme_mode_menu')),
+      );
+      expect(themeMenu.position, equals(PopupMenuPosition.under));
+      expect(themeMenu.offset, equals(const Offset(0, 6)));
+
+      final qualityMenu = tester.widget<PopupMenuButton<String>>(
+        find.byKey(const Key('settings_streaming_quality_menu')),
+      );
+      expect(qualityMenu.position, equals(PopupMenuPosition.under));
+      expect(qualityMenu.offset, equals(const Offset(0, 6)));
+
+      // Measure Theme Mode menu offset below trigger across System -> Light -> Dark (never jumps)
+      final systemTriggerRect = tester.getRect(
+        find.byKey(const Key('settings_theme_mode_menu')),
+      );
+
+      await tester.tap(find.byKey(const Key('settings_theme_mode_menu')));
+      await tester.pumpAndSettle();
+      final systemMenuTop = tester.getRect(
+        find.ancestor(
+          of: find.byType(PopupMenuItem<ThemeMode>).first,
+          matching: find.byType(Material),
+        ).first,
+      ).top;
+      expect(systemMenuTop - systemTriggerRect.bottom, closeTo(6.0, 1.0));
+      expect(find.byIcon(Icons.check_rounded), findsWidgets);
+
+      await tester.tap(find.text('Light').last);
+      await tester.pumpAndSettle();
+      expect(themeProvider.themeMode, equals(ThemeMode.light));
+
+      final lightTriggerRect = tester.getRect(
+        find.byKey(const Key('settings_theme_mode_menu')),
+      );
+      await tester.tap(find.byKey(const Key('settings_theme_mode_menu')));
+      await tester.pumpAndSettle();
+      final lightMenuTop = tester.getRect(
+        find.ancestor(
+          of: find.byType(PopupMenuItem<ThemeMode>).first,
+          matching: find.byType(Material),
+        ).first,
+      ).top;
+      expect(lightMenuTop - lightTriggerRect.bottom, closeTo(6.0, 1.0));
+
+      await tester.tap(find.text('Dark').last);
+      await tester.pumpAndSettle();
+      expect(themeProvider.themeMode, equals(ThemeMode.dark));
+
+      final darkTriggerRect = tester.getRect(
+        find.byKey(const Key('settings_theme_mode_menu')),
+      );
+      await tester.tap(find.byKey(const Key('settings_theme_mode_menu')));
+      await tester.pumpAndSettle();
+      final darkMenuTop = tester.getRect(
+        find.ancestor(
+          of: find.byType(PopupMenuItem<ThemeMode>).first,
+          matching: find.byType(Material),
+        ).first,
+      ).top;
+      expect(darkMenuTop - darkTriggerRect.bottom, closeTo(6.0, 1.0));
+
+      await tester.tap(find.text('System').last);
+      await tester.pumpAndSettle();
+      expect(themeProvider.themeMode, equals(ThemeMode.system));
+
+      // Verify Streaming Quality menu stays anchored below trigger for High -> Medium -> Low
+      final qualityTriggerRect = tester.getRect(
+        find.byKey(const Key('settings_streaming_quality_menu')),
+      );
+
+      await tester.tap(find.byKey(const Key('settings_streaming_quality_menu')));
+      await tester.pumpAndSettle();
+      final highMenuTop = tester.getRect(
+        find.ancestor(
+          of: find.byType(PopupMenuItem<String>).first,
+          matching: find.byType(Material),
+        ).first,
+      ).top;
+      expect(highMenuTop - qualityTriggerRect.bottom, closeTo(6.0, 1.0));
+
+      await tester.tap(find.text('Medium').last);
+      await tester.pumpAndSettle();
+      expect(DatabaseService.getAudioQuality(), equals('Medium'));
+
+      final mediumTriggerRect = tester.getRect(
+        find.byKey(const Key('settings_streaming_quality_menu')),
+      );
+      await tester.tap(find.byKey(const Key('settings_streaming_quality_menu')));
+      await tester.pumpAndSettle();
+      final mediumMenuTop = tester.getRect(
+        find.ancestor(
+          of: find.byType(PopupMenuItem<String>).first,
+          matching: find.byType(Material),
+        ).first,
+      ).top;
+      expect(mediumMenuTop - mediumTriggerRect.bottom, closeTo(6.0, 1.0));
+
+      await tester.tap(find.text('Low').last);
+      await tester.pumpAndSettle();
+      expect(DatabaseService.getAudioQuality(), equals('Low'));
+
+      final lowTriggerRect = tester.getRect(
+        find.byKey(const Key('settings_streaming_quality_menu')),
+      );
+      await tester.tap(find.byKey(const Key('settings_streaming_quality_menu')));
+      await tester.pumpAndSettle();
+      final lowMenuTop = tester.getRect(
+        find.ancestor(
+          of: find.byType(PopupMenuItem<String>).first,
+          matching: find.byType(Material),
+        ).first,
+      ).top;
+      expect(lowMenuTop - lowTriggerRect.bottom, closeTo(6.0, 1.0));
+
+      await tester.tap(find.text('High').last);
+      await tester.pumpAndSettle();
+      expect(DatabaseService.getAudioQuality(), equals('High'));
+    });
+
+    testWidgets('Playlist tracks support swipe-left-to-reveal delete without auto-delete, single open row coordination, and Remove from playlist menu fallback', (tester) async {
+      await DatabaseService.createPlaylist('Roadtrip Mix');
+      final playlistId = DatabaseService.getPlaylists().first.id;
+      const s1 = Song(id: 'pl_s1', title: 'Track Alpha', artist: 'Artist 1', duration: 190, thumbnailUrl: '');
+      const s2 = Song(id: 'pl_s2', title: 'Track Beta', artist: 'Artist 2', duration: 205, thumbnailUrl: '');
+      const s3 = Song(id: 'pl_s3', title: 'Track Gamma', artist: 'Artist 3', duration: 215, thumbnailUrl: '');
+      await DatabaseService.addSongToPlaylist(playlistId, s1);
+      await DatabaseService.addSongToPlaylist(playlistId, s2);
+      await DatabaseService.addSongToPlaylist(playlistId, s3);
+
+      final library = LibraryProvider();
+      final playback = _TestPlaybackProvider();
+
+      await tester.pumpWidget(
+        wrapPhone(
+          tester: tester,
+          libraryProvider: library,
+          playbackProvider: playback,
+          child: const LibraryScreen(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Playlists'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Roadtrip Mix'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('3 tracks'), findsOneWidget);
+      expect(find.text('Track Alpha'), findsOneWidget);
+      expect(find.text('Track Beta'), findsOneWidget);
+      expect(find.text('Track Gamma'), findsOneWidget);
+
+      // 1. Swiping left on Track Alpha reveals delete button without deleting track
+      await tester.drag(find.text('Track Alpha'), const Offset(-80, 0));
+      await tester.pumpAndSettle();
+      expect(find.text('Track Alpha'), findsOneWidget);
+      expect(find.byKey(const Key('swipe_delete_button_pl_s1')), findsOneWidget);
+      expect(
+        tester.getSize(find.byKey(const Key('swipe_delete_button_pl_s1'))).width,
+        greaterThanOrEqualTo(48.0),
+      );
+      expect(
+        tester.getSize(find.byKey(const Key('swipe_delete_button_pl_s1'))).height,
+        greaterThanOrEqualTo(48.0),
+      );
+
+      // 2. Swiping left on Track Beta closes Track Alpha's delete button (only 1 open at a time)
+      await tester.drag(find.text('Track Beta'), const Offset(-80, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('swipe_delete_button_pl_s1')), findsNothing);
+      expect(find.byKey(const Key('swipe_delete_button_pl_s2')), findsOneWidget);
+
+      // 3. Tapping open Track Beta row closes reveal without triggering playback
+      final betaSwipeRow = find.byKey(ValueKey('playlist_swipe_${playlistId}_pl_s2'));
+      await tester.tapAt(
+        tester.getTopLeft(betaSwipeRow) + const Offset(60, 24),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('swipe_delete_button_pl_s2')), findsNothing);
+      expect(playback.playSongCalls, equals(0));
+
+      // 4. Swipe left then swipe right closes cleanly
+      await tester.drag(find.text('Track Beta'), const Offset(-80, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('swipe_delete_button_pl_s2')), findsOneWidget);
+      await tester.drag(betaSwipeRow, const Offset(80, 0), warnIfMissed: false);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('swipe_delete_button_pl_s2')), findsNothing);
+
+      // 5. Swipe left on Track Beta and tap revealed delete button removes it cleanly
+      await tester.drag(find.text('Track Beta'), const Offset(-80, 0));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('swipe_delete_button_pl_s2')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Track Beta'), findsNothing);
+      expect(find.text('2 tracks'), findsOneWidget);
+      expect(
+        library.playlists.first.songs.map((s) => s.id).toList(),
+        equals(['pl_s1', 'pl_s3']),
+      );
+      expect(
+        DatabaseService.getPlaylists().first.songs.map((s) => s.id).toList(),
+        equals(['pl_s1', 'pl_s3']),
+      );
+
+      // 6. 3-dot overflow menu "Remove from playlist" removes Track Gamma cleanly
+      final gammaRow = find.ancestor(
+        of: find.text('Track Gamma'),
+        matching: find.byType(SongTile),
+      );
+      await tester.tap(
+        find.descendant(
+          of: gammaRow,
+          matching: find.byIcon(Icons.more_vert_rounded),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Remove from playlist'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Track Gamma'), findsNothing);
+      expect(find.text('1 track'), findsOneWidget);
+      expect(
+        library.playlists.first.songs.map((s) => s.id).toList(),
+        equals(['pl_s1']),
+      );
+    });
+
+    testWidgets('LikedSongsScreen supports swipe-left-to-reveal removal from Favourite Songs', (tester) async {
+      await DatabaseService.toggleLike(
+        const Song(id: 'fav_sw_1', title: 'Heart One', artist: 'Artist', thumbnailUrl: ''),
+      );
+      await DatabaseService.toggleLike(
+        const Song(id: 'fav_sw_2', title: 'Heart Two', artist: 'Artist', thumbnailUrl: ''),
+      );
+
+      final library = LibraryProvider();
+      final playback = _TestPlaybackProvider();
+
+      await tester.pumpWidget(
+        wrapPhone(
+          tester: tester,
+          libraryProvider: library,
+          playbackProvider: playback,
+          child: const LikedSongsScreen(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.drag(find.text('Heart Two'), const Offset(-80, 0));
+      await tester.pumpAndSettle();
+      expect(find.text('Heart Two'), findsOneWidget);
+      expect(find.byKey(const Key('swipe_delete_button_fav_sw_2')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('swipe_delete_button_fav_sw_2')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Heart Two'), findsNothing);
+      expect(find.text('1 song'), findsOneWidget);
+      expect(library.likedSongs.map((s) => s.id).toList(), equals(['fav_sw_1']));
+    });
+  });
+
+  group('Playtime Hero Card, Bar Chart & Play Logs Tests', () {
+    test('formatSplitPlaytime and formatCompactPlaytime format <1h and >=1h accurately', () {
+      expect(DatabaseService.formatSplitPlaytime(0).summary, equals('0 min / 0 sec'));
+      expect(DatabaseService.formatSplitPlaytime(3599).summary, equals('59 min / 59 sec'));
+      expect(DatabaseService.formatSplitPlaytime(3600).summary, equals('1 hr / 0 min'));
+      expect(DatabaseService.formatSplitPlaytime(8100).summary, equals('2 hr / 15 min'));
+
+      expect(DatabaseService.formatCompactPlaytime(0), equals('0s'));
+      expect(DatabaseService.formatCompactPlaytime(18), equals('18s'));
+      expect(DatabaseService.formatCompactPlaytime(872), equals('14m 32s'));
+      expect(DatabaseService.formatCompactPlaytime(8100), equals('2h 15m'));
+    });
+
+    test('Daily (7-day), Monthly (6-month), and SQLite listening_logs upgrade & session upsert work accurately', () async {
+      // Simulate upgrading an existing schema version 1 SQLite database lacking listening_logs
+      final legacyDb = await databaseFactoryFfi.openDatabase(
+        inMemoryDatabasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      await legacyDb.execute('''
+        CREATE TABLE app_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT
+        )
+      ''');
+      await legacyDb.insert('app_settings', {
+        'key': 'background_playback_enabled',
+        'value': '1',
+      });
+      await legacyDb.execute('''
+        CREATE TABLE last_playback_session (
+          id INTEGER PRIMARY KEY,
+          song_id TEXT,
+          title TEXT,
+          artist TEXT,
+          album TEXT,
+          thumbnail_url TEXT,
+          duration_ms INTEGER,
+          position_ms INTEGER,
+          queue_json TEXT,
+          queue_index INTEGER,
+          updated_at INTEGER
+        )
+      ''');
+
+      DatabaseService.setDatabaseForTesting(legacyDb);
+      await DatabaseService.init();
+
+      // Legacy data preserved and listening_logs table exists
+      expect(await DatabaseService.getBackgroundPlaybackEnabled(), isTrue);
+
+      final now = DateTime(2026, 11, 27, 20, 30);
+      const track1 = Song(
+        id: 'log_t1',
+        title: 'Midnight Echoes',
+        artist: 'Luna',
+        duration: 240,
+        thumbnailUrl: '',
+      );
+      const track2 = Song(
+        id: 'log_t2',
+        title: 'Sunrise Horizon',
+        artist: 'Sol',
+        duration: 180,
+        thumbnailUrl: '',
+      );
+
+      // Record across previous months & days (exact second retention > 60 days)
+      await DatabaseService.recordListeningSeconds(
+        3600,
+        date: DateTime(2026, 6, 15, 12, 0),
+      );
+      await DatabaseService.recordListeningSeconds(
+        900,
+        date: DateTime(2026, 11, 25, 18, 0),
+        song: track1,
+        sessionKey: 'sess_prev_day',
+      );
+      await DatabaseService.recordListeningSeconds(
+        18,
+        date: now,
+        song: track2,
+        sessionKey: 'sess_today_1',
+      );
+      // Same session updates cumulative duration instead of duplicating row
+      await DatabaseService.recordListeningSeconds(
+        14,
+        date: now,
+        song: track2,
+        sessionKey: 'sess_today_1',
+      );
+
+      expect(DatabaseService.getTodayListeningSeconds(now: now), equals(32));
+      expect(DatabaseService.getMonthlyListeningSeconds(now: now), equals(932));
+
+      final dailyBuckets =
+          DatabaseService.getDailyPlaytimeBuckets(days: 7, now: now);
+      expect(dailyBuckets.length, equals(7));
+      expect(dailyBuckets.last.label, equals('Fri'));
+      expect(dailyBuckets.last.seconds, equals(32));
+      expect(dailyBuckets[4].label, equals('Wed'));
+      expect(dailyBuckets[4].seconds, equals(900));
+
+      final monthlyBuckets =
+          DatabaseService.getMonthlyPlaytimeBuckets(months: 6, now: now);
+      expect(monthlyBuckets.length, equals(6));
+      expect(monthlyBuckets.first.label, equals('Jun'));
+      expect(monthlyBuckets.first.seconds, equals(3600));
+      expect(monthlyBuckets.last.label, equals('Nov'));
+      expect(monthlyBuckets.last.seconds, equals(932));
+
+      final logs = await DatabaseService.loadRecentPlayLogs();
+      expect(logs.length, equals(2));
+      expect(logs.first.songId, equals('log_t2'));
+      expect(logs.first.durationSeconds, equals(32));
+      expect(logs.last.songId, equals('log_t1'));
+      expect(logs.last.durationSeconds, equals(900));
+
+      await legacyDb.close();
+      DatabaseService.setDatabaseForTesting(null);
+    });
+
+    testWidgets('Playtime Hero Card renders split counter (<1h and >=1h), expands Daily/Monthly bar charts, inspects tapped bars, displays play logs, and never overflows at 360dp / 1.4x', (tester) async {
+      final now = DateTime.now();
+      final yesterday = now.subtract(const Duration(days: 1));
+      const song = Song(
+        id: 'pt_song_1',
+        title: 'Starlight Symphony',
+        artist: 'Aurora Ensemble',
+        duration: 210,
+        thumbnailUrl: '',
+      );
+
+      await tester.runAsync(() async {
+        await DatabaseService.recordListeningSeconds(
+          45,
+          date: yesterday,
+        );
+        await DatabaseService.recordListeningSeconds(
+          872, // 14 min 32 sec
+          date: now,
+          song: song,
+          sessionKey: 'pt_sess_1',
+        );
+      });
+
+      final library = LibraryProvider();
+      final playback = _TestPlaybackProvider();
+
+      // Render on narrow 360dp screen at 1.4x text scale
+      await tester.pumpWidget(
+        wrapPhone(
+          tester: tester,
+          size: const Size(360, 780),
+          textScale: 1.4,
+          libraryProvider: library,
+          playbackProvider: playback,
+          child: const LibraryScreen(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      // Collapsed split layout: Playtime, Daily badge, trend graph, 14 min / 32 sec
+      expect(find.byKey(const Key('library_playtime_hero_card')), findsOneWidget);
+      expect(find.byKey(const Key('playtime_trend_graph')), findsOneWidget);
+      expect(find.text('Playtime'), findsOneWidget);
+      expect(find.text('Daily'), findsOneWidget);
+      expect(find.text('Today'), findsOneWidget);
+      expect(find.text('14 min'), findsOneWidget);
+      expect(find.text('32 sec'), findsOneWidget);
+      expect(find.text('Recent Play Logs'), findsNothing);
+
+      // Tap card to expand -> shows Daily/Monthly chips, 7 daily bars, and play logs
+      await tester.tap(find.byKey(const Key('playtime_hero_toggle')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      expect(find.byKey(const Key('playtime_scope_daily')), findsOneWidget);
+      expect(find.byKey(const Key('playtime_scope_monthly')), findsOneWidget);
+      expect(find.text('Recent Play Logs'), findsOneWidget);
+      expect(find.text('Starlight Symphony'), findsOneWidget);
+      expect(find.text('14m 32s'), findsOneWidget);
+
+      // Tap yesterday's bar to inspect its exact duration
+      final yesterdayKey =
+          '${yesterday.year.toString().padLeft(4, '0')}-${yesterday.month.toString().padLeft(2, '0')}-${yesterday.day.toString().padLeft(2, '0')}';
+      await tester.tap(find.byKey(Key('playtime_bar_$yesterdayKey')));
+      await tester.pumpAndSettle();
+      expect(find.text('0 min'), findsOneWidget);
+      expect(find.text('45 sec'), findsOneWidget);
+      expect(find.textContaining('45s'), findsWidgets);
+
+      // Switch to Monthly scope -> updates to 6 month bars and This Month total
+      await tester.tap(find.byKey(const Key('playtime_scope_monthly')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('This Month'), findsOneWidget);
+      expect(find.text('Last 6 months'), findsOneWidget);
+
+      // Flushing more seconds crosses >= 3600s -> automatically switches to hr / min
+      await tester.runAsync(
+        () => DatabaseService.recordListeningSeconds(3600, date: now),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('1 hr'), findsOneWidget);
+
+      // Verify Light Mode renders cleanly with zero overflows as well
+      final tp = ThemeProvider()..setThemeMode(ThemeMode.light);
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<ThemeProvider>.value(value: tp),
+            ChangeNotifierProvider<LibraryProvider>.value(value: library),
+            ChangeNotifierProvider<PlaybackProvider>.value(value: playback),
+            ChangeNotifierProvider<SearchProvider>.value(value: SearchProvider()),
+          ],
+          child: MaterialApp(
+            theme: tp.lightTheme,
+            home: MediaQuery(
+              data: const MediaQueryData(
+                size: Size(360, 780),
+                textScaler: TextScaler.linear(1.4),
+              ),
+              child: const LibraryScreen(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
     });
   });
 }

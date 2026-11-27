@@ -346,13 +346,27 @@ void main() {
         expect(find.text('Local'), findsOneWidget);
         expect(find.text('Favorites'), findsNothing);
 
-        // Overview shows History at bottom instead of Recently Liked
+        // Overview no longer renders Liked Songs / Favourite Songs hero card; shows History at bottom
+        expect(find.byKey(const Key('library_liked_songs_card')), findsNothing);
+        expect(find.byKey(const Key('library_favourite_songs_card')), findsNothing);
+        expect(find.text('Liked Songs'), findsNothing);
+        expect(find.text('Favourite Songs'), findsNothing);
         expect(find.text('History'), findsOneWidget);
         expect(find.text('Recently Played Track'), findsOneWidget);
         expect(find.text('Recently Liked'), findsNothing);
 
-        // Tapping Play button on Liked Songs hero card clears shuffle and plays sequential queue at index 0
-        await tester.tap(find.byTooltip('Play Liked Songs'));
+        // Switch to Playlists tab -> pinned Favourite Songs card appears even with 0 custom playlists
+        await tester.tap(find.text('Playlists'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Your Playlists'), findsOneWidget);
+        expect(find.text('Favourite Songs'), findsOneWidget);
+        expect(find.text('2 songs'), findsOneWidget);
+        expect(find.text('No custom playlists yet'), findsOneWidget);
+        expect(find.byTooltip('New Playlist'), findsOneWidget);
+
+        // Tapping Play button on Favourite Songs card clears shuffle and plays sequential queue at index 0
+        await tester.tap(find.byTooltip('Play Favourite Songs'));
         await tester.pump();
         expect(playback.isShuffle, isFalse);
         expect(playback.playSongCalls, 1);
@@ -364,13 +378,14 @@ void main() {
           equals(['fav_2', 'fav_1']),
         );
 
-        // Tapping Liked Songs card body pushes LikedSongsScreen
-        await tester.tap(find.byKey(const Key('library_liked_songs_card')));
-        await tester.pumpAndSettle();
+        // Tapping Favourite Songs card body pushes LikedSongsScreen (titled Favourite Songs)
+        await tester.tap(find.byKey(const Key('library_favourite_songs_card')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
 
         expect(find.byType(LikedSongsScreen), findsOneWidget);
-        expect(find.text('Liked Songs'), findsOneWidget);
-        expect(find.text('2 songs'), findsOneWidget);
+        expect(find.text('Favourite Songs'), findsWidgets);
+        expect(find.text('2 songs'), findsWidgets);
         expect(find.text('First Liked Song'), findsOneWidget);
         expect(find.text('Second Liked Song'), findsOneWidget);
 
@@ -388,7 +403,7 @@ void main() {
     );
 
     testWidgets(
-      'Monthly listening sparkline card updates live when listening stats flush',
+      'Playtime Hero Card updates live in min/sec and Recent Play Logs when listening stats flush',
       (tester) async {
         final library = LibraryProvider();
         final playback = _LibraryPlaybackProvider();
@@ -407,14 +422,30 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.textContaining('0m'), findsOneWidget);
+        expect(find.text('Playtime'), findsOneWidget);
+        expect(find.text('0 min'), findsOneWidget);
+        expect(find.text('0 sec'), findsOneWidget);
 
         // Simulate listening flush (e.g. pause / track completion / app background)
-        await DatabaseService.recordListeningSeconds(180);
+        await tester.runAsync(
+          () => DatabaseService.recordListeningSeconds(
+            195,
+            song: const Song(
+              id: 'flush_song_1',
+              title: 'Flushed Track',
+              artist: 'Flush Artist',
+              duration: 210,
+              thumbnailUrl: '',
+            ),
+          ),
+        );
         await tester.pumpAndSettle();
 
-        expect(find.textContaining('3m'), findsOneWidget);
-        expect(find.textContaining('played this month'), findsOneWidget);
+        expect(find.text('3 min'), findsOneWidget);
+        expect(find.text('15 sec'), findsOneWidget);
+        expect(library.recentPlayLogs.length, 1);
+        expect(library.recentPlayLogs.first.title, 'Flushed Track');
+        expect(library.recentPlayLogs.first.durationSeconds, 195);
       },
     );
   });
@@ -900,7 +931,12 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 20));
 
         expect(DatabaseService.getMonthlyListeningSeconds(), 7);
+        expect(DatabaseService.getTodayListeningSeconds(), 7);
         expect(library.monthlyListeningSeconds, 7);
+        expect(library.todayListeningSeconds, 7);
+        expect(library.recentPlayLogs.length, 1);
+        expect(library.recentPlayLogs.first.songId, 'local_42');
+        expect(library.recentPlayLogs.first.durationSeconds, 7);
 
         await audioService.stop();
         await fakePlayer.closeStreams();

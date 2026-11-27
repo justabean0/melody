@@ -753,12 +753,14 @@ void main() {
 
         // 4. Queue bottom sheet
         await tester.tap(find.byKey(const Key('player_queue_button')));
-        await tester.pumpAndSettle();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
         expect(find.text('Up Next (1 track)'), findsOneWidget);
         expect(find.text('Raatan Lambiyan'), findsOneWidget);
 
         await tester.tap(find.text('Clear Queue'));
-        await tester.pumpAndSettle();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
         expect(playback.clearQueueCalls, 1);
         expect(find.text('Up Next'), findsOneWidget);
         expect(find.text('Raatan Lambiyan'), findsNothing);

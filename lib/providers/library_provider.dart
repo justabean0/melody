@@ -7,18 +7,28 @@ class LibraryProvider extends ChangeNotifier {
   List<Song> _likedSongs = [];
   List<Playlist> _playlists = [];
   List<Song> _history = [];
+  int _todayListeningSeconds = 0;
   int _monthlyListeningSeconds = 0;
   List<int> _dailyListeningSeries = const [];
+  List<PlaytimeBucket> _dailyPlaytimeBuckets = const [];
+  List<PlaytimeBucket> _monthlyPlaytimeBuckets = const [];
+  List<PlayLogEntry> _recentPlayLogs = const [];
   StreamSubscription<void>? _historySubscription;
   StreamSubscription<void>? _listeningStatsSubscription;
 
   List<Song> get likedSongs => List.unmodifiable(_likedSongs);
   List<Playlist> get playlists => List.unmodifiable(_playlists);
   List<Song> get history => List.unmodifiable(_history);
+  int get todayListeningSeconds => _todayListeningSeconds;
   int get monthlyListeningSeconds => _monthlyListeningSeconds;
   String get monthlyListeningLabel =>
       DatabaseService.formatListeningDuration(_monthlyListeningSeconds);
   List<int> get dailyListeningSeries => List.unmodifiable(_dailyListeningSeries);
+  List<PlaytimeBucket> get dailyPlaytimeBuckets =>
+      List.unmodifiable(_dailyPlaytimeBuckets);
+  List<PlaytimeBucket> get monthlyPlaytimeBuckets =>
+      List.unmodifiable(_monthlyPlaytimeBuckets);
+  List<PlayLogEntry> get recentPlayLogs => List.unmodifiable(_recentPlayLogs);
 
   LibraryProvider() {
     loadAll();
@@ -42,14 +52,22 @@ class LibraryProvider extends ChangeNotifier {
     _likedSongs = DatabaseService.getLikedSongs();
     _playlists = DatabaseService.getPlaylists();
     _history = DatabaseService.getHistory();
-    _monthlyListeningSeconds = DatabaseService.getMonthlyListeningSeconds();
-    _dailyListeningSeries = DatabaseService.getDailyListeningSeries(days: 14);
+    _syncListeningSnapshot();
     notifyListeners();
   }
 
-  void refreshListeningStats() {
+  void _syncListeningSnapshot() {
+    _todayListeningSeconds = DatabaseService.getTodayListeningSeconds();
     _monthlyListeningSeconds = DatabaseService.getMonthlyListeningSeconds();
     _dailyListeningSeries = DatabaseService.getDailyListeningSeries(days: 14);
+    _dailyPlaytimeBuckets = DatabaseService.getDailyPlaytimeBuckets(days: 7);
+    _monthlyPlaytimeBuckets =
+        DatabaseService.getMonthlyPlaytimeBuckets(months: 6);
+    _recentPlayLogs = DatabaseService.getRecentPlayLogs(limit: 25);
+  }
+
+  void refreshListeningStats() {
+    _syncListeningSnapshot();
     notifyListeners();
   }
 
@@ -69,6 +87,12 @@ class LibraryProvider extends ChangeNotifier {
 
   Future<void> addSongToPlaylist(String playlistId, Song song) async {
     await DatabaseService.addSongToPlaylist(playlistId, song);
+    _playlists = DatabaseService.getPlaylists();
+    notifyListeners();
+  }
+
+  Future<void> removeSongFromPlaylist(String playlistId, String songId) async {
+    await DatabaseService.removeSongFromPlaylist(playlistId, songId);
     _playlists = DatabaseService.getPlaylists();
     notifyListeners();
   }

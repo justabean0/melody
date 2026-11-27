@@ -25,6 +25,78 @@ class PlaybackSession {
   });
 }
 
+class PlaytimeBucket {
+  final String key;
+  final String label;
+  final int seconds;
+  final DateTime periodStart;
+
+  const PlaytimeBucket({
+    required this.key,
+    required this.label,
+    required this.seconds,
+    required this.periodStart,
+  });
+}
+
+class PlayLogEntry {
+  final String sessionKey;
+  final String songId;
+  final String title;
+  final String artist;
+  final String thumbnailUrl;
+  final int durationSeconds;
+  final DateTime playedAt;
+
+  const PlayLogEntry({
+    required this.sessionKey,
+    required this.songId,
+    required this.title,
+    required this.artist,
+    required this.thumbnailUrl,
+    required this.durationSeconds,
+    required this.playedAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'sessionKey': sessionKey,
+        'songId': songId,
+        'title': title,
+        'artist': artist,
+        'thumbnailUrl': thumbnailUrl,
+        'durationSeconds': durationSeconds,
+        'playedAtMs': playedAt.millisecondsSinceEpoch,
+      };
+
+  factory PlayLogEntry.fromJson(Map<String, dynamic> json) => PlayLogEntry(
+        sessionKey: (json['sessionKey'] ?? '').toString(),
+        songId: (json['songId'] ?? '').toString(),
+        title: (json['title'] ?? 'Unknown Track').toString(),
+        artist: (json['artist'] ?? 'Unknown Artist').toString(),
+        thumbnailUrl: (json['thumbnailUrl'] ?? '').toString(),
+        durationSeconds: (json['durationSeconds'] as num?)?.toInt() ?? 0,
+        playedAt: DateTime.fromMillisecondsSinceEpoch(
+          (json['playedAtMs'] as num?)?.toInt() ?? 0,
+        ),
+      );
+}
+
+class FormattedSplitPlaytime {
+  final String primaryValue;
+  final String primaryUnit;
+  final String secondaryValue;
+  final String secondaryUnit;
+
+  const FormattedSplitPlaytime({
+    required this.primaryValue,
+    required this.primaryUnit,
+    required this.secondaryValue,
+    required this.secondaryUnit,
+  });
+
+  String get summary => '$primaryValue $primaryUnit / $secondaryValue $secondaryUnit';
+}
+
 class DatabaseService {
   static const String _favoritesKey = 'melody_favorites';
   static const String _playlistsKey = 'melody_playlists';
@@ -45,6 +117,7 @@ class DatabaseService {
   static const String _batteryOptPromptShownKey = 'melody_battery_opt_prompt_shown';
   static const String _backgroundPlaybackKey = 'melody_background_playback_enabled';
   static const String _dailyListeningSecondsKey = 'melody_daily_listening_seconds';
+  static const String _playLogsFallbackKey = 'melody_play_logs_v1';
   static const String _downloadedTracksKey = 'melody_downloaded_tracks_v1';
   static const String _feedCacheVersion = 'v4';
 
@@ -56,15 +129,22 @@ class DatabaseService {
 
   static SharedPreferences? _prefs;
   static Database? _db;
+  static List<PlayLogEntry> _recentPlayLogsCache = const [];
 
   @visibleForTesting
   static void setDatabaseForTesting(Database? db) {
     _db = db;
+    if (db == null) {
+      _recentPlayLogsCache = const [];
+    }
   }
 
   @visibleForTesting
   static void setPrefsForTesting(SharedPreferences? prefs) {
     _prefs = prefs;
+    if (prefs == null) {
+      _recentPlayLogsCache = const [];
+    }
     musicLanguagesNotifier.value = getMusicLanguages();
   }
 
@@ -79,8 +159,11 @@ class DatabaseService {
 
         _db = await openDatabase(
           path,
-          version: 1,
+          version: 2,
           onCreate: (db, version) async {
+            await _createTables(db);
+          },
+          onUpgrade: (db, oldVersion, newVersion) async {
             await _createTables(db);
           },
           onOpen: (db) async {
@@ -97,6 +180,8 @@ class DatabaseService {
         debugPrint('DatabaseService _createTables error: $e');
       }
     }
+
+    await _refreshPlayLogsCache();
 
     try {
       final bgEnabled = await getBackgroundPlaybackEnabled();
@@ -141,6 +226,22 @@ class DatabaseService {
         queue_index INTEGER,
         updated_at INTEGER
       )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS listening_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_key TEXT UNIQUE,
+        song_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        artist TEXT NOT NULL,
+        thumbnail_url TEXT,
+        duration_seconds INTEGER NOT NULL,
+        played_at_ms INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_listening_logs_played_at
+      ON listening_logs (played_at_ms DESC)
     ''');
   }
 
@@ -356,6 +457,27 @@ class DatabaseService {
     }
   }
 
+  static Future<void> removeSongFromPlaylist(String playlistId, String songId) async {
+    final list = getPlaylists();
+    final index = list.indexWhere((p) => p.id == playlistId);
+    if (index < 0) return;
+    final p = list[index];
+    final updatedSongs = p.songs.where((s) => s.id != songId).toList();
+    if (updatedSongs.length == p.songs.length) return;
+    list[index] = Playlist(
+      id: p.id,
+      title: p.title,
+      author: p.author,
+      description: p.description,
+      thumbnailUrl: updatedSongs.isNotEmpty
+          ? updatedSongs.first.thumbnailUrl
+          : 'https://picsum.photos/300/300',
+      songCount: updatedSongs.length,
+      songs: updatedSongs,
+    );
+    await savePlaylists(list);
+  }
+
   static Future<void> deletePlaylist(String playlistId) async {
     final list = getPlaylists();
     list.removeWhere((p) => p.id == playlistId);
@@ -416,10 +538,38 @@ class DatabaseService {
     return {};
   }
 
-  /// Records locally played [seconds] into today's bucket (or [date] for testing).
+  static const List<String> _shortWeekdays = [
+    'Mon',
+    'Tue',
+    'Wed',
+    'Thu',
+    'Fri',
+    'Sat',
+    'Sun',
+  ];
+
+  static const List<String> _shortMonths = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+
+  /// Records locally played [seconds] into today's bucket (or [date] for testing)
+  /// and optionally updates the detailed play log for [song] / [sessionKey].
   static Future<void> recordListeningSeconds(
     int seconds, {
     DateTime? date,
+    Song? song,
+    String? sessionKey,
   }) async {
     if (seconds <= 0) return;
     final now = date ?? DateTime.now();
@@ -427,13 +577,200 @@ class DatabaseService {
     final map = _readDailyListeningMap();
     map[key] = (map[key] ?? 0) + seconds;
 
-    // Keep at most the most recent 60 days of daily buckets
-    final cutoff = now.subtract(const Duration(days: 60));
+    // Retain at least 12 months (366 days) of second-accurate daily buckets for 6-month charts
+    final cutoff = now.subtract(const Duration(days: 366));
     final cutoffKey = _dayKey(cutoff);
     map.removeWhere((k, _) => k.compareTo(cutoffKey) < 0);
 
     await _prefs?.setString(_dailyListeningSecondsKey, jsonEncode(map));
+
+    if (song != null) {
+      await _recordPlayLog(
+        seconds: seconds,
+        playedAt: now,
+        song: song,
+        sessionKey: sessionKey,
+      );
+    }
+
     _listeningStatsChangedController.add(null);
+  }
+
+  static Future<void> _recordPlayLog({
+    required int seconds,
+    required DateTime playedAt,
+    required Song song,
+    String? sessionKey,
+  }) async {
+    final resolvedKey = (sessionKey != null && sessionKey.trim().isNotEmpty)
+        ? sessionKey.trim()
+        : 'plog_${playedAt.microsecondsSinceEpoch}_${song.id}';
+    final playedAtMs = playedAt.millisecondsSinceEpoch;
+
+    if (_db != null) {
+      try {
+        final existing = await _db!.query(
+          'listening_logs',
+          columns: ['id', 'duration_seconds'],
+          where: 'session_key = ?',
+          whereArgs: [resolvedKey],
+          limit: 1,
+        );
+        if (existing.isNotEmpty) {
+          final prevDuration =
+              (existing.first['duration_seconds'] as num?)?.toInt() ?? 0;
+          await _db!.update(
+            'listening_logs',
+            {
+              'title': song.title,
+              'artist': song.artist,
+              'thumbnail_url': song.thumbnailUrl,
+              'duration_seconds': prevDuration + seconds,
+              'played_at_ms': playedAtMs,
+            },
+            where: 'session_key = ?',
+            whereArgs: [resolvedKey],
+          );
+        } else {
+          await _db!.insert(
+            'listening_logs',
+            {
+              'session_key': resolvedKey,
+              'song_id': song.id,
+              'title': song.title,
+              'artist': song.artist,
+              'thumbnail_url': song.thumbnailUrl,
+              'duration_seconds': seconds,
+              'played_at_ms': playedAtMs,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+          await _db!.rawDelete(
+            '''
+            DELETE FROM listening_logs
+            WHERE id NOT IN (
+              SELECT id FROM listening_logs ORDER BY played_at_ms DESC, id DESC LIMIT 200
+            )
+            ''',
+          );
+        }
+        await _refreshPlayLogsCache();
+        return;
+      } catch (e) {
+        debugPrint('DatabaseService: Error writing listening_logs: $e');
+      }
+    }
+
+    // Fallback JSON list in SharedPreferences when SQLite is not initialized
+    final list = List<PlayLogEntry>.from(_readFallbackPlayLogs());
+    final idx = list.indexWhere((e) => e.sessionKey == resolvedKey);
+    if (idx >= 0) {
+      final prev = list.removeAt(idx);
+      list.insert(
+        0,
+        PlayLogEntry(
+          sessionKey: resolvedKey,
+          songId: song.id,
+          title: song.title,
+          artist: song.artist,
+          thumbnailUrl: song.thumbnailUrl,
+          durationSeconds: prev.durationSeconds + seconds,
+          playedAt: playedAt,
+        ),
+      );
+    } else {
+      list.insert(
+        0,
+        PlayLogEntry(
+          sessionKey: resolvedKey,
+          songId: song.id,
+          title: song.title,
+          artist: song.artist,
+          thumbnailUrl: song.thumbnailUrl,
+          durationSeconds: seconds,
+          playedAt: playedAt,
+        ),
+      );
+    }
+    if (list.length > 50) {
+      list.removeRange(50, list.length);
+    }
+    await _prefs?.setString(
+      _playLogsFallbackKey,
+      jsonEncode(list.map((e) => e.toJson()).toList()),
+    );
+    _recentPlayLogsCache = List.unmodifiable(list);
+  }
+
+  static List<PlayLogEntry> _readFallbackPlayLogs() {
+    final raw = _prefs?.getString(_playLogsFallbackKey);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded
+            .whereType<Map>()
+            .map((item) => PlayLogEntry.fromJson(Map<String, dynamic>.from(item)))
+            .where((entry) => entry.durationSeconds > 0)
+            .toList();
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  static Future<void> _refreshPlayLogsCache({int limit = 50}) async {
+    if (_db != null) {
+      try {
+        final rows = await _db!.query(
+          'listening_logs',
+          orderBy: 'played_at_ms DESC, id DESC',
+          limit: limit,
+        );
+        _recentPlayLogsCache = List.unmodifiable(
+          rows
+              .map(
+                (r) => PlayLogEntry(
+                  sessionKey: (r['session_key'] ?? '').toString(),
+                  songId: (r['song_id'] ?? '').toString(),
+                  title: (r['title'] ?? 'Unknown Track').toString(),
+                  artist: (r['artist'] ?? 'Unknown Artist').toString(),
+                  thumbnailUrl: (r['thumbnail_url'] ?? '').toString(),
+                  durationSeconds: (r['duration_seconds'] as num?)?.toInt() ?? 0,
+                  playedAt: DateTime.fromMillisecondsSinceEpoch(
+                    (r['played_at_ms'] as num?)?.toInt() ?? 0,
+                  ),
+                ),
+              )
+              .where((entry) => entry.durationSeconds > 0)
+              .toList(),
+        );
+        return;
+      } catch (e) {
+        debugPrint('DatabaseService: Error reading listening_logs: $e');
+      }
+    }
+    _recentPlayLogsCache = List.unmodifiable(_readFallbackPlayLogs());
+  }
+
+  /// Returns recent detailed play logs synchronously from the active cache.
+  static List<PlayLogEntry> getRecentPlayLogs({int limit = 25}) {
+    if (_recentPlayLogsCache.length <= limit) {
+      return _recentPlayLogsCache;
+    }
+    return List.unmodifiable(_recentPlayLogsCache.take(limit));
+  }
+
+  /// Queries recent detailed play logs directly from SQLite (or fallback store).
+  static Future<List<PlayLogEntry>> loadRecentPlayLogs({int limit = 50}) async {
+    await _refreshPlayLogsCache(limit: limit);
+    return getRecentPlayLogs(limit: limit);
+  }
+
+  /// Returns total local listening seconds recorded for today (or [now]).
+  static int getTodayListeningSeconds({DateTime? now}) {
+    final ref = now ?? DateTime.now();
+    final map = _readDailyListeningMap();
+    return map[_dayKey(ref)] ?? 0;
   }
 
   /// Returns total local listening seconds recorded in the current calendar month.
@@ -461,6 +798,95 @@ class DatabaseService {
       final day = today.subtract(Duration(days: count - 1 - i));
       return map[_dayKey(day)] ?? 0;
     });
+  }
+
+  /// Returns structured daily buckets for the trailing [days] ending at [now] (oldest to newest).
+  static List<PlaytimeBucket> getDailyPlaytimeBuckets({
+    int days = 7,
+    DateTime? now,
+  }) {
+    final count = days < 1 ? 1 : days;
+    final ref = now ?? DateTime.now();
+    final today = DateTime(ref.year, ref.month, ref.day);
+    final map = _readDailyListeningMap();
+    return List<PlaytimeBucket>.generate(count, (i) {
+      final day = today.subtract(Duration(days: count - 1 - i));
+      final key = _dayKey(day);
+      return PlaytimeBucket(
+        key: key,
+        label: _shortWeekdays[day.weekday - 1],
+        seconds: map[key] ?? 0,
+        periodStart: day,
+      );
+    });
+  }
+
+  /// Returns structured monthly buckets for the trailing [months] ending at [now] (oldest to newest).
+  static List<PlaytimeBucket> getMonthlyPlaytimeBuckets({
+    int months = 6,
+    DateTime? now,
+  }) {
+    final count = months < 1 ? 1 : months;
+    final ref = now ?? DateTime.now();
+    final map = _readDailyListeningMap();
+
+    return List<PlaytimeBucket>.generate(count, (i) {
+      final offset = count - 1 - i;
+      final monthStart = DateTime(ref.year, ref.month - offset, 1);
+      final ymPrefix =
+          '${monthStart.year.toString().padLeft(4, '0')}-${monthStart.month.toString().padLeft(2, '0')}';
+      var sum = 0;
+      for (final entry in map.entries) {
+        if (entry.key.startsWith('$ymPrefix-') && entry.value > 0) {
+          sum += entry.value;
+        }
+      }
+      return PlaytimeBucket(
+        key: ymPrefix,
+        label: _shortMonths[monthStart.month - 1],
+        seconds: sum,
+        periodStart: monthStart,
+      );
+    });
+  }
+
+  /// Formats [totalSeconds] into split stacked playtime units:
+  /// - `< 3600s`: `min` on top, `sec` below (`0 min / 0 sec`, `59 min / 59 sec`)
+  /// - `>= 3600s`: `hr` on top, `min` below (`1 hr / 0 min`, `2 hr / 15 min`)
+  static FormattedSplitPlaytime formatSplitPlaytime(int totalSeconds) {
+    final safe = totalSeconds < 0 ? 0 : totalSeconds;
+    if (safe < 3600) {
+      final mins = safe ~/ 60;
+      final secs = safe % 60;
+      return FormattedSplitPlaytime(
+        primaryValue: '$mins',
+        primaryUnit: 'min',
+        secondaryValue: '$secs',
+        secondaryUnit: 'sec',
+      );
+    }
+    final hrs = safe ~/ 3600;
+    final mins = (safe % 3600) ~/ 60;
+    return FormattedSplitPlaytime(
+      primaryValue: '$hrs',
+      primaryUnit: 'hr',
+      secondaryValue: '$mins',
+      secondaryUnit: 'min',
+    );
+  }
+
+  /// Formats [totalSeconds] concisely for bar inspection & play logs (`18s`, `14m 32s`, `2h 15m`).
+  static String formatCompactPlaytime(int totalSeconds) {
+    final safe = totalSeconds < 0 ? 0 : totalSeconds;
+    if (safe < 60) return '${safe}s';
+    if (safe < 3600) {
+      final mins = safe ~/ 60;
+      final secs = safe % 60;
+      return '${mins}m ${secs}s';
+    }
+    final hrs = safe ~/ 3600;
+    final mins = (safe % 3600) ~/ 60;
+    return '${hrs}h ${mins}m';
   }
 
   /// Formats total listening seconds as compact hours (`36h`) or minutes (`0m` / `45m`).

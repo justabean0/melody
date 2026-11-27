@@ -335,23 +335,23 @@ class _SettingsScreenState extends State<SettingsScreen>
                             : 'Light theme',
                     style: TextStyle(color: colorScheme.onSurfaceVariant),
                   ),
-                  trailing: _SettingsDropdownPill<ThemeMode>(
+                  trailing: _SettingsMenuPill<ThemeMode>(
+                    menuKey: const Key('settings_theme_mode_menu'),
+                    tooltip: 'Select Theme Mode',
                     value: themeProvider.themeMode,
-                    onChanged: (mode) {
-                      if (mode != null) themeProvider.setThemeMode(mode);
-                    },
-                    items: const [
-                      DropdownMenuItem(
+                    onChanged: themeProvider.setThemeMode,
+                    options: const [
+                      _SettingsMenuOption(
                         value: ThemeMode.system,
-                        child: Text('System'),
+                        label: 'System',
                       ),
-                      DropdownMenuItem(
+                      _SettingsMenuOption(
                         value: ThemeMode.light,
-                        child: Text('Light'),
+                        label: 'Light',
                       ),
-                      DropdownMenuItem(
+                      _SettingsMenuOption(
                         value: ThemeMode.dark,
-                        child: Text('Dark'),
+                        label: 'Dark',
                       ),
                     ],
                   ),
@@ -451,13 +451,15 @@ class _SettingsScreenState extends State<SettingsScreen>
                     _streamingQualitySubtitle(_quality),
                     style: TextStyle(color: colorScheme.onSurfaceVariant),
                   ),
-                  trailing: _SettingsDropdownPill<String>(
+                  trailing: _SettingsMenuPill<String>(
+                    menuKey: const Key('settings_streaming_quality_menu'),
+                    tooltip: 'Select Streaming Quality',
                     value: _quality,
                     onChanged: _onQualityChanged,
-                    items: const [
-                      DropdownMenuItem(value: 'High', child: Text('High')),
-                      DropdownMenuItem(value: 'Medium', child: Text('Medium')),
-                      DropdownMenuItem(value: 'Low', child: Text('Low')),
+                    options: const [
+                      _SettingsMenuOption(value: 'High', label: 'High'),
+                      _SettingsMenuOption(value: 'Medium', label: 'Medium'),
+                      _SettingsMenuOption(value: 'Low', label: 'Low'),
                     ],
                   ),
                 ),
@@ -964,45 +966,123 @@ class _SettingsSectionCard extends StatelessWidget {
   }
 }
 
-class _SettingsDropdownPill<T> extends StatelessWidget {
+class _SettingsMenuOption<T> {
   final T value;
-  final ValueChanged<T?> onChanged;
-  final List<DropdownMenuItem<T>> items;
+  final String label;
 
-  const _SettingsDropdownPill({
+  const _SettingsMenuOption({
+    required this.value,
+    required this.label,
+  });
+}
+
+class _SettingsMenuPill<T> extends StatelessWidget {
+  final Key? menuKey;
+  final String tooltip;
+  final T value;
+  final ValueChanged<T> onChanged;
+  final List<_SettingsMenuOption<T>> options;
+
+  const _SettingsMenuPill({
+    this.menuKey,
+    required this.tooltip,
     required this.value,
     required this.onChanged,
-    required this.items,
+    required this.options,
   });
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      height: 36,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<T>(
-          value: value,
-          isDense: true,
-          borderRadius: BorderRadius.circular(14),
-          dropdownColor: colorScheme.surfaceContainerHigh,
-          icon: Icon(
-            Icons.keyboard_arrow_down_rounded,
-            size: 18,
-            color: colorScheme.onSurfaceVariant,
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final selectedLabel = options
+            .where((o) => o.value == value)
+            .map((o) => o.label)
+            .firstOrNull ??
+        options.first.label;
+
+    return PopupMenuButton<T>(
+      key: menuKey,
+      tooltip: tooltip,
+      position: PopupMenuPosition.under,
+      offset: const Offset(0, 6),
+      color: colorScheme.surfaceContainerHigh,
+      surfaceTintColor: Colors.transparent,
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      onSelected: onChanged,
+      itemBuilder: (_) => options.map((option) {
+        final isSelected = option.value == value;
+        return PopupMenuItem<T>(
+          value: option.value,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: isSelected
+                ? BoxDecoration(
+                    color: colorScheme.primaryContainer.withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(10),
+                  )
+                : null,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  option.label,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontSize: 13.5,
+                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                    color: isSelected
+                        ? colorScheme.onPrimaryContainer
+                        : colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                if (isSelected)
+                  Icon(
+                    Icons.check_rounded,
+                    size: 18,
+                    color: colorScheme.primary,
+                  )
+                else
+                  const SizedBox(width: 18),
+              ],
+            ),
           ),
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: colorScheme.onSurface,
-              ),
-          onChanged: onChanged,
-          items: items,
+        );
+      }).toList(),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        child: Center(
+          widthFactor: 1.0,
+          heightFactor: 1.0,
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 36),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  selectedLabel,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.keyboard_arrow_down_rounded,
+                  size: 18,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

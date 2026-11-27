@@ -190,6 +190,7 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   void _onSelectTab(int index) {
     if (_currentIndex == index) return;
+    FocusManager.instance.primaryFocus?.unfocus();
     const tabNames = ['Home', 'Search', 'Library', 'Settings'];
     final fromTab =
         _currentIndex < tabNames.length ? tabNames[_currentIndex] : 'Tab $_currentIndex';
@@ -440,24 +441,44 @@ class _FloatingNavDestination extends StatelessWidget {
           message: label,
           child: InkWell(
             onTap: onTap,
+            canRequestFocus: false,
+            splashColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            focusColor: Colors.transparent,
+            overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+            splashFactory: NoSplash.splashFactory,
             borderRadius: BorderRadius.circular(24),
             child: SizedBox(
               height: 60,
               child: Center(
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  curve: Curves.easeOutCubic,
+                child: SizedBox(
                   width: 56,
                   height: 34,
-                  decoration: BoxDecoration(
-                    color: selected ? activeBg : Colors.transparent,
-                    borderRadius: BorderRadius.circular(17),
-                  ),
-                  child: Center(
-                    child: iconBuilder(
-                      selected ? activeFg : inactiveFg,
-                      selected,
-                    ),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeOutCubic,
+                        child: selected
+                            ? Container(
+                                key: ValueKey('nav_active_pill_$label'),
+                                width: 56,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  color: activeBg,
+                                  borderRadius: BorderRadius.circular(17),
+                                ),
+                              )
+                            : const SizedBox.shrink(),
+                      ),
+                      iconBuilder(
+                        selected ? activeFg : inactiveFg,
+                        selected,
+                      ),
+                    ],
                   ),
                 ),
               ),
