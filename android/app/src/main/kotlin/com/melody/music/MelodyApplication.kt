@@ -290,5 +290,8 @@ class MelodyApplication : Application() {
         // 9. Setup Native Extractor Channel & Pre-warm
         MainActivity.registerExtractorChannel(engine.dartExecutor.binaryMessenger)
         MainActivity.prewarmExtractor()
+
+        // 10. Setup Scoped Storage Local Audio & MediaStore Channel
+        LocalAudioHandler.register(engine.dartExecutor.binaryMessenger, this) { currentActivity }
     }
 }

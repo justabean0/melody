@@ -477,5 +477,35 @@ void main() {
       expect(find.byType(TopResultPlayButton), findsNothing);
       expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
     });
+
+    testWidgets('Tapping Search Top Result card while another song is playing switches playback and activates progress ring', (tester) async {
+      final playback = _FakePlaybackProvider();
+      final search = SearchProvider()..setResultsForTesting(const SearchResult(topResult: topSong));
+      final library = LibraryProvider();
+
+      playback.setPlaybackState(
+        song: otherSong,
+        isPlaying: true,
+        position: const Duration(seconds: 45),
+        duration: const Duration(seconds: 200),
+      );
+
+      await tester.pumpWidget(buildSearchApp(playback: playback, search: search, library: library));
+      await tester.pump();
+
+      expect(findProgressRingPaint(tester), isNull);
+
+      await tester.tap(find.descendant(of: find.byType(SearchScreen), matching: find.text('Starboy')));
+      await tester.pump();
+
+      expect(playback.playSongCount, equals(1));
+      expect(playback.lastPlayedSong?.id, equals(topSong.id));
+      expect(playback.currentSong?.id, equals(topSong.id));
+      expect(findProgressRingPaint(tester), isNotNull);
+      expect(
+        find.descendant(of: find.byType(TopResultPlayButton), matching: find.byIcon(Icons.pause_rounded)),
+        findsOneWidget,
+      );
+    });
   });
 }

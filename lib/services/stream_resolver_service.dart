@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import 'anti_bot_service.dart';
 import 'audio_cache_service.dart';
+import 'database_service.dart';
 import 'innertube_version_manager.dart';
 import 'log_service.dart';
 import 'native_extractor_service.dart';
@@ -18,6 +19,22 @@ class CachedStream {
   CachedStream(this.url, this.expiresAt);
 
   bool get isExpired => DateTime.now().isAfter(expiresAt);
+}
+
+class DownloadStreamSelection {
+  final String url;
+  final String mimeType;
+  final String extension;
+  final int bitrateBps;
+  final int? itag;
+
+  const DownloadStreamSelection({
+    required this.url,
+    required this.mimeType,
+    required this.extension,
+    this.bitrateBps = 0,
+    this.itag,
+  });
 }
 
 class StreamResolverService {
@@ -72,8 +89,154 @@ class StreamResolverService {
     return 0;
   }
 
-  /// Clears in-memory stream cache
+  static int _parseItag(dynamic val) {
+    if (val == null) return 0;
+    if (val is int) return val;
+    return int.tryParse(val.toString()) ?? 0;
+  }
+
+  /// Orders candidate audio streams for the requested [quality] tier (`High`, `Medium`, `Low`).
   @visibleForTesting
+  static List<T> orderStreamsByQuality<T>(
+    List<T> candidates,
+    int Function(T) bitrateBps,
+    String quality, {
+    int Function(T)? itagOf,
+  }) {
+    if (candidates.length <= 1) return List<T>.from(candidates);
+    final tier = DatabaseService.normalizeAudioQuality(quality);
+    final ordered = List<T>.from(candidates);
+
+    int itagRank(T item) {
+      final tag = itagOf?.call(item) ?? 0;
+      if (tier == 'High') {
+        if (tag == 251) return 2;
+        if (tag == 140) return 1;
+      } else {
+        if (tag == 140) return 2;
+        if (tag == 251) return 1;
+      }
+      return 0;
+    }
+
+    ordered.sort((a, b) {
+      final ba = bitrateBps(a);
+      final bb = bitrateBps(b);
+      final aHasBitrate = ba > 0;
+      final bHasBitrate = bb > 0;
+      if (aHasBitrate != bHasBitrate) {
+        return aHasBitrate ? -1 : 1;
+      }
+
+      if (aHasBitrate && bHasBitrate) {
+        switch (tier) {
+          case 'Low':
+            final cmp = ba.compareTo(bb);
+            if (cmp != 0) return cmp;
+            break;
+          case 'Medium':
+            const targetBps = 128000;
+            final aInBand = ba >= 96000 && ba <= 144000;
+            final bInBand = bb >= 96000 && bb <= 144000;
+            if (aInBand != bInBand) {
+              return aInBand ? -1 : 1;
+            }
+            final aDist = (ba - targetBps).abs();
+            final bDist = (bb - targetBps).abs();
+            final distCmp = aDist.compareTo(bDist);
+            if (distCmp != 0) return distCmp;
+            final highTie = bb.compareTo(ba);
+            if (highTie != 0) return highTie;
+            break;
+          case 'High':
+          default:
+            final cmp = bb.compareTo(ba);
+            if (cmp != 0) return cmp;
+            break;
+        }
+      }
+
+      return itagRank(b).compareTo(itagRank(a));
+    });
+    return ordered;
+  }
+
+  static bool _isM4aMimeOrItag(String? mimeType, {String? formatName, int? itag}) {
+    final mime = (mimeType ?? '').toLowerCase();
+    final fmt = (formatName ?? '').toLowerCase();
+    return mime.contains('mp4') ||
+        mime.contains('m4a') ||
+        fmt.contains('m4a') ||
+        itag == 139 ||
+        itag == 140 ||
+        itag == 141;
+  }
+
+  /// Normalizes a raw MIME/format hint into a clean MIME type and file extension.
+  static ({String mimeType, String extension}) normalizeDownloadFormat(
+    String? rawMime, {
+    String? formatName,
+    int? itag,
+  }) {
+    final cleanMime = (rawMime ?? '').split(';').first.trim().toLowerCase();
+    if (_isM4aMimeOrItag(cleanMime, formatName: formatName, itag: itag)) {
+      return (mimeType: 'audio/mp4', extension: 'm4a');
+    }
+    if (cleanMime.contains('webm')) {
+      return (mimeType: 'audio/webm', extension: 'webm');
+    }
+    if (cleanMime.contains('mpeg') || cleanMime.contains('mp3')) {
+      return (mimeType: 'audio/mpeg', extension: 'mp3');
+    }
+    if (cleanMime.contains('ogg') || cleanMime.contains('opus')) {
+      return (mimeType: 'audio/ogg', extension: 'ogg');
+    }
+    if (cleanMime.startsWith('audio/')) {
+      final sub = cleanMime.substring('audio/'.length).replaceAll(RegExp(r'[^a-z0-9]'), '');
+      if (sub.isNotEmpty) {
+        return (mimeType: cleanMime, extension: sub == 'mp4' ? 'm4a' : sub);
+      }
+    }
+    return (mimeType: 'audio/mp4', extension: 'm4a');
+  }
+
+  /// Orders candidates preferring highest-bitrate M4A (AAC / audio/mp4) for offline downloads.
+  @visibleForTesting
+  static List<T> orderStreamsPreferM4a<T>(
+    List<T> candidates,
+    int Function(T) bitrateBps,
+    String? Function(T) mimeTypeOf, {
+    int Function(T)? itagOf,
+  }) {
+    if (candidates.length <= 1) return List<T>.from(candidates);
+    final ordered = List<T>.from(candidates);
+    ordered.sort((a, b) {
+      final aM4a = _isM4aMimeOrItag(
+        mimeTypeOf(a),
+        itag: itagOf?.call(a),
+      );
+      final bM4a = _isM4aMimeOrItag(
+        mimeTypeOf(b),
+        itag: itagOf?.call(b),
+      );
+      if (aM4a != bM4a) {
+        return aM4a ? -1 : 1;
+      }
+      final ba = bitrateBps(a);
+      final bb = bitrateBps(b);
+      final cmp = bb.compareTo(ba);
+      if (cmp != 0) return cmp;
+      final ta = itagOf?.call(a) ?? 0;
+      final tb = itagOf?.call(b) ?? 0;
+      return tb.compareTo(ta);
+    });
+    return ordered;
+  }
+
+  static String _cacheKey(String videoId, String quality) =>
+      '${DatabaseService.normalizeAudioQuality(quality)}_$videoId';
+
+  /// Clears in-memory stream cache
   static void clearCache() {
     _streamCache.clear();
   }
@@ -308,15 +471,15 @@ class StreamResolverService {
     debugPrint('StreamResolverService: Active Invidious instance pool updated (${_activeInstances.length} instances)');
   }
 
-  /// Invalidates a cached stream if playback encounters a 403 or error
+  /// Invalidates cached streams across all quality tiers for [videoId].
   static void invalidateCache(String videoId) {
-    _streamCache.remove(videoId);
+    _streamCache.removeWhere((key, _) => key == videoId || key.endsWith('_$videoId'));
     AudioCacheService.evict(videoId);
     debugPrint('StreamResolverService: Invalidated cache for $videoId');
   }
 
   /// Helper to record stream URL in cache with expiration
-  static void _saveToCache(String videoId, String url) {
+  static void _saveToCache(String videoId, String quality, String url) {
     DateTime expiresAt = DateTime.now().add(const Duration(minutes: 20));
     try {
       final uri = Uri.parse(url);
@@ -329,8 +492,9 @@ class StreamResolverService {
       }
     } catch (_) {}
 
-    _streamCache[videoId] = CachedStream(url, expiresAt);
-    debugPrint('StreamResolverService: Cached stream for $videoId (expires at $expiresAt)');
+    final key = _cacheKey(videoId, quality);
+    _streamCache[key] = CachedStream(url, expiresAt);
+    debugPrint('StreamResolverService: Cached stream for $key (expires at $expiresAt)');
   }
 
   /// Probes an audio stream URL using streaming HTTP headers to ensure
@@ -395,7 +559,25 @@ class StreamResolverService {
   }
 
   /// 1. HYBRID FAST PATH: Direct InnerTube player API (200-400ms)
-  static Future<String?> _tryInnerTubeFastPath(String videoId, {http.Client? client}) async {
+  static Future<String?> _tryInnerTubeFastPath(
+    String videoId, {
+    String quality = 'High',
+    http.Client? client,
+  }) async {
+    final res = await _tryInnerTubeFastPathWithMeta(
+      videoId,
+      quality: quality,
+      client: client,
+    );
+    return res?.url;
+  }
+
+  static Future<DownloadStreamSelection?> _tryInnerTubeFastPathWithMeta(
+    String videoId, {
+    String quality = 'High',
+    bool preferM4a = false,
+    http.Client? client,
+  }) async {
     try {
       final httpClient = client ?? clientOverride ?? _httpClient;
       final profile = InnerTubeVersionManager.currentProfile;
@@ -448,11 +630,36 @@ class StreamResolverService {
                 .toList();
 
             if (audioFormats.isNotEmpty) {
-              audioFormats.sort((a, b) =>
-                  (_parseBitrate(b['bitrate'])).compareTo(_parseBitrate(a['bitrate'])));
-              final directUrl = audioFormats.first['url'] as String;
-              debugPrint('InnerTube Fast Path: SUCCESS for $videoId in sub-second using ${profile.key}!');
-              return directUrl;
+              final ordered = preferM4a
+                  ? orderStreamsPreferM4a<dynamic>(
+                      audioFormats,
+                      (f) => _parseBitrate(f['bitrate']),
+                      (f) => f['mimeType'] as String?,
+                      itagOf: (f) => _parseItag(f['itag']),
+                    )
+                  : orderStreamsByQuality<dynamic>(
+                      audioFormats,
+                      (f) => _parseBitrate(f['bitrate']),
+                      quality,
+                      itagOf: (f) => _parseItag(f['itag']),
+                    );
+              final picked = ordered.first;
+              final directUrl = picked['url'] as String;
+              final pickedItag = _parseItag(picked['itag']);
+              final fmt = normalizeDownloadFormat(
+                picked['mimeType'] as String?,
+                itag: pickedItag,
+              );
+              debugPrint(
+                'InnerTube Fast Path: SUCCESS for $videoId ($quality) in sub-second using ${profile.key}!',
+              );
+              return DownloadStreamSelection(
+                url: directUrl,
+                mimeType: fmt.mimeType,
+                extension: fmt.extension,
+                bitrateBps: _parseBitrate(picked['bitrate']),
+                itag: pickedItag > 0 ? pickedItag : null,
+              );
             }
           }
         } else {
@@ -478,8 +685,29 @@ class StreamResolverService {
   static Future<String?> _extractAudioFromInstance(
     String instance,
     String videoId, {
+    String quality = 'High',
     Duration timeout = const Duration(seconds: 4),
     bool optimistic = false,
+    http.Client? client,
+  }) async {
+    final res = await _extractAudioWithMetaFromInstance(
+      instance,
+      videoId,
+      quality: quality,
+      timeout: timeout,
+      optimistic: optimistic,
+      client: client,
+    );
+    return res?.url;
+  }
+
+  static Future<DownloadStreamSelection?> _extractAudioWithMetaFromInstance(
+    String instance,
+    String videoId, {
+    String quality = 'High',
+    Duration timeout = const Duration(seconds: 4),
+    bool optimistic = false,
+    bool preferM4a = false,
     http.Client? client,
   }) async {
     try {
@@ -509,8 +737,7 @@ class StreamResolverService {
         return null;
       }
 
-      final directHighPriority = <Map<String, dynamic>>[];
-      final directOther = <Map<String, dynamic>>[];
+      final directGoogleVideo = <Map<String, dynamic>>[];
       final proxyOrNonGoogle = <Map<String, dynamic>>[];
 
       for (final f in adaptive) {
@@ -541,25 +768,43 @@ class StreamResolverService {
           };
 
           if (isDirectGoogleVideo) {
-            if (itag == 140 || itag == 251) {
-              directHighPriority.add(candidate);
-            } else {
-              directOther.add(candidate);
-            }
+            directGoogleVideo.add(candidate);
           } else {
             proxyOrNonGoogle.add(candidate);
           }
         }
       }
 
-      directHighPriority.sort((a, b) => (b['bitrate'] as int).compareTo(a['bitrate'] as int));
-      directOther.sort((a, b) => (b['bitrate'] as int).compareTo(a['bitrate'] as int));
-      proxyOrNonGoogle.sort((a, b) => (b['bitrate'] as int).compareTo(a['bitrate'] as int));
+      final sortedDirect = preferM4a
+          ? orderStreamsPreferM4a<Map<String, dynamic>>(
+              directGoogleVideo,
+              (c) => c['bitrate'] as int,
+              (c) => c['type'] as String?,
+              itagOf: (c) => c['itag'] as int,
+            )
+          : orderStreamsByQuality<Map<String, dynamic>>(
+              directGoogleVideo,
+              (c) => c['bitrate'] as int,
+              quality,
+              itagOf: (c) => c['itag'] as int,
+            );
+      final sortedProxy = preferM4a
+          ? orderStreamsPreferM4a<Map<String, dynamic>>(
+              proxyOrNonGoogle,
+              (c) => c['bitrate'] as int,
+              (c) => c['type'] as String?,
+              itagOf: (c) => c['itag'] as int,
+            )
+          : orderStreamsByQuality<Map<String, dynamic>>(
+              proxyOrNonGoogle,
+              (c) => c['bitrate'] as int,
+              quality,
+              itagOf: (c) => c['itag'] as int,
+            );
 
       final allCandidates = [
-        ...directHighPriority,
-        ...directOther,
-        ...proxyOrNonGoogle,
+        ...sortedDirect,
+        ...sortedProxy,
       ];
 
       for (final candidate in allCandidates) {
@@ -568,7 +813,18 @@ class StreamResolverService {
         // with the 2s Range: bytes=0-0 check before returning it.
         final isValid = await _probeAudioUrl(streamUrl, client: httpClient);
         if (isValid) {
-          return streamUrl;
+          final itag = candidate['itag'] as int;
+          final fmt = normalizeDownloadFormat(
+            candidate['type'] as String?,
+            itag: itag,
+          );
+          return DownloadStreamSelection(
+            url: streamUrl,
+            mimeType: fmt.mimeType,
+            extension: fmt.extension,
+            bitrateBps: candidate['bitrate'] as int,
+            itag: itag > 0 ? itag : null,
+          );
         }
       }
 
@@ -582,7 +838,12 @@ class StreamResolverService {
                 : Uri.parse(instance).resolve(streamUrl).toString();
             final isValid = await _probeAudioUrl(resolvedUrl, client: httpClient);
             if (isValid) {
-              return resolvedUrl;
+              final fmt = normalizeDownloadFormat(fs['type'] as String?);
+              return DownloadStreamSelection(
+                url: resolvedUrl,
+                mimeType: fmt.mimeType,
+                extension: fmt.extension,
+              );
             }
           }
         }
@@ -599,7 +860,24 @@ class StreamResolverService {
   /// Resolves direct stream via YoutubeExplode
   static Future<String?> _resolveViaYoutubeExplode(
     String videoId, {
+    String quality = 'High',
     bool optimistic = true,
+    http.Client? client,
+  }) async {
+    final res = await _resolveWithMetaViaYoutubeExplode(
+      videoId,
+      quality: quality,
+      optimistic: optimistic,
+      client: client,
+    );
+    return res?.url;
+  }
+
+  static Future<DownloadStreamSelection?> _resolveWithMetaViaYoutubeExplode(
+    String videoId, {
+    String quality = 'High',
+    bool optimistic = true,
+    bool preferM4a = false,
     http.Client? client,
   }) async {
     // Only skip in hermetic mock tests where clientOverride is explicitly provided
@@ -610,16 +888,28 @@ class StreamResolverService {
           .timeout(const Duration(milliseconds: 5500));
 
       final allAudio = manifest.audioOnly.toList();
-      final solidAudio = allAudio.where((s) => s.bitrate.bitsPerSecond >= 96000).toList();
-      final eligible = solidAudio.isNotEmpty ? solidAudio : allAudio;
+      final tier = DatabaseService.normalizeAudioQuality(quality);
+      final List<yt.AudioOnlyStreamInfo> eligible;
+      if (tier == 'Low' || preferM4a) {
+        eligible = allAudio;
+      } else {
+        final solidAudio = allAudio.where((s) => s.bitrate.bitsPerSecond >= 96000).toList();
+        eligible = solidAudio.isNotEmpty ? solidAudio : allAudio;
+      }
 
-      final priorityStreams = eligible.where((s) => s.tag == 140 || s.tag == 251).toList()
-        ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
-
-      final otherStreams = eligible.where((s) => s.tag != 140 && s.tag != 251).toList()
-        ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
-
-      final orderedCandidates = [...priorityStreams, ...otherStreams];
+      final orderedCandidates = preferM4a
+          ? orderStreamsPreferM4a<yt.AudioOnlyStreamInfo>(
+              eligible,
+              (s) => s.bitrate.bitsPerSecond,
+              (s) => s.codec.mimeType,
+              itagOf: (s) => s.tag,
+            )
+          : orderStreamsByQuality<yt.AudioOnlyStreamInfo>(
+              eligible,
+              (s) => s.bitrate.bitsPerSecond,
+              tier,
+              itagOf: (s) => s.tag,
+            );
 
       for (final s in orderedCandidates) {
         final streamUrl = s.url.toString();
@@ -629,7 +919,18 @@ class StreamResolverService {
             'Resolved direct audio stream for $videoId via YoutubeExplode (itag: ${s.tag}, bitrate: ${s.bitrate.bitsPerSecond}, size: ${sizeKb}KB)',
             category: 'stream',
           );
-          return streamUrl;
+          final fmt = normalizeDownloadFormat(
+            s.codec.mimeType,
+            formatName: s.container.name,
+            itag: s.tag,
+          );
+          return DownloadStreamSelection(
+            url: streamUrl,
+            mimeType: fmt.mimeType,
+            extension: fmt.extension,
+            bitrateBps: s.bitrate.bitsPerSecond,
+            itag: s.tag,
+          );
         }
       }
     } catch (e) {
@@ -644,6 +945,7 @@ class StreamResolverService {
     String query,
     String originalVideoId,
     String songTitle, {
+    String quality = 'High',
     Duration timeout = const Duration(seconds: 10),
     http.Client? client,
   }) async {
@@ -677,6 +979,7 @@ class StreamResolverService {
             final altAudioUrl = await _extractAudioFromInstance(
               instance,
               altVideoId,
+              quality: quality,
               timeout: extractTimeout,
               optimistic: false,
               client: httpClient,
@@ -709,6 +1012,7 @@ class StreamResolverService {
   /// - Logs start/win/failure with itag/size.
   static Future<String?> _hedgedParallelRace(
     String videoId, {
+    String quality = 'High',
     bool optimistic = true,
     bool skipCompanionProxy = false,
     http.Client? client,
@@ -738,7 +1042,7 @@ class StreamResolverService {
       ytLaunched = true;
       pendingRacers++;
       LogService.recordBreadcrumb('Hedged race: YoutubeExplode started for $videoId', category: 'stream');
-      _resolveViaYoutubeExplode(videoId, optimistic: optimistic, client: client).then((url) {
+      _resolveViaYoutubeExplode(videoId, quality: quality, optimistic: optimistic, client: client).then((url) {
         if (url != null) {
           win(url, 'YoutubeExplode');
         } else {
@@ -781,7 +1085,7 @@ class StreamResolverService {
     // Racer 1: Direct InnerTube fast path (if safe mode inactive)
     if (!AntiBotService.isSafeModeActive) {
       pendingRacers++;
-      _tryInnerTubeFastPath(videoId, client: client).then((url) {
+      _tryInnerTubeFastPath(videoId, quality: quality, client: client).then((url) {
         if (url != null) {
           win(url, 'InnerTube');
         } else {
@@ -809,6 +1113,7 @@ class StreamResolverService {
           return await _extractAudioFromInstance(
             inst,
             videoId,
+            quality: quality,
             timeout: const Duration(seconds: 4),
             optimistic: optimistic,
             client: client,
@@ -850,6 +1155,7 @@ class StreamResolverService {
   /// Fast racing solver for speculative pre-warming
   static Future<String?> _raceFastSolvers(
     String videoId, {
+    String quality = 'High',
     bool optimistic = true,
     http.Client? client,
   }) async {
@@ -869,7 +1175,7 @@ class StreamResolverService {
     }
 
     if (!AntiBotService.isSafeModeActive) {
-      _tryInnerTubeFastPath(videoId, client: client)
+      _tryInnerTubeFastPath(videoId, quality: quality, client: client)
           .then((u) => handleWinner(u, 'InnerTube'))
           .catchError((_) => handleWinner(null, 'InnerTube'));
     } else {
@@ -881,6 +1187,7 @@ class StreamResolverService {
     _extractAudioFromInstance(
       instance,
       videoId,
+      quality: quality,
       timeout: const Duration(seconds: 4),
       optimistic: optimistic,
       client: client,
@@ -894,19 +1201,24 @@ class StreamResolverService {
     String videoId, {
     String? songTitle,
     String? artist,
+    String? quality,
     bool optimistic = true,
     bool isSpeculative = false,
     bool skipCompanionProxy = false,
     http.Client? client,
   }) async {
+    final effectiveQuality =
+        DatabaseService.normalizeAudioQuality(quality ?? DatabaseService.getAudioQuality());
+    final cacheKey = _cacheKey(videoId, effectiveQuality);
+
     // 1. STREAM URL CACHE: Instant 0ms return if cached and unexpired
-    final cached = _streamCache[videoId];
+    final cached = _streamCache[cacheKey];
     if (cached != null && !cached.isExpired) {
       final isProxy = cached.url.contains('127.0.0.1') ||
           _activeInstances.any((inst) => cached.url.startsWith(inst));
       if (!skipCompanionProxy || !isProxy) {
-        LogService.recordBreadcrumb('Stream cache HIT for $videoId', category: 'stream');
-        debugPrint('StreamResolverService: Cache HIT for $videoId (0ms startup)');
+        LogService.recordBreadcrumb('Stream cache HIT for $cacheKey', category: 'stream');
+        debugPrint('StreamResolverService: Cache HIT for $cacheKey (0ms startup)');
         return cached.url;
       }
     }
@@ -916,11 +1228,11 @@ class StreamResolverService {
       throw Exception('Speculative resolution skipped due to active user playback');
     }
 
-    // Deduplicate simultaneous requests for same videoId (unless skipCompanionProxy)
+    // Deduplicate simultaneous requests for same videoId + quality (unless skipCompanionProxy)
     if (!skipCompanionProxy) {
-      final inFlight = _inFlightResolutions[videoId];
+      final inFlight = _inFlightResolutions[cacheKey];
       if (inFlight != null) {
-        LogService.recordBreadcrumb('Awaiting in-flight resolution for $videoId', category: 'stream');
+        LogService.recordBreadcrumb('Awaiting in-flight resolution for $cacheKey', category: 'stream');
         return await inFlight;
       }
     }
@@ -933,13 +1245,14 @@ class StreamResolverService {
       videoId,
       songTitle: songTitle,
       artist: artist,
+      quality: effectiveQuality,
       optimistic: optimistic,
       isSpeculative: isSpeculative,
       skipCompanionProxy: skipCompanionProxy,
       client: client,
     );
     if (!skipCompanionProxy) {
-      _inFlightResolutions[videoId] = future;
+      _inFlightResolutions[cacheKey] = future;
     }
 
     try {
@@ -947,7 +1260,7 @@ class StreamResolverService {
       return res;
     } finally {
       if (!skipCompanionProxy) {
-        _inFlightResolutions.remove(videoId);
+        _inFlightResolutions.remove(cacheKey);
       }
       if (!isSpeculative) {
         _activeUserResolutions--;
@@ -960,6 +1273,7 @@ class StreamResolverService {
     String videoId, {
     String? songTitle,
     String? artist,
+    required String quality,
     bool optimistic = true,
     bool isSpeculative = false,
     bool skipCompanionProxy = false,
@@ -967,26 +1281,27 @@ class StreamResolverService {
   }) async {
     final effectiveClient = client ?? clientOverride ?? _httpClient;
     LogService.recordBreadcrumb(
-      'Resolving stream for $videoId (optimistic: $optimistic, speculative: $isSpeculative, skipProxy: $skipCompanionProxy)',
+      'Resolving stream for $videoId (quality: $quality, optimistic: $optimistic, speculative: $isSpeculative, skipProxy: $skipCompanionProxy)',
       category: 'stream',
     );
 
     // Primary path (Android, user-initiated & speculative):
     // Resolve via on-device TeamNewPipe/NewPipeExtractor directly on the user's IP.
     try {
-      final nativeStream = await NativeExtractorService.resolveAudioStream(videoId);
+      final nativeStream =
+          await NativeExtractorService.resolveAudioStream(videoId, quality: quality);
       if (nativeStream != null && nativeStream.url.isNotEmpty) {
         final itagStr = nativeStream.itag != null ? 'itag: ${nativeStream.itag}, ' : '';
         final bitrateStr = nativeStream.bitrate != null ? 'bitrate: ${nativeStream.bitrate}kbps, ' : '';
         final formatStr = nativeStream.format != null ? 'format: ${nativeStream.format}' : '';
         LogService.recordBreadcrumb(
-          'Stream resolved via NewPipeExtractor for $videoId ($itagStr$bitrateStr$formatStr)',
+          'Stream resolved via NewPipeExtractor for $videoId ($quality: $itagStr$bitrateStr$formatStr)',
           category: 'stream',
         );
         debugPrint(
-          '⚡ Stream resolved via NewPipeExtractor for $videoId ($itagStr$bitrateStr$formatStr)',
+          '⚡ Stream resolved via NewPipeExtractor for $videoId ($quality: $itagStr$bitrateStr$formatStr)',
         );
-        _saveToCache(videoId, nativeStream.url);
+        _saveToCache(videoId, quality, nativeStream.url);
         return nativeStream.url;
       }
     } catch (e) {
@@ -998,9 +1313,14 @@ class StreamResolverService {
 
     if (isSpeculative) {
       // Speculative pre-warming only executes fast solvers
-      final racedUrl = await _raceFastSolvers(videoId, optimistic: optimistic, client: effectiveClient);
+      final racedUrl = await _raceFastSolvers(
+        videoId,
+        quality: quality,
+        optimistic: optimistic,
+        client: effectiveClient,
+      );
       if (racedUrl != null) {
-        _saveToCache(videoId, racedUrl);
+        _saveToCache(videoId, quality, racedUrl);
         return racedUrl;
       }
       throw Exception('Speculative stream resolution skipped heavy fallbacks for $videoId');
@@ -1009,13 +1329,14 @@ class StreamResolverService {
     // User-initiated resolution: Hedged parallel race
     final racedUrl = await _hedgedParallelRace(
       videoId,
+      quality: quality,
       optimistic: optimistic,
       skipCompanionProxy: skipCompanionProxy,
       client: effectiveClient,
     );
     if (racedUrl != null) {
-      LogService.recordBreadcrumb('Stream race WON for $videoId', category: 'stream');
-      _saveToCache(videoId, racedUrl);
+      LogService.recordBreadcrumb('Stream race WON for $videoId ($quality)', category: 'stream');
+      _saveToCache(videoId, quality, racedUrl);
       return racedUrl;
     }
 
@@ -1031,11 +1352,12 @@ class StreamResolverService {
         query,
         videoId,
         songTitle,
+        quality: quality,
         timeout: const Duration(seconds: 10),
         client: effectiveClient,
       );
       if (altAudio != null) {
-        _saveToCache(videoId, altAudio);
+        _saveToCache(videoId, quality, altAudio);
         return altAudio;
       }
     }
@@ -1045,16 +1367,115 @@ class StreamResolverService {
     throw Exception('Failed to resolve playable audio stream for video: $videoId');
   }
 
+  /// Resolves a stream selection specifically for offline downloads, preferring
+  /// the highest-bitrate M4A (AAC / `audio/mp4`) stream with safe fallback.
+  static Future<DownloadStreamSelection> resolveDownloadStream(
+    String videoId, {
+    String? songTitle,
+    String? artist,
+    http.Client? client,
+  }) async {
+    final effectiveClient = client ?? clientOverride ?? _httpClient;
+
+    // 1. Primary: On-device extractor preferring highest-bitrate M4A
+    try {
+      final nativeStream = await NativeExtractorService.resolveAudioStream(
+        videoId,
+        quality: 'High',
+        preferM4a: true,
+      );
+      if (nativeStream != null && nativeStream.url.isNotEmpty) {
+        final fmt = normalizeDownloadFormat(
+          nativeStream.mimeType,
+          formatName: nativeStream.format,
+          itag: nativeStream.itag,
+        );
+        return DownloadStreamSelection(
+          url: nativeStream.url,
+          mimeType: fmt.mimeType,
+          extension: fmt.extension,
+          bitrateBps: (nativeStream.bitrate ?? 0) * 1000,
+          itag: nativeStream.itag,
+        );
+      }
+    } catch (_) {}
+
+    // 2. InnerTube player fast path preferring M4A
+    if (!AntiBotService.isSafeModeActive) {
+      final innertube = await _tryInnerTubeFastPathWithMeta(
+        videoId,
+        quality: 'High',
+        preferM4a: true,
+        client: effectiveClient,
+      );
+      if (innertube != null) {
+        return innertube;
+      }
+    }
+
+    // 3. Companion instances preferring M4A
+    for (final instance in getHealthyInstances().take(2)) {
+      final picked = await _extractAudioWithMetaFromInstance(
+        instance,
+        videoId,
+        quality: 'High',
+        timeout: const Duration(seconds: 4),
+        optimistic: false,
+        preferM4a: true,
+        client: effectiveClient,
+      );
+      if (picked != null) {
+        return picked;
+      }
+    }
+
+    // 4. YoutubeExplode M4A fallback
+    final ytSelection = await _resolveWithMetaViaYoutubeExplode(
+      videoId,
+      quality: 'High',
+      optimistic: false,
+      preferM4a: true,
+      client: effectiveClient,
+    );
+    if (ytSelection != null) {
+      return ytSelection;
+    }
+
+    // 5. Fallback to standard stream resolution with inferred extension/MIME
+    final fallbackUrl = await resolveAudioStreamUrl(
+      videoId,
+      songTitle: songTitle,
+      artist: artist,
+      quality: 'High',
+      optimistic: false,
+      client: effectiveClient,
+    );
+    final uri = Uri.tryParse(fallbackUrl);
+    final rawMime = uri?.queryParameters['mime'];
+    final rawItag = int.tryParse(uri?.queryParameters['itag'] ?? '');
+    final fmt = normalizeDownloadFormat(rawMime, itag: rawItag);
+    return DownloadStreamSelection(
+      url: fallbackUrl,
+      mimeType: fmt.mimeType,
+      extension: fmt.extension,
+      itag: rawItag,
+    );
+  }
+
   /// Speculatively pre-resolves a stream and pre-caches its 5-second head
   /// in the background, capped at 1 in-flight request max and yielding to user play.
   static void preWarm(
     String videoId, {
     String? songTitle,
     String? artist,
+    String? quality,
     bool isSpeculative = true,
     http.Client? client,
   }) {
-    if (_streamCache.containsKey(videoId) && !_streamCache[videoId]!.isExpired) return;
+    final effectiveQuality =
+        DatabaseService.normalizeAudioQuality(quality ?? DatabaseService.getAudioQuality());
+    final cacheKey = _cacheKey(videoId, effectiveQuality);
+    if (_streamCache.containsKey(cacheKey) && !_streamCache[cacheKey]!.isExpired) return;
     if (isSpeculative && (_activeUserResolutions > 0 || _activeSpeculativeCount >= 1)) {
       debugPrint('StreamResolverService: Skipping speculative preWarm for $videoId (busy)');
       return;
@@ -1067,6 +1488,7 @@ class StreamResolverService {
           videoId,
           songTitle: songTitle,
           artist: artist,
+          quality: effectiveQuality,
           optimistic: true,
           isSpeculative: isSpeculative,
           client: client,

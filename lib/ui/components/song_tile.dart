@@ -11,6 +11,7 @@ class SongTile extends StatelessWidget {
   final List<Song>? contextQueue;
   final int? index;
   final VoidCallback? onTap;
+  final EdgeInsetsGeometry contentPadding;
 
   const SongTile({
     super.key,
@@ -18,6 +19,7 @@ class SongTile extends StatelessWidget {
     this.contextQueue,
     this.index,
     this.onTap,
+    this.contentPadding = const EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
   });
 
   @override
@@ -31,37 +33,58 @@ class SongTile extends StatelessWidget {
     final colorScheme = theme.colorScheme;
 
     return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
+      contentPadding: contentPadding,
+      horizontalTitleGap: 12.0,
+      minVerticalPadding: 4.0,
+      visualDensity: const VisualDensity(vertical: -1),
       leading: Stack(
         alignment: Alignment.center,
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: CachedNetworkImage(
-              imageUrl: ThumbnailUtils.upgradeUrl(song.thumbnailUrl, size: 544),
-              width: 50,
-              height: 50,
-              fit: BoxFit.cover,
-              errorWidget: (_, __, ___) => Container(
-                width: 50,
-                height: 50,
-                color: colorScheme.surfaceContainerHighest,
-                child: const Icon(Icons.music_note),
-              ),
-            ),
+            borderRadius: BorderRadius.circular(10),
+            child: song.hasRemoteThumbnail
+                ? CachedNetworkImage(
+                    imageUrl: ThumbnailUtils.upgradeUrl(song.thumbnailUrl, size: 544),
+                    width: 48,
+                    height: 48,
+                    fit: BoxFit.cover,
+                    placeholder: (_, __) => Container(
+                      width: 48,
+                      height: 48,
+                      color: colorScheme.surfaceContainerHigh,
+                    ),
+                    errorWidget: (_, __, ___) => Container(
+                      width: 48,
+                      height: 48,
+                      color: colorScheme.surfaceContainerHigh,
+                      child: Icon(
+                        Icons.music_note_rounded,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  )
+                : Container(
+                    width: 48,
+                    height: 48,
+                    color: colorScheme.surfaceContainerHigh,
+                    child: Icon(
+                      Icons.music_note_rounded,
+                      color: colorScheme.primary,
+                    ),
+                  ),
           ),
           if (isCurrent)
             Container(
-              width: 50,
-              height: 50,
+              width: 48,
+              height: 48,
               decoration: BoxDecoration(
-                color: Colors.black.withAlpha(120),
-                borderRadius: BorderRadius.circular(8),
+                color: Colors.black.withValues(alpha: 0.48),
+                borderRadius: BorderRadius.circular(10),
               ),
               child: Icon(
                 isPlaying ? Icons.equalizer_rounded : Icons.play_arrow_rounded,
                 color: colorScheme.primary,
-                size: 28,
+                size: 26,
               ),
             ),
         ],
@@ -71,7 +94,8 @@ class SongTile extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: theme.textTheme.bodyMedium?.copyWith(
-          fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
+          fontSize: 15,
+          fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w600,
           color: isCurrent ? colorScheme.primary : colorScheme.onSurface,
         ),
       ),
@@ -80,11 +104,13 @@ class SongTile extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: theme.textTheme.bodySmall?.copyWith(
+          fontSize: 12.5,
           color: colorScheme.onSurfaceVariant,
         ),
       ),
       trailing: PopupMenuButton<String>(
-        icon: Icon(Icons.more_vert, color: colorScheme.onSurfaceVariant),
+        icon: Icon(Icons.more_vert_rounded, color: colorScheme.onSurfaceVariant),
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
         onSelected: (value) {
           if (value == 'play_next') {
             playback.playNextInQueue(song);

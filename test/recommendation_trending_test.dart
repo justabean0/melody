@@ -2125,5 +2125,151 @@ void main() {
       expect(searchQueries.any((q) => q.startsWith('Bengali ')), isTrue);
       expect(picks.map((s) => s.id), isNot(contains('ge4M2dVBgTw')));
     });
+
+    test('getPersonalizedQuickPicks backfills to at least 16 eligible tracks and strips play/view counts from artists', () async {
+      AntiBotService.reset();
+
+      InnerTubeService.clientOverride = MockClient((request) async {
+        if (request.url.path.contains('sw.js_data')) {
+          return http.Response(")]}'\n[[[\"test_visitor_id\"]]]", 200);
+        }
+        if (request.method != 'POST') return _mockJsonResponse({});
+
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        final path = request.url.path;
+
+        if (path.contains('browse') && body['browseId'] == 'FEmusic_charts') {
+          final chartItems = List.generate(
+            6,
+            (i) => {
+              'musicResponsiveListItemRenderer': {
+                'playlistItemData': {'videoId': 'chart_$i'},
+                'flexColumns': [
+                  {
+                    'musicResponsiveListItemFlexColumnRenderer': {
+                      'text': {
+                        'runs': [
+                          {'text': 'Chart Track $i'}
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    'musicResponsiveListItemFlexColumnRenderer': {
+                      'text': {
+                        'runs': [
+                          {'text': 'Chart Artist $i'},
+                          {'text': ' • '},
+                          {'text': '${i + 1}.2B plays'},
+                        ]
+                      }
+                    }
+                  },
+                ],
+              }
+            },
+          );
+          return _mockJsonResponse({
+            'contents': {
+              'singleColumnBrowseResultsRenderer': {
+                'tabs': [
+                  {
+                    'tabRenderer': {
+                      'content': {
+                        'sectionListRenderer': {
+                          'contents': [
+                            {
+                              'musicCarouselShelfRenderer': {
+                                'contents': chartItems,
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          });
+        }
+
+        if (path.contains('search')) {
+          final searchItems = List.generate(
+            18,
+            (i) => {
+              'musicResponsiveListItemRenderer': {
+                'playlistItemData': {'videoId': 'pop_song_$i'},
+                'flexColumns': [
+                  {
+                    'musicResponsiveListItemFlexColumnRenderer': {
+                      'text': {
+                        'runs': [
+                          {'text': 'Pop Song $i'}
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    'musicResponsiveListItemFlexColumnRenderer': {
+                      'text': {
+                        'runs': [
+                          {'text': 'Artist $i'}
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    'musicResponsiveListItemFlexColumnRenderer': {
+                      'text': {
+                        'runs': [
+                          {'text': '450M views'}
+                        ]
+                      }
+                    }
+                  },
+                ],
+              }
+            },
+          );
+          return _mockJsonResponse({
+            'contents': {
+              'tabbedSearchResultsRenderer': {
+                'tabs': [
+                  {
+                    'tabRenderer': {
+                      'content': {
+                        'sectionListRenderer': {
+                          'contents': [
+                            {
+                              'musicShelfRenderer': {
+                                'contents': searchItems,
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          });
+        }
+
+        return _mockJsonResponse({});
+      });
+
+      final picks = await RecommendationService.getPersonalizedQuickPicks(
+        languages: ['English'],
+      );
+
+      expect(picks.length, greaterThanOrEqualTo(16));
+      for (final song in picks) {
+        expect(song.artist.toLowerCase(), isNot(contains('plays')));
+        expect(song.artist.toLowerCase(), isNot(contains('views')));
+      }
+      expect(picks.first.artist, equals('Chart Artist 0'));
+    });
   });
 }

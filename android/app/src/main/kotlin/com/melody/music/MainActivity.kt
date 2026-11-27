@@ -40,13 +40,15 @@ class MainActivity: FlutterActivity() {
                 when (call.method) {
                     "resolveAudioStream" -> {
                         val videoId = call.argument<String>("videoId")
+                        val quality = call.argument<String>("quality") ?: "High"
+                        val preferM4a = call.argument<Boolean>("preferM4a") ?: false
                         if (videoId.isNullOrBlank()) {
                             result.error("INVALID_ARGUMENT", "videoId must not be null or blank", null)
                             return@setMethodCallHandler
                         }
                         extractorExecutor.execute {
                             try {
-                                val streamMap = NewPipeAudioResolver.resolveAudioStream(videoId)
+                                val streamMap = NewPipeAudioResolver.resolveAudioStream(videoId, quality, preferM4a)
                                 mainHandler.post {
                                     result.success(streamMap)
                                 }
@@ -144,5 +146,17 @@ class MainActivity: FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         registerBatteryChannel(flutterEngine.dartExecutor.binaryMessenger, this)
         registerExtractorChannel(flutterEngine.dartExecutor.binaryMessenger)
+        LocalAudioHandler.register(flutterEngine.dartExecutor.binaryMessenger, this) { this }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        if (LocalAudioHandler.onRequestPermissionsResult(requestCode, permissions, grantResults, this)) {
+            return
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 }

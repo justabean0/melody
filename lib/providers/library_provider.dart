@@ -7,22 +7,34 @@ class LibraryProvider extends ChangeNotifier {
   List<Song> _likedSongs = [];
   List<Playlist> _playlists = [];
   List<Song> _history = [];
+  int _monthlyListeningSeconds = 0;
+  List<int> _dailyListeningSeries = const [];
   StreamSubscription<void>? _historySubscription;
+  StreamSubscription<void>? _listeningStatsSubscription;
 
   List<Song> get likedSongs => List.unmodifiable(_likedSongs);
   List<Playlist> get playlists => List.unmodifiable(_playlists);
   List<Song> get history => List.unmodifiable(_history);
+  int get monthlyListeningSeconds => _monthlyListeningSeconds;
+  String get monthlyListeningLabel =>
+      DatabaseService.formatListeningDuration(_monthlyListeningSeconds);
+  List<int> get dailyListeningSeries => List.unmodifiable(_dailyListeningSeries);
 
   LibraryProvider() {
     loadAll();
     _historySubscription = DatabaseService.onHistoryChanged.listen((_) {
       refreshHistory();
     });
+    _listeningStatsSubscription =
+        DatabaseService.onListeningStatsChanged.listen((_) {
+      refreshListeningStats();
+    });
   }
 
   @override
   void dispose() {
     _historySubscription?.cancel();
+    _listeningStatsSubscription?.cancel();
     super.dispose();
   }
 
@@ -30,6 +42,14 @@ class LibraryProvider extends ChangeNotifier {
     _likedSongs = DatabaseService.getLikedSongs();
     _playlists = DatabaseService.getPlaylists();
     _history = DatabaseService.getHistory();
+    _monthlyListeningSeconds = DatabaseService.getMonthlyListeningSeconds();
+    _dailyListeningSeries = DatabaseService.getDailyListeningSeries(days: 14);
+    notifyListeners();
+  }
+
+  void refreshListeningStats() {
+    _monthlyListeningSeconds = DatabaseService.getMonthlyListeningSeconds();
+    _dailyListeningSeries = DatabaseService.getDailyListeningSeries(days: 14);
     notifyListeners();
   }
 

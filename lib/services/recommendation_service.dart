@@ -439,7 +439,7 @@ class RecommendationService {
       final genre = inferGenre(song);
       genreCounts[genre] = (genreCounts[genre] ?? 0) + recencyWeight;
 
-      final cleanArtist = song.artist.trim();
+      final cleanArtist = InnerTubeService.cleanArtistText(song.artist);
       if (cleanArtist.isNotEmpty && cleanArtist.toLowerCase() != 'unknown') {
         artistCounts[cleanArtist] = (artistCounts[cleanArtist] ?? 0) + recencyWeight;
       }
@@ -483,7 +483,8 @@ class RecommendationService {
     String? hl,
   }) async {
     try {
-      final query = '${recentSong.title} ${recentSong.artist}'.trim();
+      final cleanArtist = InnerTubeService.cleanArtistText(recentSong.artist);
+      final query = '${recentSong.title} $cleanArtist'.trim();
       final res = await InnerTubeService.search(
         query,
         filter: SearchFilter.songs,
@@ -492,7 +493,7 @@ class RecommendationService {
       );
       return res.songs
           .where((s) => s.id != recentSong.id && isSingleSong(s))
-          .take(10)
+          .take(16)
           .toList();
     } catch (_) {
       return const [];
@@ -514,7 +515,10 @@ class RecommendationService {
         gl: gl ?? config.gl,
         hl: hl ?? config.hl,
       );
-      return res.songs.where(isSingleSong).take(10).toList();
+      return res.songs
+          .where((s) => _isEligibleTrackForConfig(s, config))
+          .take(16)
+          .toList();
     } catch (_) {
       return const [];
     }
@@ -664,8 +668,8 @@ class RecommendationService {
             hubResult.songs.where((s) => _isEligibleTrackForConfig(s, config)),
           );
 
-          // Unpack top 1-2 playlists if songs < 10
-          if (langCandidates.length < 10 && hubResult.playlists.isNotEmpty) {
+          // Unpack top 1-2 playlists if songs < 16
+          if (langCandidates.length < 16 && hubResult.playlists.isNotEmpty) {
             final cleanPlaylists = hubResult.playlists
                 .where((pl) => !_isExcludedForConfig(pl.title, config))
                 .take(2);
@@ -697,7 +701,7 @@ class RecommendationService {
           chartCount = chartSongs.length;
           langCandidates.addAll(chartSongs);
 
-          if (langCandidates.length < 5 && charts.playlists.isNotEmpty) {
+          if (langCandidates.length < 10 && charts.playlists.isNotEmpty) {
             final cleanChartPlaylists = charts.playlists
                 .where((pl) => !_isExcludedForConfig(pl.title, config))
                 .toList();
@@ -721,8 +725,8 @@ class RecommendationService {
         } catch (_) {}
       }
 
-      // C. Fallback: if candidates < 10 (especially regional Indian languages or sparse/filtered hubs)
-      if (langCandidates.length < 10) {
+      // C. Fallback: if candidates < 16 (especially regional Indian languages or sparse/filtered hubs)
+      if (langCandidates.length < 16) {
         try {
           searchQueryUsed = config.language == 'English'
               ? 'top english pop songs'
@@ -1170,17 +1174,71 @@ class RecommendationService {
       task3GenreIds: task3Ids,
     );
 
+    final finalSongs = <Song>[...blendedResult.songs];
+    final seenFinalIds = finalSongs.map((s) => s.id).toSet();
+
+    // Ensure Quick Picks fills at least 4 columns x 4 rows (16 tracks minimum)
+    // whenever additional eligible recommendations are available.
+    if (finalSongs.length < 16) {
+      final backfillLangs = activeLanguages.take(3).toList();
+      final backfillTasks = backfillLangs.map((lang) async {
+        final config = getLanguageConfig(lang, allSelectedLanguages: activeLanguages);
+        final query = mood != 'All'
+            ? '${config.language} $mood songs'
+            : (config.language == 'English'
+                ? 'top english ${tasteProfile.dominantGenre.toLowerCase()} songs'
+                : '${config.language} ${tasteProfile.dominantGenre} hits');
+        try {
+          final res = await InnerTubeService.search(
+            query,
+            filter: SearchFilter.songs,
+            gl: config.gl,
+            hl: config.hl,
+          );
+          return res.songs
+              .where((s) => _isEligibleTrackForConfig(s, config))
+              .toList();
+        } catch (_) {
+          return <Song>[];
+        }
+      });
+
+      final backfillLists = await Future.wait(backfillTasks);
+      final maxBackfill = backfillLists.fold<int>(
+        0,
+        (max, list) => list.length > max ? list.length : max,
+      );
+      for (int i = 0; i < maxBackfill && finalSongs.length < 24; i++) {
+        for (final list in backfillLists) {
+          if (i < list.length && finalSongs.length < 24) {
+            final candidate = list[i];
+            if (seenFinalIds.add(candidate.id)) {
+              finalSongs.add(candidate);
+            }
+          }
+        }
+      }
+    }
+
+    final cleanedSongs = finalSongs.map((s) {
+      final cleanedArtist = InnerTubeService.cleanArtistText(s.artist);
+      if (cleanedArtist.isEmpty || cleanedArtist == s.artist) {
+        return s;
+      }
+      return s.copyWith(artist: cleanedArtist);
+    }).toList();
+
     final historyDesc = historyTarget != null
         ? '"${historyTarget.title}" (${historyTarget.id})'
         : (tasteProfile.hasHistory ? 'skipped(hindi-only)' : 'none');
     LogService.info(
-      'getPersonalizedQuickPicks activeLanguages=$activeLanguages mood=$mood historyTarget=$historyDesc Task1=${trendingPool.length} Task2=${relatedResults.length} Task3=${genreResults.length} personalized=${personalizedPool.length}',
+      'getPersonalizedQuickPicks activeLanguages=$activeLanguages mood=$mood historyTarget=$historyDesc Task1=${trendingPool.length} Task2=${relatedResults.length} Task3=${genreResults.length} personalized=${personalizedPool.length} final=${cleanedSongs.length}',
       tag: 'Feed',
     );
-    final top6Log = blendedResult.songs.take(6).toList().asMap().entries.map((entry) {
+    final top6Log = cleanedSongs.take(6).toList().asMap().entries.map((entry) {
       final idx = entry.key;
       final s = entry.value;
-      final origin = blendedResult.slotOrigins[s.id] ?? 'unknown';
+      final origin = blendedResult.slotOrigins[s.id] ?? 'backfill';
       return '#$idx "${s.title}" (${s.id}) [$origin]';
     }).join(' | ');
     LogService.info(
@@ -1188,6 +1246,6 @@ class RecommendationService {
       tag: 'Feed',
     );
 
-    return blendedResult.songs;
+    return cleanedSongs;
   }
 }

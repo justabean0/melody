@@ -295,9 +295,14 @@ class MediaNotificationService : Service() {
         // Update PlaybackStateCompat with accurate position and elapsed time
         updatePlaybackState(isPlaying, positionMs)
 
-        // Check if artwork needs to be fetched
-        if (thumbnailUrl != null && thumbnailUrl != currentThumbnailUrl) {
+        // Check if artwork needs to be fetched or cleared for local tracks without art
+        if (thumbnailUrl.isNullOrEmpty()) {
+            currentThumbnailUrl = null
+            currentArtwork = null
+            updateMetadata(title, artist, null, durationMs)
+        } else if (thumbnailUrl != currentThumbnailUrl) {
             currentThumbnailUrl = thumbnailUrl
+            currentArtwork = null
             fetchArtworkAsync(thumbnailUrl, title, artist, durationMs, isPlaying)
         } else {
             updateMetadata(title, artist, currentArtwork, durationMs)
@@ -368,14 +373,21 @@ class MediaNotificationService : Service() {
     private fun fetchArtworkAsync(urlStr: String, title: String, artist: String, durationMs: Long, isPlaying: Boolean) {
         thread {
             try {
-                val url = URL(urlStr)
-                val connection = url.openConnection()
-                connection.connectTimeout = 3000
-                connection.readTimeout = 3000
-                connection.doInput = true
-                connection.connect()
-                val input = connection.getInputStream()
-                val bitmap = BitmapFactory.decodeStream(input)
+                val bitmap: Bitmap? = if (urlStr.startsWith("content://") || urlStr.startsWith("file://")) {
+                    contentResolver.openInputStream(android.net.Uri.parse(urlStr))?.use { input ->
+                        BitmapFactory.decodeStream(input)
+                    }
+                } else {
+                    val url = URL(urlStr)
+                    val connection = url.openConnection()
+                    connection.connectTimeout = 3000
+                    connection.readTimeout = 3000
+                    connection.doInput = true
+                    connection.connect()
+                    connection.getInputStream().use { input ->
+                        BitmapFactory.decodeStream(input)
+                    }
+                }
                 currentArtwork = bitmap
 
                 updateMetadata(title, artist, bitmap, durationMs)
@@ -384,7 +396,9 @@ class MediaNotificationService : Service() {
                 val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 val updatedNotification = buildNotification(title, artist, isPlaying, bitmap)
                 manager.notify(NOTIFICATION_ID, updatedNotification)
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                currentArtwork = null
+            }
         }
     }
 

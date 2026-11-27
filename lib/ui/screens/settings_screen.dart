@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../config/build_flags.dart';
 import '../../providers/theme_provider.dart';
+import '../../services/audio_cache_service.dart';
+import '../../services/audio_service.dart';
 import '../../services/battery_service.dart';
 import '../../services/database_service.dart';
 import '../../services/innertube_version_manager.dart';
 import '../../services/log_service.dart';
+import '../../services/stream_resolver_service.dart';
 import '../../services/update_service.dart';
 import '../components/language_selection_dialog.dart';
 import '../components/update_dialog.dart';
@@ -18,8 +21,8 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObserver {
-  late bool _normalize;
+class _SettingsScreenState extends State<SettingsScreen>
+    with WidgetsBindingObserver {
   late bool _skipSilence;
   late String _quality;
   late bool _autoCheckUpdates;
@@ -33,7 +36,6 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _normalize = DatabaseService.getNormalizeVolume();
     _skipSilence = DatabaseService.getSkipSilence();
     _quality = DatabaseService.getAudioQuality();
     _autoCheckUpdates = DatabaseService.getAutoCheckUpdates();
@@ -76,7 +78,9 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
     if (info == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Failed to check for updates. Check your internet or update source URL.'),
+          content: Text(
+            'Failed to check for updates. Check your internet or update source URL.',
+          ),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -113,7 +117,8 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
               style: const TextStyle(fontSize: 13),
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
-                hintText: 'https://api.github.com/repos/owner/repo/releases/latest',
+                hintText:
+                    'https://api.github.com/repos/owner/repo/releases/latest',
               ),
             ),
           ],
@@ -145,7 +150,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
       builder: (ctx) => AlertDialog(
         title: const Row(
           children: [
-            Icon(Icons.tune, color: Colors.blueAccent),
+            Icon(Icons.tune_rounded, color: Colors.blueAccent),
             SizedBox(width: 10),
             Text('InnerTube Engine Health'),
           ],
@@ -167,8 +172,10 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
             ),
             const SizedBox(height: 8),
             ...InnerTubeVersionManager.allProfiles.map((p) {
-              final isDeprecated = InnerTubeVersionManager.isProfileDeprecated(p);
-              final isCurrent = InnerTubeVersionManager.currentProfile.key == p.key;
+              final isDeprecated =
+                  InnerTubeVersionManager.isProfileDeprecated(p);
+              final isCurrent =
+                  InnerTubeVersionManager.currentProfile.key == p.key;
               return Padding(
                 padding: const EdgeInsets.symmetric(vertical: 4.0),
                 child: Row(
@@ -176,7 +183,9 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
                     Icon(
                       isDeprecated
                           ? Icons.cancel_outlined
-                          : (isCurrent ? Icons.check_circle : Icons.circle_outlined),
+                          : (isCurrent
+                              ? Icons.check_circle
+                              : Icons.circle_outlined),
                       size: 16,
                       color: isDeprecated
                           ? Colors.red
@@ -188,8 +197,10 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
                         '${p.clientName} v${p.clientVersion}',
                         style: TextStyle(
                           fontSize: 12,
-                          fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-                          decoration: isDeprecated ? TextDecoration.lineThrough : null,
+                          fontWeight:
+                              isCurrent ? FontWeight.bold : FontWeight.normal,
+                          decoration:
+                              isDeprecated ? TextDecoration.lineThrough : null,
                           color: isDeprecated ? Colors.grey : null,
                         ),
                       ),
@@ -230,7 +241,10 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
               Navigator.pop(ctx);
               setState(() {});
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('InnerTube client profiles reset & re-enabled.')),
+                const SnackBar(
+                  content:
+                      Text('InnerTube client profiles reset & re-enabled.'),
+                ),
               );
             },
             child: const Text('Reset Profiles'),
@@ -244,471 +258,752 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
     );
   }
 
+  String _streamingQualitySubtitle(String quality) {
+    switch (DatabaseService.normalizeAudioQuality(quality)) {
+      case 'Medium':
+        return 'Balanced (~128kbps)';
+      case 'Low':
+        return 'Data saver (~48–64kbps)';
+      case 'High':
+      default:
+        return 'Highest available (Opus / AAC 160kbps+)';
+    }
+  }
+
+  Future<void> _onQualityChanged(String? val) async {
+    if (val == null || val == _quality) return;
+    final normalized = DatabaseService.normalizeAudioQuality(val);
+    setState(() => _quality = normalized);
+    await DatabaseService.setAudioQuality(normalized);
+    StreamResolverService.clearCache();
+    await AudioCacheService.clearHeadCache();
+  }
+
+  Future<void> _onSkipSilenceChanged(bool val) async {
+    setState(() => _skipSilence = val);
+    await DatabaseService.setSkipSilence(val);
+    await MelodyAudioService().setSkipSilence(val);
+  }
+
   @override
   Widget build(BuildContext context) {
     final themeProvider = context.watch<ThemeProvider>();
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final isDark = colorScheme.brightness == Brightness.dark;
+    final bottomPadding = 172.0 + MediaQuery.paddingOf(context).bottom;
+    final batteryColor = _isBatteryUnrestricted
+        ? Colors.green
+        : (isDark ? const Color(0xFFFFB74D) : Colors.amber.shade800);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings', style: TextStyle(fontWeight: FontWeight.bold)),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.only(bottom: 120),
-        children: [
-          // Section 1: Appearance & Material 3
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'Appearance',
-              style: TextStyle(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
+      body: SafeArea(
+        bottom: false,
+        child: ListView(
+          padding: EdgeInsets.fromLTRB(16, 12, 16, bottomPadding),
+          children: [
+            Text(
+              'Settings',
+              style: theme.textTheme.headlineMedium?.copyWith(
+                fontSize: 26,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.5,
+                color: colorScheme.onSurface,
               ),
             ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.brightness_medium),
-            title: const Text('Theme Mode'),
-            subtitle: Text(
-              themeProvider.themeMode == ThemeMode.system
-                  ? 'System default'
-                  : themeProvider.themeMode == ThemeMode.dark
-                      ? 'Dark theme'
-                      : 'Light theme',
-            ),
-            trailing: DropdownButton<ThemeMode>(
-              value: themeProvider.themeMode,
-              underline: const SizedBox.shrink(),
-              onChanged: (mode) {
-                if (mode != null) themeProvider.setThemeMode(mode);
-              },
-              items: const [
-                DropdownMenuItem(value: ThemeMode.system, child: Text('System')),
-                DropdownMenuItem(value: ThemeMode.light, child: Text('Light')),
-                DropdownMenuItem(value: ThemeMode.dark, child: Text('Dark')),
-              ],
-            ),
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.dark_mode_outlined),
-            title: const Text('Pure Black (AMOLED)'),
-            subtitle: const Text('Pitch black background in dark mode'),
-            value: themeProvider.pureBlack,
-            onChanged: (val) => themeProvider.setPureBlack(val),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            const SizedBox(height: 14),
+
+            // Card 1: Appearance
+            _SettingsSectionCard(
+              title: 'Appearance',
               children: [
-                const Text('Accent Color', style: TextStyle(fontSize: 16)),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 8,
-                  children: ThemeProvider.availableAccents.map((color) {
-                    final isSelected = themeProvider.accentColor == color;
-                    return GestureDetector(
-                      onTap: () => themeProvider.setAccentColor(color),
-                      child: Container(
-                        width: 36,
-                        height: 36,
-                        decoration: BoxDecoration(
-                          color: color,
-                          shape: BoxShape.circle,
-                          border: isSelected
-                              ? Border.all(color: Colors.white, width: 3)
-                              : null,
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withAlpha(40),
-                              blurRadius: 4,
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  leading: Icon(
+                    Icons.brightness_auto_outlined,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Theme Mode'),
+                  subtitle: Text(
+                    themeProvider.themeMode == ThemeMode.system
+                        ? 'System default'
+                        : themeProvider.themeMode == ThemeMode.dark
+                            ? 'Dark theme'
+                            : 'Light theme',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  trailing: _SettingsDropdownPill<ThemeMode>(
+                    value: themeProvider.themeMode,
+                    onChanged: (mode) {
+                      if (mode != null) themeProvider.setThemeMode(mode);
+                    },
+                    items: const [
+                      DropdownMenuItem(
+                        value: ThemeMode.system,
+                        child: Text('System'),
+                      ),
+                      DropdownMenuItem(
+                        value: ThemeMode.light,
+                        child: Text('Light'),
+                      ),
+                      DropdownMenuItem(
+                        value: ThemeMode.dark,
+                        child: Text('Dark'),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Accent Color',
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 10,
+                        children: ThemeProvider.availableAccents.map((color) {
+                          final isSelected =
+                              ThemeProvider.argb32(themeProvider.accentColor) ==
+                                  ThemeProvider.argb32(color);
+                          final checkColor =
+                              ThemeProvider.contrastRatio(color, Colors.white) >=
+                                      4.5
+                                  ? Colors.white
+                                  : Colors.black;
+                          return Semantics(
+                            label: 'Accent color swatch',
+                            selected: isSelected,
+                            button: true,
+                            child: InkWell(
+                              onTap: () => themeProvider.setAccentColor(color),
+                              customBorder: const CircleBorder(),
+                              child: SizedBox(
+                                width: 38,
+                                height: 38,
+                                child: Center(
+                                  child: Container(
+                                    width: 29,
+                                    height: 29,
+                                    decoration: BoxDecoration(
+                                      color: color,
+                                      shape: BoxShape.circle,
+                                      boxShadow: isSelected
+                                          ? [
+                                              BoxShadow(
+                                                color:
+                                                    colorScheme.surfaceContainerLow,
+                                                spreadRadius: 2,
+                                              ),
+                                              BoxShadow(
+                                                color: colorScheme.onSurface,
+                                                spreadRadius: 4,
+                                              ),
+                                            ]
+                                          : null,
+                                    ),
+                                    child: isSelected
+                                        ? Icon(
+                                            Icons.check_rounded,
+                                            color: checkColor,
+                                            size: 16,
+                                          )
+                                        : null,
+                                  ),
+                                ),
+                              ),
                             ),
-                          ],
-                        ),
-                        child: isSelected
-                            ? const Icon(Icons.check, color: Colors.white, size: 20)
-                            : null,
+                          );
+                        }).toList(),
                       ),
-                    );
-                  }).toList(),
+                    ],
+                  ),
                 ),
               ],
             ),
-          ),
+            const SizedBox(height: 14),
 
-          const Divider(),
-
-          // Section 2: Audio & Playback
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'Audio & Playback',
-              style: TextStyle(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.high_quality),
-            title: const Text('Streaming Quality'),
-            subtitle: Text('Highest available (Opus / AAC 160kbps+)'),
-            trailing: DropdownButton<String>(
-              value: _quality,
-              underline: const SizedBox.shrink(),
-              onChanged: (val) {
-                if (val != null) {
-                  setState(() => _quality = val);
-                  DatabaseService.setAudioQuality(val);
-                }
-              },
-              items: const [
-                DropdownMenuItem(value: 'high', child: Text('High')),
-                DropdownMenuItem(value: 'medium', child: Text('Medium')),
-                DropdownMenuItem(value: 'low', child: Text('Low')),
+            // Card 2: Audio & Playback
+            _SettingsSectionCard(
+              title: 'Audio & Playback',
+              children: [
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  leading: Icon(
+                    Icons.headphones_outlined,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Streaming Quality'),
+                  subtitle: Text(
+                    _streamingQualitySubtitle(_quality),
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  trailing: _SettingsDropdownPill<String>(
+                    value: _quality,
+                    onChanged: _onQualityChanged,
+                    items: const [
+                      DropdownMenuItem(value: 'High', child: Text('High')),
+                      DropdownMenuItem(value: 'Medium', child: Text('Medium')),
+                      DropdownMenuItem(value: 'Low', child: Text('Low')),
+                    ],
+                  ),
+                ),
+                SwitchListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  secondary: Icon(
+                    Icons.fast_forward_outlined,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Skip Silence'),
+                  subtitle: Text(
+                    'Automatically skip quiet sections',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  value: _skipSilence,
+                  onChanged: _onSkipSilenceChanged,
+                ),
+                SwitchListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  secondary: Icon(
+                    Icons.play_circle_outline_rounded,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Background Playback'),
+                  subtitle: Text(
+                    'Keep playback alive after swiping the app from Recents',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  value: _backgroundPlayback,
+                  onChanged: (val) async {
+                    setState(() => _backgroundPlayback = val);
+                    await DatabaseService.setBackgroundPlaybackEnabled(val);
+                  },
+                ),
+                SwitchListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  secondary: Icon(
+                    _isBatteryUnrestricted
+                        ? Icons.battery_charging_full_rounded
+                        : Icons.warning_amber_rounded,
+                    color: batteryColor,
+                  ),
+                  title: const Text('Unrestricted Battery'),
+                  subtitle: Text(
+                    _isBatteryUnrestricted
+                        ? 'Unrestricted — background audio will not be killed by OS'
+                        : 'Optimized — tap to exempt Melody from battery throttling',
+                    style: TextStyle(color: batteryColor),
+                  ),
+                  value: _isBatteryUnrestricted,
+                  onChanged: (val) async {
+                    if (val) {
+                      await BatteryService.requestIgnoreBatteryOptimizations();
+                    } else {
+                      await BatteryService.openBatteryOptimizationSettings();
+                    }
+                    await _checkBatteryStatus();
+                  },
+                ),
               ],
             ),
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.volume_up_outlined),
-            title: const Text('Audio Normalization'),
-            subtitle: const Text('Balances volume levels across tracks'),
-            value: _normalize,
-            onChanged: (val) {
-              setState(() => _normalize = val);
-              DatabaseService.setNormalizeVolume(val);
-            },
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.fast_forward_outlined),
-            title: const Text('Skip Silence'),
-            subtitle: const Text('Automatically skip quiet sections'),
-            value: _skipSilence,
-            onChanged: (val) {
-              setState(() => _skipSilence = val);
-              DatabaseService.setSkipSilence(val);
-            },
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.play_circle_outline_rounded),
-            title: const Text('Background Playback'),
-            subtitle: const Text('Keep playback alive after swiping the app from Recents'),
-            value: _backgroundPlayback,
-            onChanged: (val) async {
-              setState(() => _backgroundPlayback = val);
-              await DatabaseService.setBackgroundPlaybackEnabled(val);
-            },
-          ),
-          SwitchListTile(
-            secondary: Icon(
-              _isBatteryUnrestricted
-                  ? Icons.battery_charging_full_rounded
-                  : Icons.battery_alert_rounded,
-              color: _isBatteryUnrestricted ? Colors.green : Colors.amber,
-            ),
-            title: const Text('Unrestricted Battery'),
-            subtitle: Text(
-              _isBatteryUnrestricted
-                  ? 'Unrestricted — background audio will not be killed by OS'
-                  : 'Optimized — tap to exempt Melody from battery throttling',
-              style: TextStyle(
-                color: _isBatteryUnrestricted ? Colors.green : Colors.amber.shade800,
-              ),
-            ),
-            value: _isBatteryUnrestricted,
-            onChanged: (val) async {
-              if (val) {
-                await BatteryService.requestIgnoreBatteryOptimizations();
-              } else {
-                await BatteryService.openBatteryOptimizationSettings();
-              }
-              await _checkBatteryStatus();
-            },
-          ),
+            const SizedBox(height: 14),
 
-          const Divider(),
-
-          // Section: Content & Recommendations
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'Content & Recommendations',
-              style: TextStyle(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.translate_rounded),
-            title: const Text('Music Languages'),
-            subtitle: Text(
-              DatabaseService.getMusicLanguages().join(', '),
-              style: TextStyle(color: theme.textTheme.bodyMedium?.color?.withAlpha(180)),
-            ),
-            trailing: const Icon(Icons.arrow_forward_ios, size: 14),
-            onTap: () {
-              LanguageSelectionDialog.show(
-                context,
-                isDismissible: true,
-                onSaved: (selected) {
-                  setState(() {});
-                },
-              );
-            },
-          ),
-
-          const Divider(),
-
-          // Section 3: Lyrics & Extensions
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'Lyrics & Sync',
-              style: TextStyle(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ),
-          const ListTile(
-            leading: Icon(Icons.lyrics_outlined),
-            title: Text('Lyrics Provider'),
-            subtitle: Text('LrcLib & Kugou Synced Lyrics'),
-          ),
-
-          const Divider(),
-
-          // Section 4: App Updates
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'App Updates',
-              style: TextStyle(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.system_update_rounded),
-            title: const Text('Check for Updates'),
-            subtitle: Text('Installed version: v$_currentVersion'),
-            trailing: _isCheckingUpdate
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.chevron_right),
-            onTap: _isCheckingUpdate ? null : _checkForUpdatesManually,
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.notifications_active_outlined),
-            title: const Text('Auto-check for updates'),
-            subtitle: const Text('Check for new releases in the background'),
-            value: _autoCheckUpdates,
-            onChanged: (val) {
-              setState(() => _autoCheckUpdates = val);
-              DatabaseService.setAutoCheckUpdates(val);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.cloud_sync_outlined),
-            title: const Text('Update Source URL'),
-            subtitle: Text(
-              _updateSource,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: const Icon(Icons.edit_outlined, size: 20),
-            onTap: _editUpdateSourceDialog,
-          ),
-
-          const Divider(),
-
-          // Section 5: InnerTube Engine & Client Health
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'InnerTube Engine Health',
-              style: TextStyle(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.tune),
-            title: const Text('Client Version String'),
-            subtitle: Text(
-              '${InnerTubeVersionManager.currentProfile.clientName} v${InnerTubeVersionManager.currentProfile.clientVersion}',
-            ),
-            trailing: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: InnerTubeVersionManager.isOutdatedWarningActive
-                    ? Colors.amber.withAlpha(40)
-                    : Colors.green.withAlpha(40),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: InnerTubeVersionManager.isOutdatedWarningActive
-                      ? Colors.amber
-                      : Colors.green,
-                ),
-              ),
-              child: Text(
-                InnerTubeVersionManager.isOutdatedWarningActive ? 'Outdated' : 'Healthy',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: InnerTubeVersionManager.isOutdatedWarningActive
-                      ? Colors.amber
-                      : Colors.green,
-                ),
-              ),
-            ),
-            onTap: _showInnerTubeDetailsDialog,
-          ),
-
-          if (kIsDiagnosticsEnabled) ...[
-            const Divider(),
-
-            // Section 6: Diagnostics & System Logs
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text(
-                'Diagnostics & Debugging',
-                style: TextStyle(
-                  color: colorScheme.primary,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.bug_report_outlined),
-              title: const Text('Diagnostics & System Logs'),
-              subtitle: const Text('Inspect runtime logs, copy error reports, and monitor streaming'),
-              trailing: ValueListenableBuilder<int>(
-                valueListenable: LogService.logCountNotifier,
-                builder: (context, _, __) {
-                  final errCount = LogService.errorCount;
-                  if (errCount > 0) {
-                    return Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: Colors.redAccent.withAlpha(40),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.redAccent, width: 1),
-                      ),
-                      child: Text(
-                        '$errCount error${errCount > 1 ? "s" : ""}',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: Colors.redAccent,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+            // Card 3: Content & Recommendations
+            _SettingsSectionCard(
+              title: 'Content & Recommendations',
+              children: [
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  leading: Icon(
+                    Icons.translate_rounded,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Music Languages'),
+                  subtitle: Text(
+                    DatabaseService.getMusicLanguages().join(', '),
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  trailing: Icon(
+                    Icons.chevron_right_rounded,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  onTap: () {
+                    LanguageSelectionDialog.show(
+                      context,
+                      isDismissible: true,
+                      onSaved: (_) {
+                        setState(() {});
+                      },
                     );
-                  }
-                  return const Icon(Icons.chevron_right);
-                },
-              ),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const DiagnosticsScreen()),
-                );
-              },
+                  },
+                ),
+              ],
             ),
-          ],
+            const SizedBox(height: 14),
 
-          const Divider(),
-
-          // Section 7: About Melody
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text(
-              'About',
-              style: TextStyle(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
-              ),
+            // Card 4: Lyrics & Sync
+            _SettingsSectionCard(
+              title: 'Lyrics & Sync',
+              children: [
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  leading: Icon(
+                    Icons.lyrics_outlined,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Lyrics Provider'),
+                  subtitle: Text(
+                    'LrcLib & Kugou Synced Lyrics',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-            child: Center(
-              child: Column(
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: Image.asset(
-                      'assets/images/logo.png',
-                      width: 80,
-                      height: 80,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                        width: 80,
-                        height: 80,
-                        color: colorScheme.primary,
-                        child: const Icon(Icons.music_note, color: Colors.white, size: 40),
+            const SizedBox(height: 14),
+
+            // Card 5: App Updates
+            _SettingsSectionCard(
+              title: 'App Updates',
+              children: [
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  leading: Icon(
+                    Icons.system_update_outlined,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Check for Updates'),
+                  subtitle: Text(
+                    'Installed version: v$_currentVersion',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  trailing: _isCheckingUpdate
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(
+                          Icons.chevron_right_rounded,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                  onTap: _isCheckingUpdate ? null : _checkForUpdatesManually,
+                ),
+                SwitchListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  secondary: Icon(
+                    Icons.notifications_active_outlined,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Auto-check for updates'),
+                  subtitle: Text(
+                    'Check for new releases in the background',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  value: _autoCheckUpdates,
+                  onChanged: (val) {
+                    setState(() => _autoCheckUpdates = val);
+                    DatabaseService.setAutoCheckUpdates(val);
+                  },
+                ),
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  leading: Icon(
+                    Icons.cloud_sync_outlined,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Update Source URL'),
+                  subtitle: Text(
+                    _updateSource,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  trailing: Icon(
+                    Icons.edit_outlined,
+                    size: 20,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  onTap: _editUpdateSourceDialog,
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+
+            // Card 6: InnerTube Engine Health
+            _SettingsSectionCard(
+              title: 'InnerTube Engine Health',
+              children: [
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  leading: Icon(
+                    Icons.tune_rounded,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Client Version String'),
+                  subtitle: Text(
+                    '${InnerTubeVersionManager.currentProfile.clientName} v${InnerTubeVersionManager.currentProfile.clientVersion}',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  trailing: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: InnerTubeVersionManager.isOutdatedWarningActive
+                          ? Colors.amber.withValues(alpha: 0.16)
+                          : Colors.green.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: InnerTubeVersionManager.isOutdatedWarningActive
+                            ? Colors.amber
+                            : Colors.green,
+                      ),
+                    ),
+                    child: Text(
+                      InnerTubeVersionManager.isOutdatedWarningActive
+                          ? 'Outdated'
+                          : 'Healthy',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: InnerTubeVersionManager.isOutdatedWarningActive
+                            ? Colors.amber
+                            : Colors.green,
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'Melody',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  Text(
-                    'v$_currentVersion • Pure Audio Freedom',
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  onTap: _showInnerTubeDetailsDialog,
+                ),
+              ],
+            ),
+
+            if (kIsDiagnosticsEnabled) ...[
+              const SizedBox(height: 14),
+              // Card 7: Diagnostics & Debugging
+              _SettingsSectionCard(
+                title: 'Diagnostics & Debugging',
+                children: [
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 2,
+                    ),
+                    leading: Icon(
+                      Icons.bug_report_outlined,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    title: const Text('Diagnostics & System Logs'),
+                    subtitle: Text(
+                      'Inspect runtime logs, copy error reports, and monitor streaming',
+                      style: TextStyle(color: colorScheme.onSurfaceVariant),
+                    ),
+                    trailing: ValueListenableBuilder<int>(
+                      valueListenable: LogService.logCountNotifier,
+                      builder: (context, _, __) {
+                        final errCount = LogService.errorCount;
+                        if (errCount > 0) {
+                          return Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.redAccent.withValues(alpha: 0.16),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Colors.redAccent,
+                                width: 1,
+                              ),
+                            ),
+                            child: Text(
+                              '$errCount error${errCount > 1 ? "s" : ""}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.redAccent,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          );
+                        }
+                        return Icon(
+                          Icons.chevron_right_rounded,
+                          color: colorScheme.onSurfaceVariant,
+                        );
+                      },
+                    ),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const DiagnosticsScreen(),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.info_outline),
-            title: const Text('About Melody'),
-            subtitle: const Text('Material 3 YouTube Music Client'),
-            onTap: () {
-              showAboutDialog(
-                context: context,
-                applicationName: 'Melody',
-                applicationVersion: 'v$_currentVersion',
-                applicationIcon: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.asset(
-                    'assets/images/logo.png',
-                    width: 48,
-                    height: 48,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => const Icon(Icons.music_note, size: 48),
+            ],
+
+            const SizedBox(height: 14),
+
+            // Card 8: About
+            _SettingsSectionCard(
+              title: 'About',
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: colorScheme.outlineVariant
+                                .withValues(alpha: 0.35),
+                          ),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(13),
+                          child: Image.asset(
+                            'assets/images/logo.png',
+                            width: 52,
+                            height: 52,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => Icon(
+                              Icons.music_note_rounded,
+                              color: colorScheme.primary,
+                              size: 28,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Melody',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'v$_currentVersion • Pure Audio Freedom',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                children: const [
-                  Text(
-                    'Melody is a high-performance Material 3 YouTube Music client written in Dart & Flutter.\n'
-                    'Features real-time synced lyrics, background streaming, dynamic theming, queue management, and offline favorites.',
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
                   ),
-                ],
-              );
-            },
+                  leading: Icon(
+                    Icons.info_outline_rounded,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('About Melody'),
+                  subtitle: Text(
+                    'Material 3 YouTube Music Client',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  trailing: Icon(
+                    Icons.chevron_right_rounded,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  onTap: () {
+                    showAboutDialog(
+                      context: context,
+                      applicationName: 'Melody',
+                      applicationVersion: 'v$_currentVersion',
+                      applicationIcon: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.asset(
+                            'assets/images/logo.png',
+                            width: 48,
+                            height: 48,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) =>
+                                const Icon(Icons.music_note, size: 48),
+                          ),
+                        ),
+                      ),
+                      children: const [
+                        Text(
+                          'Melody is a high-performance Material 3 YouTube Music client written in Dart & Flutter.\n'
+                          'Features real-time synced lyrics, background streaming, dynamic theming, queue management, and offline favorites.',
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsSectionCard extends StatelessWidget {
+  final String title;
+  final List<Widget> children;
+
+  const _SettingsSectionCard({
+    required this.title,
+    required this.children,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = colorScheme.brightness == Brightness.dark;
+    final hairlineColor =
+        colorScheme.outlineVariant.withValues(alpha: isDark ? 0.25 : 0.45);
+
+    final items = <Widget>[
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        child: Text(
+          title.toUpperCase(),
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.8,
+            color: colorScheme.primary,
           ),
-        ],
+        ),
+      ),
+    ];
+
+    for (int i = 0; i < children.length; i++) {
+      if (i > 0) {
+        items.add(
+          Divider(
+            height: 1,
+            thickness: 1,
+            indent: 52,
+            endIndent: 16,
+            color: hairlineColor,
+          ),
+        );
+      }
+      items.add(children[i]);
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: items,
+      ),
+    );
+  }
+}
+
+class _SettingsDropdownPill<T> extends StatelessWidget {
+  final T value;
+  final ValueChanged<T?> onChanged;
+  final List<DropdownMenuItem<T>> items;
+
+  const _SettingsDropdownPill({
+    required this.value,
+    required this.onChanged,
+    required this.items,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          value: value,
+          isDense: true,
+          borderRadius: BorderRadius.circular(14),
+          dropdownColor: colorScheme.surfaceContainerHigh,
+          icon: Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 18,
+            color: colorScheme.onSurfaceVariant,
+          ),
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: colorScheme.onSurface,
+              ),
+          onChanged: onChanged,
+          items: items,
+        ),
       ),
     );
   }

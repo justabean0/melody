@@ -179,5 +179,96 @@ void main() {
       expect(results[2], results[0]);
       expect(requestCount, lessThanOrEqualTo(2));
     });
+
+    test('Streaming quality tiers High, Medium, and Low select expected bitrates and fall back safely on single-stream response', () async {
+      final multiStreamClient = MockClient((request) async {
+        if (request.url.toString().contains('youtubei/v1/player')) {
+          return http.Response(
+            jsonEncode({
+              'playabilityStatus': {'status': 'OK'},
+              'streamingData': {
+                'adaptiveFormats': [
+                  {
+                    'itag': 249,
+                    'mimeType': 'audio/webm; codecs="opus"',
+                    'bitrate': 48000,
+                    'url': 'https://rr1.googlevideo.com/videoplayback?id=low_48',
+                  },
+                  {
+                    'itag': 140,
+                    'mimeType': 'audio/mp4; codecs="mp4a.40.2"',
+                    'bitrate': 128000,
+                    'url': 'https://rr1.googlevideo.com/videoplayback?id=med_128',
+                  },
+                  {
+                    'itag': 251,
+                    'mimeType': 'audio/webm; codecs="opus"',
+                    'bitrate': 160000,
+                    'url': 'https://rr1.googlevideo.com/videoplayback?id=high_160',
+                  },
+                ]
+              }
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 404);
+      });
+
+      final highUrl = await StreamResolverService.resolveAudioStreamUrl(
+        'quality_track_multi',
+        quality: 'High',
+        client: multiStreamClient,
+      );
+      expect(highUrl, contains('id=high_160'));
+
+      final medUrl = await StreamResolverService.resolveAudioStreamUrl(
+        'quality_track_multi',
+        quality: 'Medium',
+        client: multiStreamClient,
+      );
+      expect(medUrl, contains('id=med_128'));
+
+      final lowUrl = await StreamResolverService.resolveAudioStreamUrl(
+        'quality_track_multi',
+        quality: 'Low',
+        client: multiStreamClient,
+      );
+      expect(lowUrl, contains('id=low_48'));
+
+      // Single-stream fallback returns the sole stream across all quality tiers
+      final singleStreamClient = MockClient((request) async {
+        if (request.url.toString().contains('youtubei/v1/player')) {
+          return http.Response(
+            jsonEncode({
+              'playabilityStatus': {'status': 'OK'},
+              'streamingData': {
+                'adaptiveFormats': [
+                  {
+                    'itag': 140,
+                    'mimeType': 'audio/mp4; codecs="mp4a.40.2"',
+                    'bitrate': 128000,
+                    'url': 'https://rr1.googlevideo.com/videoplayback?id=only_stream',
+                  },
+                ]
+              }
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 404);
+      });
+
+      for (final tier in ['High', 'Medium', 'Low']) {
+        final singleUrl = await StreamResolverService.resolveAudioStreamUrl(
+          'quality_track_single',
+          quality: tier,
+          client: singleStreamClient,
+        );
+        expect(singleUrl, contains('id=only_stream'));
+      }
+    });
   });
 }

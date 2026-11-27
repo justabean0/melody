@@ -44,6 +44,8 @@ class DatabaseService {
   static const String _searchHistoryKey = 'melody_search_history';
   static const String _batteryOptPromptShownKey = 'melody_battery_opt_prompt_shown';
   static const String _backgroundPlaybackKey = 'melody_background_playback_enabled';
+  static const String _dailyListeningSecondsKey = 'melody_daily_listening_seconds';
+  static const String _downloadedTracksKey = 'melody_downloaded_tracks_v1';
   static const String _feedCacheVersion = 'v4';
 
   static String _feedCacheKey(String cacheKey) => 'melody_feed_cache_${_feedCacheVersion}_$cacheKey';
@@ -364,6 +366,112 @@ class DatabaseService {
   static final StreamController<void> _historyChangedController = StreamController<void>.broadcast();
   static Stream<void> get onHistoryChanged => _historyChangedController.stream;
 
+  // --- Local Listening Stats ---
+  static final StreamController<void> _listeningStatsChangedController =
+      StreamController<void>.broadcast();
+  static Stream<void> get onListeningStatsChanged =>
+      _listeningStatsChangedController.stream;
+
+  static String _dayKey(DateTime dt) {
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
+
+  static final RegExp _dateKeyPattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
+
+  static bool _isValidDateKey(String key) {
+    if (!_dateKeyPattern.hasMatch(key)) return false;
+    final parts = key.split('-');
+    final year = int.tryParse(parts[0]);
+    final month = int.tryParse(parts[1]);
+    final day = int.tryParse(parts[2]);
+    if (year == null || month == null || day == null) return false;
+    final dt = DateTime(year, month, day);
+    return dt.year == year && dt.month == month && dt.day == day;
+  }
+
+  static Map<String, int> _readDailyListeningMap() {
+    final raw = _prefs?.getString(_dailyListeningSecondsKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final result = <String, int>{};
+        for (final entry in decoded.entries) {
+          final k = entry.key.toString();
+          if (!_isValidDateKey(k)) continue;
+          final v = entry.value;
+          if (v is int && v > 0) {
+            result[k] = v;
+          } else if (v is num && v.isFinite && v > 0) {
+            final truncated = v.toInt();
+            if (truncated > 0) result[k] = truncated;
+          }
+        }
+        return result;
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  /// Records locally played [seconds] into today's bucket (or [date] for testing).
+  static Future<void> recordListeningSeconds(
+    int seconds, {
+    DateTime? date,
+  }) async {
+    if (seconds <= 0) return;
+    final now = date ?? DateTime.now();
+    final key = _dayKey(now);
+    final map = _readDailyListeningMap();
+    map[key] = (map[key] ?? 0) + seconds;
+
+    // Keep at most the most recent 60 days of daily buckets
+    final cutoff = now.subtract(const Duration(days: 60));
+    final cutoffKey = _dayKey(cutoff);
+    map.removeWhere((k, _) => k.compareTo(cutoffKey) < 0);
+
+    await _prefs?.setString(_dailyListeningSecondsKey, jsonEncode(map));
+    _listeningStatsChangedController.add(null);
+  }
+
+  /// Returns total local listening seconds recorded in the current calendar month.
+  static int getMonthlyListeningSeconds({DateTime? now}) {
+    final ref = now ?? DateTime.now();
+    final prefix =
+        '${ref.year.toString().padLeft(4, '0')}-${ref.month.toString().padLeft(2, '0')}-';
+    final map = _readDailyListeningMap();
+    var total = 0;
+    for (final entry in map.entries) {
+      if (entry.key.startsWith(prefix) && entry.value > 0) {
+        total += entry.value;
+      }
+    }
+    return total;
+  }
+
+  /// Returns daily listening seconds for the trailing [days] ending at [now] (oldest to newest).
+  static List<int> getDailyListeningSeries({int days = 14, DateTime? now}) {
+    final count = days < 2 ? 2 : days;
+    final ref = now ?? DateTime.now();
+    final today = DateTime(ref.year, ref.month, ref.day);
+    final map = _readDailyListeningMap();
+    return List<int>.generate(count, (i) {
+      final day = today.subtract(Duration(days: count - 1 - i));
+      return map[_dayKey(day)] ?? 0;
+    });
+  }
+
+  /// Formats total listening seconds as compact hours (`36h`) or minutes (`0m` / `45m`).
+  static String formatListeningDuration(int totalSeconds) {
+    if (totalSeconds < 60) return '0m';
+    final totalMinutes = totalSeconds ~/ 60;
+    if (totalMinutes < 60) return '${totalMinutes}m';
+    final totalHours = totalMinutes ~/ 60;
+    return '${totalHours}h';
+  }
+
   static List<Song> getHistory() {
     final raw = _prefs?.getStringList(_historyKey) ?? [];
     final List<Song> list = [];
@@ -407,14 +515,26 @@ class DatabaseService {
       await _prefs?.setBool(_pureBlackKey, val);
 
   static int getAccentColor() =>
-      _prefs?.getInt(_accentColorKey) ?? 0xFFE53935; // Melody Red
+      _prefs?.getInt(_accentColorKey) ?? 0xFF8E24AA; // Default Purple
   static Future<void> setAccentColor(int color) async =>
       await _prefs?.setInt(_accentColorKey, color);
 
+  static String normalizeAudioQuality(String? raw) {
+    switch (raw?.trim().toLowerCase()) {
+      case 'low':
+        return 'Low';
+      case 'medium':
+        return 'Medium';
+      case 'high':
+      default:
+        return 'High';
+    }
+  }
+
   static String getAudioQuality() =>
-      _prefs?.getString(_audioQualityKey) ?? 'high';
+      normalizeAudioQuality(_prefs?.getString(_audioQualityKey));
   static Future<void> setAudioQuality(String quality) async =>
-      await _prefs?.setString(_audioQualityKey, quality);
+      await _prefs?.setString(_audioQualityKey, normalizeAudioQuality(quality));
 
   static bool getSkipSilence() =>
       _prefs?.getBool(_skipSilenceKey) ?? false;
@@ -556,5 +676,56 @@ class DatabaseService {
 
   static Future<void> clearSearchHistory() async {
     await _prefs?.remove(_searchHistoryKey);
+  }
+
+  // --- Persistent Offline Downloads Index ---
+  static Map<String, Map<String, dynamic>> getDownloadedTracks() {
+    final raw = _prefs?.getString(_downloadedTracksKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final result = <String, Map<String, dynamic>>{};
+        for (final entry in decoded.entries) {
+          if (entry.value is Map) {
+            result[entry.key.toString()] =
+                Map<String, dynamic>.from(entry.value as Map);
+          }
+        }
+        return result;
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  static Future<void> saveDownloadedTrackRecord({
+    required String songId,
+    required String contentUri,
+    required String displayName,
+    required String title,
+    required String artist,
+  }) async {
+    final map = getDownloadedTracks();
+    map[songId] = {
+      'contentUri': contentUri,
+      'displayName': displayName,
+      'title': title,
+      'artist': artist,
+      'savedAtMs': DateTime.now().millisecondsSinceEpoch,
+    };
+    await _prefs?.setString(_downloadedTracksKey, jsonEncode(map));
+  }
+
+  static Future<void> removeDownloadedTrackRecord(String songId) async {
+    final map = getDownloadedTracks();
+    if (map.remove(songId) != null) {
+      await _prefs?.setString(_downloadedTracksKey, jsonEncode(map));
+    }
+  }
+
+  static Future<void> replaceDownloadedTrackRecords(
+    Map<String, Map<String, dynamic>> records,
+  ) async {
+    await _prefs?.setString(_downloadedTracksKey, jsonEncode(records));
   }
 }

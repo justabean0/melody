@@ -84,7 +84,9 @@ class _ArtistDetailScreenState extends State<ArtistDetailScreen> {
     if (subs != null && subs.isNotEmpty) return subs;
     final listeners = _artist?.monthlyListeners;
     if (listeners != null && listeners.isNotEmpty) {
-      return '$listeners monthly listeners';
+      return listeners.toLowerCase().contains('listener')
+          ? listeners
+          : '$listeners monthly listeners';
     }
     return null;
   }
@@ -338,7 +340,7 @@ class _ArtistDetailScreenState extends State<ArtistDetailScreen> {
               ),
             ),
             SizedBox(
-              height: 210,
+              height: 140.0 + 14.0 + MediaQuery.textScalerOf(context).scale(44.0),
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -383,7 +385,7 @@ class _ArtistDetailScreenState extends State<ArtistDetailScreen> {
               ),
             ),
             SizedBox(
-              height: 210,
+              height: 140.0 + 14.0 + MediaQuery.textScalerOf(context).scale(44.0),
               child: ListView.builder(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16.0),

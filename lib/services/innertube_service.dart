@@ -504,10 +504,22 @@ class InnerTubeService {
     var current = <Map<String, dynamic>>[];
     for (final run in runs) {
       final text = run['text']?.toString() ?? '';
-      if (text.trim() == '•' || text.contains('•')) {
+      if (text.trim() == '•' || text.trim() == '·' || text.trim() == '|') {
         if (current.isNotEmpty) {
           result.add(current);
           current = <Map<String, dynamic>>[];
+        }
+      } else if (text.contains('•') || text.contains('·') || text.contains('|')) {
+        final segments = text.split(RegExp(r'[•·|]'));
+        for (int i = 0; i < segments.length; i++) {
+          final seg = segments[i].trim();
+          if (seg.isNotEmpty) {
+            current.add({...run, 'text': seg});
+          }
+          if (i < segments.length - 1 && current.isNotEmpty) {
+            result.add(current);
+            current = <Map<String, dynamic>>[];
+          }
         }
       } else {
         current.add(run);
@@ -524,6 +536,7 @@ class InnerTubeService {
     '&',
     '•',
     '·',
+    '|',
     '/',
     'and',
     'feat',
@@ -532,8 +545,89 @@ class InnerTubeService {
     'ft.',
   };
 
-  /// Cleanly formats artist runs, filtering out separators, trimming whitespace,
-  /// deduplicating preserving order, and joining with ', '.
+  static final RegExp _metadataYearPattern = RegExp(r'^(19|20)\d{2}$');
+  static final RegExp _metadataNaturalDurationPattern = RegExp(
+    r'^\d+\s+(?:hour|minute|second)s?(?:\s*,?\s*\d+\s+(?:hour|minute|second)s?)*$',
+    caseSensitive: false,
+  );
+  static final RegExp _metadataCountPattern = RegExp(
+    r'^(?:'
+    r'(?:no|zero)\s+(?:plays?|views?|songs?|tracks?|listeners?|subscribers?)'
+    r'|\d+(?:[.,\s]\d+)*\s*(?:[kmbtrcl]|cr|lac|lakh|crore|mi|mil|mio|mrd|jt|rb|k\+|m\+|b\+)?\+?(?:\s+(?:de|x|kali))?\s*(?:plays?|views?|songs?|tracks?|watching|listening|listeners?|monthly\s+listeners?|monthly\s+audience|subscribers?|reproducciones|visualizaciones|vistas|vues|écoutes|lectures|visualizações|reproduções|aufrufe|wiedergaben|visualizzazioni|riproduzioni|tayangan|kali\s+diputar|ditonton|diputar|görüntüleme|dinleme|oynatma|просмотров|прослушиваний|wyświetleń|odtworzeń)\b.*'
+    r'|(?:reproducciones|visualizaciones|vistas|vues|écoutes|visualizações|reproduções|aufrufe|조회수|재생)\s*[\d.,\s]+[kmbKMB만억천백]*\s*회?'
+    r'|[\d.,]+\s*(?:[만억万億kmbKMB]*)\s*(?:回視聴|回再生|次播放|次观看|만회|억회)'
+    r')$',
+    caseSensitive: false,
+  );
+  static final RegExp _trailingPlayViewPattern = RegExp(
+    r'\s+\d+(?:[.,]\d+)*\s*(?:[kmb]|cr|lac|lakh|crore|mi|mil|mio|mrd|jt|rb)?\+?(?:\s+(?:de|x|kali))?\s*(?:plays?|views?)$',
+    caseSensitive: false,
+  );
+  static const Set<String> _metadataTypeTokens = {
+    'song',
+    'video',
+    'music video',
+    'official video',
+    'official audio',
+    'lyric video',
+    'single',
+    'ep',
+    'album',
+    'playlist',
+    'artist',
+    'podcast',
+    'episode',
+    'audiobook',
+  };
+
+  /// Returns true when [token] represents non-artist metadata such as play/view
+  /// counts, durations, media type labels, or standalone release years.
+  @visibleForTesting
+  static bool isMetadataNoiseToken(String token) {
+    final trimmed = token.trim();
+    if (trimmed.isEmpty) return true;
+    final lower = trimmed.toLowerCase();
+    if (_metadataTypeTokens.contains(lower)) return true;
+    if (_durationPattern.hasMatch(trimmed)) return true;
+    if (_metadataNaturalDurationPattern.hasMatch(trimmed)) return true;
+    if (_metadataYearPattern.hasMatch(trimmed)) return true;
+    if (_metadataCountPattern.hasMatch(trimmed)) return true;
+    return false;
+  }
+
+  /// Strips play/view counts, durations, and media-type tokens from a raw
+  /// artist string while preserving multi-artist names (e.g. "Shreya Ghoshal, Irshad Kamil").
+  static String cleanArtistText(String raw) {
+    var trimmed = raw.trim();
+    if (trimmed.isEmpty) return '';
+    trimmed = trimmed.replaceFirst(_trailingPlayViewPattern, '').trim();
+    if (trimmed.isEmpty || isMetadataNoiseToken(trimmed)) return '';
+
+    final parts = trimmed.split(RegExp(r'\s*[•·|]\s*|(?<!\d)\s*,\s*(?!\d)'));
+    final kept = <String>[];
+    for (final part in parts) {
+      var clean = part.replaceFirst(_trailingPlayViewPattern, '').trim();
+      for (final sep in [',', '&', '•', '·', '/', '|']) {
+        if (clean.startsWith(sep)) {
+          clean = clean.substring(sep.length).trim();
+        }
+        if (clean.endsWith(sep)) {
+          clean = clean.substring(0, clean.length - sep.length).trim();
+        }
+      }
+      if (clean.isEmpty) continue;
+      if (_artistSeparators.contains(clean.toLowerCase())) continue;
+      if (isMetadataNoiseToken(clean)) continue;
+      if (!kept.contains(clean)) {
+        kept.add(clean);
+      }
+    }
+    return kept.join(', ');
+  }
+
+  /// Cleanly formats artist runs, filtering out separators, play/view counts,
+  /// stray duration/type tokens, trimming whitespace, deduplicating preserving
+  /// order, and joining with ', '.
   /// Example: [{"text": "Karan Aujla"}, {"text": " & "}, {"text": "Ikky"}] -> "Karan Aujla, Ikky"
   @visibleForTesting
   static String formatArtistRuns(dynamic runsObj) {
@@ -546,22 +640,56 @@ class InnerTubeService {
       if (rawText.isEmpty) continue;
       if (_artistSeparators.contains(rawText.toLowerCase())) continue;
 
-      var clean = rawText;
-      for (final sep in [',', '&', '•', '·', '/']) {
-        if (clean.startsWith(sep)) {
-          clean = clean.substring(sep.length).trim();
+      final cleanedText = cleanArtistText(rawText);
+      if (cleanedText.isEmpty) continue;
+
+      for (final segment in cleanedText.split(RegExp(r'(?<!\d)\s*,\s*(?!\d)'))) {
+        final clean = segment.trim();
+        if (clean.isEmpty || _artistSeparators.contains(clean.toLowerCase())) continue;
+        if (isMetadataNoiseToken(clean)) continue;
+        if (!artists.contains(clean)) {
+          artists.add(clean);
         }
-        if (clean.endsWith(sep)) {
-          clean = clean.substring(0, clean.length - sep.length).trim();
-        }
-      }
-      if (clean.isEmpty || _artistSeparators.contains(clean.toLowerCase())) continue;
-      if (!artists.contains(clean)) {
-        artists.add(clean);
       }
     }
 
     return artists.join(', ');
+  }
+
+  static ({String artist, String? artistId, int index})? _extractArtistFromParts(
+    List<List<Map<String, dynamic>>> parts, {
+    bool skipAlbumLinks = false,
+  }) {
+    for (int i = 0; i < parts.length; i++) {
+      final part = parts[i];
+      if (part.isEmpty) continue;
+      if (skipAlbumLinks) {
+        final hasArtistOrUnlinkedRun = part.any((r) {
+          final text = r['text']?.toString().trim() ?? '';
+          if (text.isEmpty || _artistSeparators.contains(text.toLowerCase())) {
+            return false;
+          }
+          if (cleanArtistText(text).isEmpty) return false;
+          final bId = r['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
+          return bId == null || !bId.startsWith('MPREb_');
+        });
+        if (!hasArtistOrUnlinkedRun) continue;
+      }
+
+      final formatted = formatArtistRuns(part);
+      if (formatted.isEmpty) continue;
+
+      final firstNav = part.firstWhere(
+        (r) {
+          final bId = r['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
+          return bId != null && (!skipAlbumLinks || !bId.startsWith('MPREb_'));
+        },
+        orElse: () => {},
+      );
+      final artistId = firstNav['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
+      return (artist: formatted, artistId: artistId, index: i);
+    }
+    return null;
   }
 
   static dynamic _parseMusicCardShelfRenderer(Map<String, dynamic> card) {
@@ -584,24 +712,14 @@ class InnerTubeService {
 
       final cleaned = separatedSubtitle.where((part) => part.isNotEmpty).toList();
       if (cleaned.isNotEmpty) {
-        int artistIdx = 0;
-        if (cleaned.length > 1 && cleaned[0].length == 1 && cleaned[0][0]['navigationEndpoint'] == null) {
-          artistIdx = 1;
-        }
-        if (artistIdx < cleaned.length) {
-          final artistPart = cleaned[artistIdx];
-          final formatted = formatArtistRuns(artistPart);
-          if (formatted.isNotEmpty) {
-            artist = formatted;
-          }
-          final firstNav = artistPart.firstWhere(
-            (r) => r['navigationEndpoint']?['browseEndpoint'] != null,
-            orElse: () => {},
-          );
-          artistId = firstNav['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
+        final extracted = _extractArtistFromParts(cleaned, skipAlbumLinks: true);
+        if (extracted != null) {
+          artist = extracted.artist;
+          artistId = extracted.artistId;
         }
 
-        for (int i = artistIdx + 1; i < cleaned.length; i++) {
+        final albumStartIdx = extracted != null ? extracted.index + 1 : 0;
+        for (int i = albumStartIdx; i < cleaned.length; i++) {
           final part = cleaned[i];
           for (final r in part) {
             final bId = r['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
@@ -659,21 +777,10 @@ class InnerTubeService {
 
         final cleaned = separatedSubtitle.where((part) => part.isNotEmpty).toList();
         if (cleaned.isNotEmpty) {
-          int artistIdx = 0;
-          if (cleaned.length > 1 && cleaned[0].length == 1 && cleaned[0][0]['navigationEndpoint'] == null) {
-            artistIdx = 1;
-          }
-          if (artistIdx < cleaned.length) {
-            final artistPart = cleaned[artistIdx];
-            final formatted = formatArtistRuns(artistPart);
-            if (formatted.isNotEmpty) {
-              artist = formatted;
-            }
-            final firstNav = artistPart.firstWhere(
-              (r) => r['navigationEndpoint']?['browseEndpoint'] != null,
-              orElse: () => {},
-            );
-            artistId = firstNav['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
+          final extracted = _extractArtistFromParts(cleaned, skipAlbumLinks: true);
+          if (extracted != null) {
+            artist = extracted.artist;
+            artistId = extracted.artistId;
           }
           for (final part in cleaned) {
             for (final r in part) {
@@ -715,9 +822,9 @@ class InnerTubeService {
       if (pageType == 'MUSIC_PAGE_TYPE_PLAYLIST') {
         final pid = browseId.startsWith('VL') ? browseId.substring(2) : browseId;
         String? author;
-        if (subtitleRuns.isNotEmpty) {
-          final formatted = formatArtistRuns(subtitleRuns);
-          author = formatted.isNotEmpty ? formatted : null;
+        if (separatedSubtitle.isNotEmpty) {
+          final extracted = _extractArtistFromParts(separatedSubtitle);
+          author = extracted?.artist;
         }
         return Playlist(
           id: pid,
@@ -770,21 +877,10 @@ class InnerTubeService {
         int? year;
 
         if (separated.isNotEmpty) {
-          int artistIdx = 0;
-          if (separated.length > 1 && separated[0].length == 1 && separated[0][0]['navigationEndpoint'] == null) {
-            artistIdx = 1;
-          }
-          if (artistIdx < separated.length) {
-            final artistPart = separated[artistIdx];
-            final formatted = formatArtistRuns(artistPart);
-            if (formatted.isNotEmpty) {
-              artist = formatted;
-            }
-            final firstNav = artistPart.firstWhere(
-              (r) => r['navigationEndpoint']?['browseEndpoint'] != null,
-              orElse: () => {},
-            );
-            artistId = firstNav['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
+          final extracted = _extractArtistFromParts(separated, skipAlbumLinks: true);
+          if (extracted != null) {
+            artist = extracted.artist;
+            artistId = extracted.artistId;
           }
           for (final part in separated) {
             for (final r in part) {
@@ -834,8 +930,8 @@ class InnerTubeService {
         final pid = browseId.startsWith('VL') ? browseId.substring(2) : browseId;
         String? author;
         if (separated.isNotEmpty) {
-          final formatted = formatArtistRuns(separated[0]);
-          author = formatted.isNotEmpty ? formatted : null;
+          final extracted = _extractArtistFromParts(separated);
+          author = extracted?.artist;
         }
         return Playlist(
           id: pid,
@@ -869,28 +965,20 @@ class InnerTubeService {
       String? albumName;
       String? albumId;
 
-      final allRuns = [...secondaryRuns, ...thirdRuns];
-      final allSeparated = _splitRunsBySeparator(allRuns);
+      final allSeparated = [
+        ...separated,
+        ..._splitRunsBySeparator(thirdRuns),
+      ];
 
       if (allSeparated.isNotEmpty) {
-        int artistIdx = 0;
-        if (allSeparated.length > 1 && allSeparated[0].length == 1 && allSeparated[0][0]['navigationEndpoint'] == null) {
-          artistIdx = 1;
-        }
-        if (artistIdx < allSeparated.length) {
-          final artistPart = allSeparated[artistIdx];
-          final formatted = formatArtistRuns(artistPart);
-          if (formatted.isNotEmpty) {
-            artist = formatted;
-          }
-          final firstNav = artistPart.firstWhere(
-            (r) => r['navigationEndpoint']?['browseEndpoint'] != null,
-            orElse: () => {},
-          );
-          artistId = firstNav['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
+        final extracted = _extractArtistFromParts(allSeparated, skipAlbumLinks: true);
+        if (extracted != null) {
+          artist = extracted.artist;
+          artistId = extracted.artistId;
         }
 
-        for (int i = artistIdx + 1; i < allSeparated.length; i++) {
+        final albumStartIdx = extracted != null ? extracted.index + 1 : 0;
+        for (int i = albumStartIdx; i < allSeparated.length; i++) {
           final part = allSeparated[i];
           for (final r in part) {
             final bId = r['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
@@ -991,16 +1079,11 @@ class InnerTubeService {
         int? year;
 
         if (separated.isNotEmpty) {
-          final firstPart = separated[0];
-          final formatted = formatArtistRuns(firstPart);
-          if (formatted.isNotEmpty) {
-            artist = formatted;
+          final extracted = _extractArtistFromParts(separated, skipAlbumLinks: true);
+          if (extracted != null) {
+            artist = extracted.artist;
+            artistId = extracted.artistId;
           }
-          final firstNav = firstPart.firstWhere(
-            (r) => r['navigationEndpoint']?['browseEndpoint'] != null,
-            orElse: () => {},
-          );
-          artistId = firstNav['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
           for (final part in separated) {
             for (final r in part) {
               final y = int.tryParse(r['text']?.toString().trim() ?? '');
@@ -1034,7 +1117,10 @@ class InnerTubeService {
           browseId.startsWith('RDCLAK5uy_')) {
         final pid = browseId.startsWith('VL') ? browseId.substring(2) : browseId;
         String? author;
-        if (subtitleRuns.isNotEmpty) {
+        if (separated.isNotEmpty) {
+          final extracted = _extractArtistFromParts(separated);
+          author = extracted?.artist;
+        } else if (subtitleRuns.isNotEmpty) {
           final formatted = formatArtistRuns(subtitleRuns);
           author = formatted.isNotEmpty ? formatted : null;
         }
@@ -1074,13 +1160,11 @@ class InnerTubeService {
       String? artistId;
       if (subtitleRuns.isNotEmpty) {
         if (separated.isNotEmpty) {
-          final formatted = formatArtistRuns(separated[0]);
-          if (formatted.isNotEmpty) artist = formatted;
-          final firstNav = separated[0].firstWhere(
-            (r) => r['navigationEndpoint']?['browseEndpoint'] != null,
-            orElse: () => {},
-          );
-          artistId = firstNav['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
+          final extracted = _extractArtistFromParts(separated, skipAlbumLinks: true);
+          if (extracted != null) {
+            artist = extracted.artist;
+            artistId = extracted.artistId;
+          }
         } else {
           final formatted = formatArtistRuns(subtitleRuns);
           if (formatted.isNotEmpty) artist = formatted;
@@ -1143,15 +1227,11 @@ class InnerTubeService {
       final col1Runs = _extractRuns(flexCols[1]['musicResponsiveListItemFlexColumnRenderer']?['text']);
       final separated = _splitRunsBySeparator(col1Runs);
       if (separated.isNotEmpty) {
-        final formatted = formatArtistRuns(separated[0]);
-        if (formatted.isNotEmpty) {
-          songArtist = formatted;
+        final extracted = _extractArtistFromParts(separated, skipAlbumLinks: true);
+        if (extracted != null) {
+          songArtist = extracted.artist;
+          songArtistId = extracted.artistId ?? defaultArtistId;
         }
-        final firstNav = separated[0].firstWhere(
-          (r) => r['navigationEndpoint']?['browseEndpoint'] != null,
-          orElse: () => {},
-        );
-        songArtistId = firstNav['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
       }
     }
 
@@ -1331,7 +1411,9 @@ class InnerTubeService {
         for (final item in items.take(25)) {
           final vid = item['videoId'] as String?;
           final title = item['title'] as String?;
-          final author = item['author'] as String? ?? 'Unknown';
+          final rawAuthor = item['author'] as String? ?? 'Unknown Artist';
+          final cleanedAuthor = cleanArtistText(rawAuthor);
+          final author = cleanedAuthor.isNotEmpty ? cleanedAuthor : 'Unknown Artist';
           final durationSec = (item['lengthSeconds'] is int)
               ? (item['lengthSeconds'] as int)
               : (int.tryParse(item['lengthSeconds']?.toString() ?? '') ?? 0);
@@ -1365,10 +1447,11 @@ class InnerTubeService {
       final ytResults = await _ytExplode.search.search(query).timeout(const Duration(seconds: 4));
       final songs = <Song>[];
       for (final item in ytResults.take(25)) {
+        final cleanedAuthor = cleanArtistText(item.author);
         final song = Song(
           id: item.id.value,
           title: item.title,
-          artist: item.author,
+          artist: cleanedAuthor.isNotEmpty ? cleanedAuthor : 'Unknown Artist',
           duration: item.duration?.inSeconds ?? 0,
           thumbnailUrl: 'https://i.ytimg.com/vi/${item.id.value}/hqdefault.jpg',
           isVideo: false,
@@ -1462,10 +1545,11 @@ class InnerTubeService {
       final ytResults = await _ytExplode.search.search(clean).timeout(const Duration(seconds: 4));
       final songs = <Song>[];
       for (final item in ytResults.take(25)) {
+        final cleanedAuthor = cleanArtistText(item.author);
         final song = Song(
           id: item.id.value,
           title: item.title,
-          artist: item.author,
+          artist: cleanedAuthor.isNotEmpty ? cleanedAuthor : 'Unknown Artist',
           duration: item.duration?.inSeconds ?? 0,
           thumbnailUrl: 'https://i.ytimg.com/vi/${item.id.value}/hqdefault.jpg',
           isVideo: false,
@@ -1482,6 +1566,72 @@ class InnerTubeService {
     } catch (_) {}
 
     return const SearchResult();
+  }
+
+  /// Resolves an [Artist] (with real browseId) by artist display name via InnerTube search.
+  static Future<Artist?> resolveArtistByName(String artistName) async {
+    final cleanName = cleanArtistText(artistName);
+    if (cleanName.isEmpty ||
+        cleanName.toLowerCase() == 'unknown' ||
+        cleanName.toLowerCase() == 'unknown artist') {
+      return null;
+    }
+
+    Artist? pickBestMatch(List<Artist> candidates) {
+      if (candidates.isEmpty) return null;
+      final lower = cleanName.toLowerCase();
+      for (final candidate in candidates) {
+        if (candidate.name.trim().toLowerCase() == lower) {
+          return candidate;
+        }
+      }
+      for (final candidate in candidates) {
+        final candLower = candidate.name.trim().toLowerCase();
+        if (candLower.contains(lower) || lower.contains(candLower)) {
+          return candidate;
+        }
+      }
+      return candidates.first;
+    }
+
+    try {
+      final artistResult = await search(
+        cleanName,
+        filter: SearchFilter.artists,
+      ).timeout(const Duration(seconds: 6));
+      final matched = pickBestMatch(artistResult.artists);
+      if (matched != null && matched.id.isNotEmpty) {
+        return matched;
+      }
+
+      final allResult = await search(
+        cleanName,
+        filter: SearchFilter.all,
+      ).timeout(const Duration(seconds: 6));
+      final fallbackMatched = pickBestMatch(allResult.artists);
+      if (fallbackMatched != null && fallbackMatched.id.isNotEmpty) {
+        return fallbackMatched;
+      }
+
+      for (final song in allResult.songs) {
+        final id = song.artistId;
+        if (id != null &&
+            id.isNotEmpty &&
+            song.artist.toLowerCase().contains(cleanName.toLowerCase())) {
+          return Artist(id: id, name: cleanName);
+        }
+      }
+      for (final album in allResult.albums) {
+        final id = album.artistId;
+        if (id != null &&
+            id.isNotEmpty &&
+            album.artist.toLowerCase().contains(cleanName.toLowerCase())) {
+          return Artist(id: id, name: cleanName);
+        }
+      }
+    } catch (_) {}
+
+    return null;
   }
 
   static List<dynamic> _extractSectionListContents(Map<String, dynamic>? response) {
@@ -1732,18 +1882,19 @@ class InnerTubeService {
       final straplineRuns = _extractRuns(header?['straplineTextOne']);
       if (straplineRuns.isNotEmpty) {
         final formatted = formatArtistRuns(straplineRuns);
-        author = formatted.isNotEmpty ? formatted : _runsToText(straplineRuns);
+        author = formatted.isNotEmpty ? formatted : null;
         authorId = straplineRuns.first['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
       } else {
         final subRuns = _extractRuns(header?['subtitle']);
         if (subRuns.isNotEmpty) {
           final formatted = formatArtistRuns(subRuns);
-          author = formatted.isNotEmpty ? formatted : subRuns.first['text']?.toString();
+          author = formatted.isNotEmpty ? formatted : null;
           authorId = subRuns.first['navigationEndpoint']?['browseEndpoint']?['browseId']?.toString();
         } else {
           final facepileText = header?['facepile']?['avatarStackViewModel']?['text']?['content']?.toString();
           if (facepileText != null) {
-            author = facepileText;
+            final cleaned = cleanArtistText(facepileText);
+            author = cleaned.isNotEmpty ? cleaned : null;
           }
         }
       }
@@ -2175,6 +2326,16 @@ class InnerTubeService {
     }
   }
 
+  /// Normalizes artist strings on cached or fallback [songs], stripping any
+  /// stale play/view count tokens.
+  static List<Song> sanitizeSongs(List<Song> songs) {
+    return songs.map((s) {
+      final cleaned = cleanArtistText(s.artist);
+      if (cleaned == s.artist) return s;
+      return s.copyWith(artist: cleaned.isNotEmpty ? cleaned : 'Unknown Artist');
+    }).toList();
+  }
+
   /// Clears in-memory quick picks cache
   static void clearQuickPicksCache() {
     _quickPicksMemoryCache.clear();
@@ -2203,14 +2364,14 @@ class InnerTubeService {
       if (isFresh &&
           _quickPicksMemoryCache.containsKey(cacheKey) &&
           _quickPicksMemoryCache[cacheKey]!.isNotEmpty) {
-        final memHits = _quickPicksMemoryCache[cacheKey]!;
+        final memHits = sanitizeSongs(_quickPicksMemoryCache[cacheKey]!);
         LogService.info(
           'getQuickPicks cache=MEMORY key="$cacheKey" activeLanguages=$activeLanguages mood=$mood songs=${memHits.length}',
           tag: 'Feed',
         );
         return memHits;
       }
-      final diskCached = DatabaseService.getCachedFeed(cacheKey);
+      final diskCached = sanitizeSongs(DatabaseService.getCachedFeed(cacheKey));
       if (diskCached.isNotEmpty && isFresh) {
         _quickPicksMemoryCache[cacheKey] = diskCached;
         _quickPicksCacheTimestamp[cacheKey] = cachedAt;
@@ -2228,10 +2389,10 @@ class InnerTubeService {
     );
 
     // 2. Fetch personalized single songs based on chosen languages & listened genre algorithm
-    final songs = await RecommendationService.getPersonalizedQuickPicks(
+    final songs = sanitizeSongs(await RecommendationService.getPersonalizedQuickPicks(
       languages: activeLanguages,
       mood: mood,
-    );
+    ));
 
     if (songs.isNotEmpty) {
       _quickPicksMemoryCache[cacheKey] = songs;
@@ -2241,7 +2402,7 @@ class InnerTubeService {
     }
 
     // 3. Fallback to cached feed if present
-    final diskFallback = DatabaseService.getCachedFeed(cacheKey);
+    final diskFallback = sanitizeSongs(DatabaseService.getCachedFeed(cacheKey));
     if (diskFallback.isNotEmpty) {
       return diskFallback;
     }
@@ -2255,13 +2416,16 @@ class InnerTubeService {
       final video = await _ytExplode.videos.get(yt.VideoId(videoId));
       final related = await _ytExplode.videos.getRelatedVideos(video);
       if (related != null) {
-        return related.take(15).map((v) => Song(
-              id: v.id.value,
-              title: v.title,
-              artist: v.author,
-              duration: v.duration?.inSeconds ?? 0,
-              thumbnailUrl: 'https://i.ytimg.com/vi/${v.id.value}/hqdefault.jpg',
-            )).toList();
+        return related.take(15).map((v) {
+          final cleaned = cleanArtistText(v.author);
+          return Song(
+            id: v.id.value,
+            title: v.title,
+            artist: cleaned.isNotEmpty ? cleaned : 'Unknown Artist',
+            duration: v.duration?.inSeconds ?? 0,
+            thumbnailUrl: 'https://i.ytimg.com/vi/${v.id.value}/hqdefault.jpg',
+          );
+        }).toList();
       }
     } catch (_) {}
     return [];
@@ -2272,13 +2436,16 @@ class InnerTubeService {
     try {
       final playlist = await _ytExplode.playlists.get(playlistId);
       final videos = await _ytExplode.playlists.getVideos(playlist.id).toList();
-      return videos.map((v) => Song(
-            id: v.id.value,
-            title: v.title,
-            artist: v.author,
-            duration: v.duration?.inSeconds ?? 0,
-            thumbnailUrl: 'https://i.ytimg.com/vi/${v.id.value}/hqdefault.jpg',
-          )).toList();
+      return videos.map((v) {
+        final cleaned = cleanArtistText(v.author);
+        return Song(
+          id: v.id.value,
+          title: v.title,
+          artist: cleaned.isNotEmpty ? cleaned : 'Unknown Artist',
+          duration: v.duration?.inSeconds ?? 0,
+          thumbnailUrl: 'https://i.ytimg.com/vi/${v.id.value}/hqdefault.jpg',
+        );
+      }).toList();
     } catch (_) {
       return [];
     }

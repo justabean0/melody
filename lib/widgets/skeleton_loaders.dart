@@ -135,7 +135,7 @@ class HomeFeedSkeleton extends StatelessWidget {
     return Shimmer(
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 120),
+        padding: EdgeInsets.only(bottom: 172 + MediaQuery.paddingOf(context).bottom),
         children: [
           // Filter Chips Row
           SingleChildScrollView(
@@ -296,7 +296,7 @@ class SearchResultsSkeleton extends StatelessWidget {
     return Shimmer(
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 120),
+        padding: EdgeInsets.only(bottom: 172 + MediaQuery.paddingOf(context).bottom),
         children: [
           // Top Result Hero Card
           Padding(
@@ -304,10 +304,8 @@ class SearchResultsSkeleton extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerLow,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: Theme.of(context).colorScheme.outlineVariant.withAlpha(80),
-                ),
               ),
               child: Row(
                 children: [
@@ -460,7 +458,7 @@ class CollectionDetailSkeleton extends StatelessWidget {
     return Shimmer(
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 120),
+        padding: EdgeInsets.only(bottom: 172 + MediaQuery.paddingOf(context).bottom),
         children: [
           const SizedBox(height: 16),
 
@@ -580,7 +578,7 @@ class ArtistDetailSkeleton extends StatelessWidget {
     return Shimmer(
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 120),
+        padding: EdgeInsets.only(bottom: 172 + MediaQuery.paddingOf(context).bottom),
         children: [
           const SizedBox(height: 20),
 

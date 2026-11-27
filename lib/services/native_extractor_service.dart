@@ -31,17 +31,35 @@ class NativeExtractorService {
   @visibleForTesting
   static Future<NativeAudioStream?> Function(String videoId)? testResolver;
 
+  @visibleForTesting
+  static Future<NativeAudioStream?> Function(String videoId, String quality)?
+      testQualityResolver;
+
   /// Resolves an audio stream on-device using TeamNewPipe/NewPipeExtractor.
   /// Enforces a 12-second timeout and returns null on failure or non-Android platforms.
-  static Future<NativeAudioStream?> resolveAudioStream(String videoId) async {
+  static Future<NativeAudioStream?> resolveAudioStream(
+    String videoId, {
+    String quality = 'High',
+    bool preferM4a = false,
+  }) async {
+    if (testQualityResolver != null) {
+      return await testQualityResolver!(videoId, quality);
+    }
     if (testResolver != null) {
       return await testResolver!(videoId);
     }
 
     try {
+      final args = <String, dynamic>{
+        'videoId': videoId,
+        'quality': quality,
+      };
+      if (preferM4a) {
+        args['preferM4a'] = true;
+      }
       final res = await _channel.invokeMethod<Map<dynamic, dynamic>>(
         'resolveAudioStream',
-        {'videoId': videoId},
+        args,
       ).timeout(const Duration(seconds: 12));
 
       if (res == null) return null;

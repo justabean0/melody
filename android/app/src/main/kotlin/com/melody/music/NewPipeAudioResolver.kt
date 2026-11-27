@@ -62,8 +62,107 @@ object NewPipeAudioResolver {
         }
     }
 
+    private fun normalizeQuality(rawQuality: String?): String {
+        return when (rawQuality?.trim()?.lowercase(Locale.ROOT)) {
+            "low" -> "Low"
+            "medium" -> "Medium"
+            else -> "High"
+        }
+    }
+
+    private fun isM4aStream(stream: AudioStream): Boolean {
+        val mime = stream.format?.mimeType?.lowercase(Locale.ROOT) ?: ""
+        val formatName = stream.format?.name?.lowercase(Locale.ROOT) ?: ""
+        return mime.contains("mp4") ||
+            formatName.contains("m4a") ||
+            stream.itag == 139 ||
+            stream.itag == 140 ||
+            stream.itag == 141
+    }
+
+    private fun selectAudioStream(
+        streams: List<AudioStream>,
+        quality: String,
+        preferM4a: Boolean = false
+    ): AudioStream {
+        if (preferM4a) {
+            val m4aCandidates = streams.filter(::isM4aStream)
+            if (m4aCandidates.isNotEmpty()) {
+                return m4aCandidates.sortedWith { a, b ->
+                    val cmp = b.averageBitrate.compareTo(a.averageBitrate)
+                    if (cmp != 0) cmp else b.itag.compareTo(a.itag)
+                }.first()
+            }
+            return streams.sortedWith { a, b ->
+                val cmp = b.averageBitrate.compareTo(a.averageBitrate)
+                if (cmp != 0) cmp else b.itag.compareTo(a.itag)
+            }.first()
+        }
+
+        val tier = normalizeQuality(quality)
+        if (streams.size <= 1) return streams.first()
+
+        fun itagPriority(itag: Int): Int {
+            return if (tier == "High") {
+                when (itag) {
+                    251 -> 2
+                    140 -> 1
+                    else -> 0
+                }
+            } else {
+                when (itag) {
+                    140 -> 2
+                    251 -> 1
+                    else -> 0
+                }
+            }
+        }
+
+        return streams.sortedWith { a, b ->
+            val aBitrate = a.averageBitrate
+            val bBitrate = b.averageBitrate
+            val aHasBitrate = aBitrate > 0
+            val bHasBitrate = bBitrate > 0
+            if (aHasBitrate != bHasBitrate) {
+                return@sortedWith if (aHasBitrate) -1 else 1
+            }
+
+            if (aHasBitrate && bHasBitrate) {
+                when (tier) {
+                    "Low" -> {
+                        val cmp = aBitrate.compareTo(bBitrate)
+                        if (cmp != 0) return@sortedWith cmp
+                    }
+                    "Medium" -> {
+                        val aInBand = aBitrate in 96..144
+                        val bInBand = bBitrate in 96..144
+                        if (aInBand != bInBand) {
+                            return@sortedWith if (aInBand) -1 else 1
+                        }
+                        val aDist = kotlin.math.abs(aBitrate - 128)
+                        val bDist = kotlin.math.abs(bBitrate - 128)
+                        val distCmp = aDist.compareTo(bDist)
+                        if (distCmp != 0) return@sortedWith distCmp
+                        val highTie = bBitrate.compareTo(aBitrate)
+                        if (highTie != 0) return@sortedWith highTie
+                    }
+                    else -> {
+                        val cmp = bBitrate.compareTo(aBitrate)
+                        if (cmp != 0) return@sortedWith cmp
+                    }
+                }
+            }
+
+            itagPriority(b.itag).compareTo(itagPriority(a.itag))
+        }.first()
+    }
+
     @Throws(Exception::class)
-    fun resolveAudioStream(videoId: String): Map<String, Any?> {
+    fun resolveAudioStream(
+        videoId: String,
+        quality: String = "High",
+        preferM4a: Boolean = false
+    ): Map<String, Any?> {
         // Strict Security validation on videoId input
         if (!VIDEO_ID_REGEX.matches(videoId)) {
             throw IllegalArgumentException("Invalid YouTube videoId format: $videoId")
@@ -91,28 +190,8 @@ object NewPipeAudioResolver {
             throw IllegalStateException("No valid HTTPS public audio streams found for $videoId")
         }
 
-        // Rank audio streams:
-        // Priority 1: itag 140 (M4A / AAC 128kbps - universal, instant hardware decode on Android)
-        // Priority 2: itag 251 (Opus 160kbps)
-        // Priority 3: Other audio streams with highest bitrate
-        val selectedStream = validStreams.sortedWith { a, b ->
-            val aItag = a.itag
-            val bItag = b.itag
-
-            val aIs140 = aItag == 140
-            val bIs140 = bItag == 140
-            if (aIs140 && !bIs140) return@sortedWith -1
-            if (!aIs140 && bIs140) return@sortedWith 1
-
-            val aIs251 = aItag == 251
-            val bIs251 = bItag == 251
-            if (aIs251 && !bIs251) return@sortedWith -1
-            if (!aIs251 && bIs251) return@sortedWith 1
-
-            val aBitrate = a.averageBitrate
-            val bBitrate = b.averageBitrate
-            bBitrate.compareTo(aBitrate)
-        }.first()
+        val normalizedQuality = normalizeQuality(quality)
+        val selectedStream = selectAudioStream(validStreams, normalizedQuality, preferM4a)
 
         val streamUrl = selectedStream.content
         val itag = selectedStream.itag
@@ -121,7 +200,7 @@ object NewPipeAudioResolver {
         val mimeType = selectedStream.format?.mimeType ?: "audio/*"
         val durationMs = streamInfo.duration * 1000L
 
-        Log.d(TAG, "Resolved audio for $videoId: itag=$itag, bitrate=${bitrate}kbps, format=$formatName")
+        Log.d(TAG, "Resolved audio for $videoId (quality=$normalizedQuality): itag=$itag, bitrate=${bitrate}kbps, format=$formatName")
 
         return mapOf(
             "url" to streamUrl,

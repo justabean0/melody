@@ -8,6 +8,8 @@ class Song {
   final int duration; // in seconds
   final String thumbnailUrl;
   final bool isVideo;
+  final String? localUri;
+  final bool isLocal;
 
   const Song({
     required this.id,
@@ -19,7 +21,14 @@ class Song {
     this.duration = 0,
     required this.thumbnailUrl,
     this.isVideo = false,
+    this.localUri,
+    this.isLocal = false,
   });
+
+  bool get hasLocalSource => localUri != null && localUri!.trim().isNotEmpty;
+
+  bool get hasRemoteThumbnail =>
+      thumbnailUrl.startsWith('http://') || thumbnailUrl.startsWith('https://');
 
   String get formattedDuration {
     if (duration <= 0) return '0:00';
@@ -39,6 +48,8 @@ class Song {
       'duration': duration,
       'thumbnailUrl': thumbnailUrl,
       'isVideo': isVideo,
+      if (localUri != null) 'localUri': localUri,
+      if (isLocal) 'isLocal': isLocal,
     };
   }
 
@@ -53,6 +64,8 @@ class Song {
       duration: json['duration'] as int? ?? 0,
       thumbnailUrl: json['thumbnailUrl'] as String? ?? '',
       isVideo: json['isVideo'] as bool? ?? false,
+      localUri: json['localUri'] as String?,
+      isLocal: json['isLocal'] as bool? ?? false,
     );
   }
 
@@ -66,6 +79,8 @@ class Song {
     int? duration,
     String? thumbnailUrl,
     bool? isVideo,
+    String? localUri,
+    bool? isLocal,
   }) {
     return Song(
       id: id ?? this.id,
@@ -77,6 +92,8 @@ class Song {
       duration: duration ?? this.duration,
       thumbnailUrl: thumbnailUrl ?? this.thumbnailUrl,
       isVideo: isVideo ?? this.isVideo,
+      localUri: localUri ?? this.localUri,
+      isLocal: isLocal ?? this.isLocal,
     );
   }
 

@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:melody/models/search_result.dart';
+import 'package:melody/models/song.dart';
 import 'package:melody/providers/search_provider.dart';
 import 'package:melody/services/database_service.dart';
 import 'package:melody/services/innertube_service.dart';
@@ -380,6 +381,7 @@ void main() {
       expect(result.songs.length, equals(2));
       expect(result.songs[0].id, equals('nested_vid_001'));
       expect(result.songs[0].title, equals('Nested Track 1'));
+      expect(result.songs[0].artist, equals('Arijit Singh'));
       expect(result.songs[1].id, equals('shelf_song_vid_002'));
       expect(result.songs[1].title, equals('Kesariya'));
       expect(result.songs[1].artist, equals('Arijit Singh'));
@@ -698,6 +700,204 @@ void main() {
       expect(InnerTubeService.formatArtistRuns(null), equals(''));
       expect(InnerTubeService.formatArtistRuns([]), equals(''));
       expect(InnerTubeService.formatArtistRuns({'runs': []}), equals(''));
+    });
+
+    test('formatArtistRuns and cleanArtistText strip play/view counts, durations, and type tokens while preserving multi-artist names', () {
+      expect(
+        InnerTubeService.formatArtistRuns([
+          {'text': 'Song'},
+          {'text': ' • '},
+          {'text': 'Arijit Singh'},
+          {'text': ' • '},
+          {'text': '3:48'},
+          {'text': ' • '},
+          {'text': '1.2B plays'},
+        ]),
+        equals('Arijit Singh'),
+      );
+
+      expect(
+        InnerTubeService.formatArtistRuns([
+          {'text': 'Shreya Ghoshal'},
+          {'text': ' & '},
+          {'text': 'Irshad Kamil'},
+          {'text': ' • '},
+          {'text': '450M views'},
+        ]),
+        equals('Shreya Ghoshal, Irshad Kamil'),
+      );
+
+      expect(
+        InnerTubeService.cleanArtistText('Arijit Singh, 1.2B plays'),
+        equals('Arijit Singh'),
+      );
+      expect(
+        InnerTubeService.cleanArtistText('Arijit Singh, 1,234 plays'),
+        equals('Arijit Singh'),
+      );
+      expect(
+        InnerTubeService.cleanArtistText('Shreya Ghoshal, Irshad Kamil'),
+        equals('Shreya Ghoshal, Irshad Kamil'),
+      );
+      expect(
+        InnerTubeService.cleanArtistText('Tyler, The Creator, 45M views'),
+        equals('Tyler, The Creator'),
+      );
+      expect(InnerTubeService.cleanArtistText('Coldplay'), equals('Coldplay'));
+      expect(InnerTubeService.cleanArtistText('21 Savage'), equals('21 Savage'));
+      expect(
+        InnerTubeService.cleanArtistText('1.2 M de reproducciones'),
+        isEmpty,
+      );
+      expect(InnerTubeService.cleanArtistText('12K plays'), isEmpty);
+      expect(InnerTubeService.cleanArtistText('450M views'), isEmpty);
+    });
+
+    test('parseSearchResponse and parseMusicTwoRowItemRenderer strip play/view counts from third/subtitle columns', () {
+      final searchJson = {
+        'contents': {
+          'tabbedSearchResultsRenderer': {
+            'tabs': [
+              {
+                'tabRenderer': {
+                  'content': {
+                    'sectionListRenderer': {
+                      'contents': [
+                        {
+                          'musicCardShelfRenderer': {
+                            'title': {
+                              'runs': [
+                                {'text': 'Tum Hi Ho'}
+                              ]
+                            },
+                            'subtitle': {
+                              'runs': [
+                                {'text': 'Song'},
+                                {'text': ' • '},
+                                {'text': 'Arijit Singh'},
+                                {'text': ' • '},
+                                {'text': '3:48'},
+                                {'text': ' • '},
+                                {'text': '1.2B plays'},
+                              ]
+                            },
+                            'onTap': {
+                              'watchEndpoint': {'videoId': 'tum_hi_ho_top'}
+                            }
+                          }
+                        },
+                        {
+                          'musicShelfRenderer': {
+                            'contents': [
+                              {
+                                'musicResponsiveListItemRenderer': {
+                                  'playlistItemData': {'videoId': 'tum_hi_ho_row'},
+                                  'flexColumns': [
+                                    {
+                                      'musicResponsiveListItemFlexColumnRenderer': {
+                                        'text': {
+                                          'runs': [
+                                            {'text': 'Tum Hi Ho'}
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    {
+                                      'musicResponsiveListItemFlexColumnRenderer': {
+                                        'text': {
+                                          'runs': [
+                                            {'text': 'Arijit Singh'}
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    {
+                                      'musicResponsiveListItemFlexColumnRenderer': {
+                                        'text': {
+                                          'runs': [
+                                            {'text': '1.2B plays'}
+                                          ]
+                                        }
+                                      }
+                                    },
+                                  ]
+                                }
+                              },
+                              {
+                                'musicResponsiveListItemRenderer': {
+                                  'playlistItemData': {'videoId': 'multi_artist_row'},
+                                  'flexColumns': [
+                                    {
+                                      'musicResponsiveListItemFlexColumnRenderer': {
+                                        'text': {
+                                          'runs': [
+                                            {'text': 'Agar Tum Saath Ho'}
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    {
+                                      'musicResponsiveListItemFlexColumnRenderer': {
+                                        'text': {
+                                          'runs': [
+                                            {'text': 'Alka Yagnik'},
+                                            {'text': ', '},
+                                            {'text': 'Arijit Singh'},
+                                            {'text': ' • '},
+                                            {'text': '450M views'},
+                                            {'text': ' • '},
+                                            {'text': '5:41'},
+                                          ]
+                                        }
+                                      }
+                                    },
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      };
+
+      final parsed = InnerTubeService.parseSearchResponse(searchJson);
+      expect(parsed.topResult, isA<Song>());
+      expect((parsed.topResult as Song).artist, equals('Arijit Singh'));
+      expect(parsed.songs.length, equals(3));
+      expect(parsed.songs[0].artist, equals('Arijit Singh'));
+      expect(parsed.songs[1].artist, equals('Arijit Singh'));
+      expect(parsed.songs[2].artist, equals('Alka Yagnik, Arijit Singh'));
+
+      final twoRow = InnerTubeService.parseMusicTwoRowItemRenderer({
+        'title': {
+          'runs': [
+            {'text': 'Ve Kamleya'}
+          ]
+        },
+        'subtitle': {
+          'runs': [
+            {'text': 'Song'},
+            {'text': ' • '},
+            {'text': 'Arijit Singh'},
+            {'text': ' & '},
+            {'text': 'Shreya Ghoshal'},
+            {'text': ' • '},
+            {'text': '120M plays'},
+          ]
+        },
+        'navigationEndpoint': {
+          'watchEndpoint': {'videoId': 'two_row_vid'}
+        }
+      });
+      expect(twoRow, isA<Song>());
+      expect((twoRow as Song).artist, equals('Arijit Singh, Shreya Ghoshal'));
     });
 
     test('parseDuration strictly matches M:SS and H:MM:SS format', () {

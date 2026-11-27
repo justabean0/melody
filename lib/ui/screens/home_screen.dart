@@ -76,7 +76,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final onboardingDone = DatabaseService.hasCompletedLanguageOnboarding();
 
     if (!hasLangs && !onboardingDone) {
-      // Prompt user for language selection on first run before loading feed
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!mounted) return;
         final tokenBefore = _feedRequestToken;
@@ -86,7 +85,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
     } else {
-      // Languages already selected or onboarding completed: load immediately
       _loadFeed('All', false);
     }
   }
@@ -96,9 +94,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await LanguageSelectionDialog.show(
         context,
         isDismissible: false,
-        onSaved: (selected) {
-          // Handled upon dialog completion
-        },
+        onSaved: (selected) {},
       );
       if (!DatabaseService.hasCompletedLanguageOnboarding()) {
         await DatabaseService.markLanguageOnboardingCompleted();
@@ -109,14 +105,12 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _checkAppUpdateSilently() async {
     if (!DatabaseService.getAutoCheckUpdates()) return;
 
-    // Throttle checks to at most once every 6 hours
     final lastCheck = DatabaseService.getLastUpdateCheck();
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - lastCheck < const Duration(hours: 6).inMilliseconds) return;
 
     await DatabaseService.setLastUpdateCheck(now);
 
-    // Wait a brief moment after UI mounts
     await Future.delayed(const Duration(seconds: 3));
     if (!mounted) return;
 
@@ -134,7 +128,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final cacheKey = '$mood:${activeLangs.join(",")}';
 
     // 1. Instant display from cache (0ms perceived latency)
-    final cached = DatabaseService.getCachedFeed(cacheKey);
+    final cached = InnerTubeService.sanitizeSongs(
+      DatabaseService.getCachedFeed(cacheKey),
+    );
     if (cached.isNotEmpty && !isUserRefresh) {
       if (mounted && requestToken == _feedRequestToken) {
         setState(() {
@@ -193,7 +189,6 @@ class _HomeScreenState extends State<HomeScreen> {
       });
 
       if (songs.isNotEmpty) {
-        // 3. Decoupled pre-warm: Delayed by 1.5s so network is not contested during feed render
         _preWarmTimer?.cancel();
         _preWarmTimer = Timer(const Duration(milliseconds: 1500), () {
           if (!mounted || requestToken != _feedRequestToken) return;
@@ -218,46 +213,209 @@ class _HomeScreenState extends State<HomeScreen> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final playback = context.read<PlaybackProvider>();
+    final bottomPadding = 172.0 + MediaQuery.paddingOf(context).bottom;
+
+    final albumItems = _browseItems.where((b) => b.type == 'album').toList();
+    final featuredNonAlbums =
+        _browseItems.where((b) => b.type != 'album').toList();
+    final featuredItems =
+        featuredNonAlbums.isNotEmpty ? featuredNonAlbums : _browseItems;
+
+    final int quickPickLimit = _quickPicks.length >= 16
+        ? ((_quickPicks.length ~/ 4) * 4).clamp(16, 20)
+        : _quickPicks.length;
+    final quickPickPool = _quickPicks.take(quickPickLimit).toList();
+    final int quickPickColumns =
+        quickPickPool.isEmpty ? 0 : ((quickPickPool.length - 1) ~/ 4) + 1;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Row(
+      body: SafeArea(
+        bottom: false,
+        child: Column(
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Image.asset(
-                'assets/images/logo.png',
-                width: 38,
-                height: 38,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: colorScheme.primary,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(Icons.music_note, color: Colors.white, size: 22),
+            _buildBrandHeader(theme, colorScheme),
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: () async {
+                  if (_isLoading) return;
+                  unawaited(_loadFeed(_activeMood, true));
+                },
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 250),
+                  child: _isLoading
+                      ? const HomeFeedSkeleton(key: ValueKey('home_skeleton'))
+                      : _hasError && _quickPicks.isEmpty
+                          ? _buildErrorState(theme, colorScheme, bottomPadding)
+                          : ListView(
+                              key: const ValueKey('home_content'),
+                              padding: EdgeInsets.only(bottom: bottomPadding),
+                              children: [
+                                _buildMoodChips(colorScheme),
+                                const SizedBox(height: 18),
+                                _buildQuickPicksHeader(theme, colorScheme, playback),
+                                const SizedBox(height: 6),
+                                if (quickPickColumns > 0)
+                                  LayoutBuilder(
+                                    builder: (context, constraints) {
+                                      final colWidth =
+                                          (constraints.maxWidth * 0.91)
+                                              .clamp(280.0, 420.0);
+                                      return SingleChildScrollView(
+                                        scrollDirection: Axis.horizontal,
+                                        padding:
+                                            const EdgeInsets.only(right: 14),
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: List.generate(
+                                            quickPickColumns,
+                                            (colIndex) {
+                                              final start = colIndex * 4;
+                                              final end = (start + 4).clamp(
+                                                  0, quickPickPool.length);
+                                              final colSongs = quickPickPool
+                                                  .sublist(start, end);
+                                              return SizedBox(
+                                                width: colWidth,
+                                                child: Column(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: colSongs
+                                                      .map(
+                                                        (song) => SongTile(
+                                                          song: song,
+                                                          contextQueue:
+                                                              _quickPicks,
+                                                          contentPadding:
+                                                              const EdgeInsets
+                                                                  .fromLTRB(
+                                                                  16, 0, 2, 0),
+                                                        ),
+                                                      )
+                                                      .toList(),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                if (featuredItems.isNotEmpty) ...[
+                                  const SizedBox(height: 22),
+                                  _buildSectionTitle(
+                                    'Featured & Trending',
+                                    theme,
+                                    colorScheme,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  _buildBrowseShelf(featuredItems),
+                                ],
+                                if (albumItems.isNotEmpty &&
+                                    featuredNonAlbums.isNotEmpty) ...[
+                                  const SizedBox(height: 22),
+                                  _buildSectionTitle(
+                                    'Albums',
+                                    theme,
+                                    colorScheme,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  _buildBrowseShelf(albumItems),
+                                ],
+                                if (_quickPicks.length > quickPickPool.length) ...[
+                                  const SizedBox(height: 22),
+                                  _buildSectionTitle(
+                                    'More For You',
+                                    theme,
+                                    colorScheme,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  ..._quickPicks.skip(quickPickPool.length).map(
+                                        (song) => SongTile(
+                                          song: song,
+                                          contextQueue: _quickPicks,
+                                        ),
+                                      ),
+                                ],
+                              ],
+                            ),
                 ),
               ),
             ),
-            const SizedBox(width: 10),
-            const Text(
-              'Melody',
-              style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: -0.5),
-            ),
           ],
         ),
-        actions: [
+      ),
+    );
+  }
+
+  Widget _buildBrandHeader(ThemeData theme, ColorScheme colorScheme) {
+    final isLight = colorScheme.brightness == Brightness.light;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 8, 8),
+      child: Row(
+        children: [
+          Container(
+            width: 29,
+            height: 29,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: isLight
+                    ? colorScheme.outlineVariant.withValues(alpha: 0.6)
+                    : Colors.white.withValues(alpha: 0.08),
+              ),
+              boxShadow: isLight
+                  ? [
+                      BoxShadow(
+                        color: colorScheme.shadow.withValues(alpha: 0.08),
+                        blurRadius: 4,
+                        offset: const Offset(0, 1),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(7),
+              child: Image.asset(
+                'assets/images/logo.png',
+                width: 27,
+                height: 27,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => Icon(
+                  Icons.music_note_rounded,
+                  color: colorScheme.primary,
+                  size: 18,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Melody',
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontSize: 25,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.5,
+                height: 1.05,
+                color: colorScheme.onSurface,
+              ),
+            ),
+          ),
           IconButton(
             tooltip: 'Music Languages',
-            icon: const Icon(Icons.translate_rounded),
+            constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+            icon: Icon(
+              Icons.translate_rounded,
+              color: colorScheme.onSurfaceVariant,
+            ),
             onPressed: () {
               final tokenBefore = _feedRequestToken;
               LanguageSelectionDialog.show(
                 context,
                 isDismissible: true,
-                onSaved: (selected) {
-                  // Only trigger a manual reload if musicLanguagesNotifier did not already start one
+                onSaved: (_) {
                   if (_feedRequestToken == tokenBefore) {
                     setState(() => _isLoading = true);
                     _loadFeed(_activeMood, true);
@@ -268,188 +426,218 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async {
-          if (_isLoading) return;
-          unawaited(_loadFeed(_activeMood, true));
-        },
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 250),
-          child: _isLoading
-              ? const HomeFeedSkeleton(key: ValueKey('home_skeleton'))
-              : _hasError && _quickPicks.isEmpty
-                  ? Center(
-                      key: const ValueKey('home_error'),
-                      child: SingleChildScrollView(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 48.0),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.wifi_off_rounded, size: 56, color: colorScheme.outline),
-                            const SizedBox(height: 16),
-                            Text(
-                              'Unable to load music feed',
-                              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Check your internet connection and try again.',
-                              textAlign: TextAlign.center,
-                              style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
-                            ),
-                            const SizedBox(height: 20),
-                            FilledButton.icon(
-                              onPressed: () => _loadFeed(_activeMood, true),
-                              icon: const Icon(Icons.refresh_rounded),
-                              label: const Text('Retry'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    )
-                  : ListView(
-                      key: const ValueKey('home_content'),
-                      padding: const EdgeInsets.only(bottom: 120),
-                      children: [
-                        // Moods & Genres Filters
-                        SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                          child: Row(
-                            children: _moods.map((mood) {
-                              final isSelected = _activeMood == mood;
-                              return Padding(
-                                padding: const EdgeInsets.only(right: 8.0),
-                                child: FilterChip(
-                                  label: Text(mood),
-                                  selected: isSelected,
-                                  showCheckmark: false,
-                                  onSelected: (val) {
-                                    setState(() {
-                                      _activeMood = mood;
-                                      _isLoading = true;
-                                    });
-                                    _loadFeed(mood, false);
-                                  },
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                        ),
+    );
+  }
 
-                  const SizedBox(height: 12),
-
-                  // Section 1: Quick Picks (Melody signature feature)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Quick Picks',
-                              style: theme.textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            Text(
-                              'Trending Singles & Recommendations',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: theme.textTheme.bodySmall?.color?.withAlpha(160),
-                                fontSize: 11,
-                              ),
-                            ),
-                          ],
-                        ),
-                        TextButton.icon(
-                          onPressed: () {
-                            if (_quickPicks.isNotEmpty) {
-                              playback.playSong(_quickPicks.first, contextQueue: _quickPicks);
-                            }
-                          },
-                          icon: const Icon(Icons.play_circle_fill, size: 20),
-                          label: const Text('Play all'),
-                        ),
-                      ],
-                    ),
+  Widget _buildMoodChips(ColorScheme colorScheme) {
+    return SizedBox(
+      height: 48,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16.0),
+        itemCount: _moods.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final mood = _moods[index];
+          final isSelected = _activeMood == mood;
+          return Center(
+            child: SizedBox(
+              height: 48,
+              child: FilterChip(
+                label: Text(
+                  mood,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                    color: isSelected
+                        ? colorScheme.onPrimary
+                        : colorScheme.onSurface,
                   ),
-
-                  // Quick picks list (Top 8 blended trending & personalized single songs)
-                  ..._quickPicks.take(8).map((song) => SongTile(
-                        song: song,
-                      )),
-
-                  const SizedBox(height: 20),
-
-                  // Section 2: Recommended Albums & Playlists (Personalized by Languages)
-                  if (_browseItems.isNotEmpty) ...[
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
-                      child: Text(
-                        'Featured & Trending',
-                        style: theme.textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-
-                    SizedBox(
-                      height: 220,
-                      child: ListView.builder(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                        itemCount: _browseItems.length,
-                        itemBuilder: (context, index) {
-                          final item = _browseItems[index];
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 12.0),
-                            child: MediaCard(
-                              title: item.title,
-                              subtitle: item.subtitle,
-                              imageUrl: item.thumbnailUrl,
-                              onTap: () {
-                                final browseId = item.browseId ?? item.id;
-                                if (browseId.isEmpty) return;
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => CollectionDetailScreen(
-                                      browseId: browseId,
-                                      isAlbum: item.type == 'album',
-                                      title: item.title,
-                                      subtitle: item.subtitle,
-                                      thumbnailUrl: item.thumbnailUrl,
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-
-                  // Section 3: More Recommendations (if extra tracks available)
-                  if (_quickPicks.length > 8) ...[
-                    const SizedBox(height: 20),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
-                      child: Text(
-                        'More For You',
-                        style: theme.textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    ..._quickPicks.skip(8).map((song) => SongTile(
-                          song: song,
-                        )),
-                  ],
-                ],
+                ),
+                selected: isSelected,
+                showCheckmark: false,
+                side: BorderSide.none,
+                shape: const StadiumBorder(),
+                backgroundColor: colorScheme.surfaceContainerHigh,
+                selectedColor: colorScheme.primary,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                materialTapTargetSize: MaterialTapTargetSize.padded,
+                onSelected: (_) {
+                  setState(() {
+                    _activeMood = mood;
+                    _isLoading = true;
+                  });
+                  _loadFeed(mood, false);
+                },
               ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildQuickPicksHeader(
+    ThemeData theme,
+    ColorScheme colorScheme,
+    PlaybackProvider playback,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Text(
+              'Quick Picks',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontSize: 19,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.3,
+                color: colorScheme.onSurface,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          InkWell(
+            onTap: _quickPicks.isNotEmpty
+                ? () => playback.playSong(_quickPicks.first,
+                    contextQueue: _quickPicks)
+                : null,
+            borderRadius: BorderRadius.circular(999),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
+              child: Center(
+                child: Container(
+                  constraints: const BoxConstraints(minHeight: 32),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.play_arrow_rounded,
+                        size: 16,
+                        color: colorScheme.onPrimaryContainer,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Play all',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onPrimaryContainer,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(
+    String title,
+    ThemeData theme,
+    ColorScheme colorScheme,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+      child: Text(
+        title,
+        style: theme.textTheme.titleLarge?.copyWith(
+          fontSize: 19,
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.3,
+          color: colorScheme.onSurface,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBrowseShelf(List<BrowseMediaItem> items) {
+    final shelfHeight =
+        138.0 + 14.0 + MediaQuery.textScalerOf(context).scale(44.0);
+    return SizedBox(
+      height: shelfHeight,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.only(left: 16.0, right: 4.0),
+        itemCount: items.length,
+        itemBuilder: (context, index) {
+          final item = items[index];
+          return MediaCard(
+            size: 138,
+            title: item.title,
+            subtitle: item.subtitle,
+            imageUrl: item.thumbnailUrl,
+            onTap: () {
+              final browseId = item.browseId ?? item.id;
+              if (browseId.isEmpty) return;
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => CollectionDetailScreen(
+                    browseId: browseId,
+                    isAlbum: item.type == 'album',
+                    title: item.title,
+                    subtitle: item.subtitle,
+                    thumbnailUrl: item.thumbnailUrl,
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildErrorState(
+    ThemeData theme,
+    ColorScheme colorScheme,
+    double bottomPadding,
+  ) {
+    return Center(
+      key: const ValueKey('home_error'),
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: EdgeInsets.fromLTRB(24, 48, 24, bottomPadding),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.wifi_off_rounded, size: 56, color: colorScheme.outline),
+            const SizedBox(height: 16),
+            Text(
+              'Unable to load music feed',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Check your internet connection and try again.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: () => _loadFeed(_activeMood, true),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Retry'),
+            ),
+          ],
         ),
       ),
     );
