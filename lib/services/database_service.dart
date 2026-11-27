@@ -103,7 +103,9 @@ class DatabaseService {
   static const String _historyKey = 'melody_history';
   static const String _themeModeKey = 'melody_theme_mode';
   static const String _pureBlackKey = 'melody_pure_black';
+  static const String _surfaceStyleKey = 'melody_surface_style';
   static const String _accentColorKey = 'melody_accent_color';
+  static const String _adaptivePlayerTintKey = 'melody_adaptive_player_tint';
   static const String _audioQualityKey = 'melody_audio_quality';
   static const String _skipSilenceKey = 'melody_skip_silence';
   static const String _normalizeVolumeKey = 'melody_normalize_volume';
@@ -937,13 +939,25 @@ class DatabaseService {
 
   static bool getPureBlack() =>
       _prefs?.getBool(_pureBlackKey) ?? true;
+  static bool hasExplicitPureBlack() =>
+      _prefs?.containsKey(_pureBlackKey) ?? false;
   static Future<void> setPureBlack(bool val) async =>
       await _prefs?.setBool(_pureBlackKey, val);
+
+  static String? getStoredSurfaceStyle() =>
+      _prefs?.getString(_surfaceStyleKey);
+  static Future<void> setSurfaceStyle(String style) async =>
+      await _prefs?.setString(_surfaceStyleKey, style);
 
   static int getAccentColor() =>
       _prefs?.getInt(_accentColorKey) ?? 0xFF8E24AA; // Default Purple
   static Future<void> setAccentColor(int color) async =>
       await _prefs?.setInt(_accentColorKey, color);
+
+  static bool getAdaptivePlayerTint() =>
+      _prefs?.getBool(_adaptivePlayerTintKey) ?? false;
+  static Future<void> setAdaptivePlayerTint(bool val) async =>
+      await _prefs?.setBool(_adaptivePlayerTintKey, val);
 
   static String normalizeAudioQuality(String? raw) {
     switch (raw?.trim().toLowerCase()) {

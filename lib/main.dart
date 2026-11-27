@@ -354,6 +354,14 @@ class _FloatingNavBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = colorScheme.brightness == Brightness.dark;
+    var isHighContrast = false;
+    try {
+      isHighContrast = context.select<ThemeProvider, bool>(
+        (t) => t.surfaceStyle == ThemeSurfaceStyle.highContrast,
+      );
+    } on ProviderNotFoundException {
+      isHighContrast = false;
+    }
 
     return Container(
       height: 60,
@@ -363,12 +371,14 @@ class _FloatingNavBar extends StatelessWidget {
             ? colorScheme.surfaceContainerLow
             : colorScheme.surfaceContainerLowest,
         borderRadius: BorderRadius.circular(28),
-        border: isDark
-            ? null
-            : Border.all(
-                color: colorScheme.outlineVariant.withValues(alpha: 0.55),
+        border: (isHighContrast || !isDark)
+            ? Border.all(
+                color: isHighContrast
+                    ? colorScheme.outlineVariant
+                    : colorScheme.outlineVariant.withValues(alpha: 0.55),
                 width: 1,
-              ),
+              )
+            : null,
         boxShadow: [
           BoxShadow(
             color: isDark

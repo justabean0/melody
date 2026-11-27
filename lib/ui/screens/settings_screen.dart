@@ -102,13 +102,13 @@ class _SettingsScreenState extends State<SettingsScreen>
   Color _successColor(ColorScheme colorScheme) {
     return colorScheme.brightness == Brightness.dark
         ? const Color(0xFF66BB6A)
-        : const Color(0xFF1B6E2D);
+        : const Color(0xFF165B24);
   }
 
   Color _warningColor(ColorScheme colorScheme) {
     return colorScheme.brightness == Brightness.dark
         ? const Color(0xFFFFB74D)
-        : const Color(0xFF8A5300);
+        : const Color(0xFF7A4800);
   }
 
   void _editUpdateSourceDialog() {
@@ -317,6 +317,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             _SettingsSectionCard(
               title: 'Appearance',
               children: [
+                _ThemePresetsStrip(themeProvider: themeProvider),
                 ListTile(
                   contentPadding: const EdgeInsets.symmetric(
                     horizontal: 16,
@@ -356,69 +357,124 @@ class _SettingsScreenState extends State<SettingsScreen>
                     ],
                   ),
                 ),
+                ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  leading: Icon(
+                    Icons.layers_outlined,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Surface Style'),
+                  subtitle: Text(
+                    themeProvider.surfaceStyle.description,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  trailing: _SettingsMenuPill<ThemeSurfaceStyle>(
+                    menuKey: const Key('settings_surface_style_menu'),
+                    tooltip: 'Select Surface Style',
+                    value: themeProvider.surfaceStyle,
+                    onChanged: themeProvider.setSurfaceStyle,
+                    options: ThemeSurfaceStyle.values
+                        .map(
+                          (style) => _SettingsMenuOption(
+                            value: style,
+                            label: style.label,
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Accent Color',
-                        style: theme.textTheme.bodyLarge?.copyWith(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w500,
-                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Accent Color',
+                              style: theme.textTheme.bodyLarge?.copyWith(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                          Text(
+                            ThemeProvider.accentNameFor(
+                              themeProvider.accentColor,
+                            ),
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 10),
                       Wrap(
-                        spacing: 12,
-                        runSpacing: 10,
-                        children: ThemeProvider.availableAccents.map((color) {
+                        spacing: 2,
+                        runSpacing: 4,
+                        children: ThemeProvider.accentPresets.map((preset) {
                           final isSelected =
                               ThemeProvider.argb32(themeProvider.accentColor) ==
-                                  ThemeProvider.argb32(color);
+                                  ThemeProvider.argb32(preset.color);
                           final checkColor =
-                              ThemeProvider.contrastRatio(color, Colors.white) >=
-                                      4.5
-                                  ? Colors.white
-                                  : Colors.black;
-                          return Semantics(
-                            label: 'Accent color swatch',
-                            selected: isSelected,
-                            button: true,
-                            child: InkWell(
-                              onTap: () => themeProvider.setAccentColor(color),
-                              customBorder: const CircleBorder(),
-                              child: SizedBox(
-                                width: 38,
-                                height: 38,
-                                child: Center(
-                                  child: Container(
-                                    width: 29,
-                                    height: 29,
-                                    decoration: BoxDecoration(
-                                      color: color,
-                                      shape: BoxShape.circle,
-                                      boxShadow: isSelected
-                                          ? [
-                                              BoxShadow(
-                                                color:
-                                                    colorScheme.surfaceContainerLow,
-                                                spreadRadius: 2,
-                                              ),
-                                              BoxShadow(
-                                                color: colorScheme.onSurface,
-                                                spreadRadius: 4,
-                                              ),
-                                            ]
+                              ThemeProvider.bestContrastInk(preset.color);
+                          return Tooltip(
+                            message: preset.name,
+                            child: Semantics(
+                              label: preset.name,
+                              selected: isSelected,
+                              button: true,
+                              child: InkWell(
+                                key: Key('accent_swatch_${preset.name}'),
+                                onTap: () =>
+                                    themeProvider.setAccentColor(preset.color),
+                                customBorder: const CircleBorder(),
+                                child: SizedBox(
+                                  width: 48,
+                                  height: 48,
+                                  child: Center(
+                                    child: Container(
+                                      width: 29,
+                                      height: 29,
+                                      decoration: BoxDecoration(
+                                        color: preset.color,
+                                        shape: BoxShape.circle,
+                                        border: !isSelected
+                                            ? Border.all(
+                                                color: colorScheme.outlineVariant
+                                                    .withValues(alpha: 0.72),
+                                                width: 1,
+                                              )
+                                            : null,
+                                        boxShadow: isSelected
+                                            ? [
+                                                BoxShadow(
+                                                  color: colorScheme
+                                                      .surfaceContainerLow,
+                                                  spreadRadius: 2,
+                                                ),
+                                                BoxShadow(
+                                                  color: colorScheme.onSurface,
+                                                  spreadRadius: 4,
+                                                ),
+                                              ]
+                                            : null,
+                                      ),
+                                      child: isSelected
+                                          ? Icon(
+                                              Icons.check_rounded,
+                                              color: checkColor,
+                                              size: 16,
+                                            )
                                           : null,
                                     ),
-                                    child: isSelected
-                                        ? Icon(
-                                            Icons.check_rounded,
-                                            color: checkColor,
-                                            size: 16,
-                                          )
-                                        : null,
                                   ),
                                 ),
                               ),
@@ -428,6 +484,24 @@ class _SettingsScreenState extends State<SettingsScreen>
                       ),
                     ],
                   ),
+                ),
+                SwitchListTile(
+                  key: const Key('settings_adaptive_player_tint_switch'),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 2,
+                  ),
+                  secondary: Icon(
+                    Icons.palette_outlined,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  title: const Text('Adaptive Player Tint'),
+                  subtitle: Text(
+                    'Subtly tint Now Playing surfaces from active album art',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  value: themeProvider.adaptivePlayerTint,
+                  onChanged: themeProvider.setAdaptivePlayerTint,
                 ),
               ],
             ),
@@ -921,8 +995,12 @@ class _SettingsSectionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = colorScheme.brightness == Brightness.dark;
-    final hairlineColor =
-        colorScheme.outlineVariant.withValues(alpha: isDark ? 0.25 : 0.45);
+    final isHighContrast = context.select<ThemeProvider, bool>(
+      (t) => t.surfaceStyle == ThemeSurfaceStyle.highContrast,
+    );
+    final hairlineColor = colorScheme.outlineVariant.withValues(
+      alpha: isHighContrast ? 0.72 : (isDark ? 0.25 : 0.45),
+    );
 
     final items = <Widget>[
       Padding(
@@ -958,11 +1036,236 @@ class _SettingsSectionCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: colorScheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(20),
+        border: isHighContrast
+            ? Border.all(color: colorScheme.outlineVariant, width: 1.0)
+            : null,
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: items,
+      ),
+    );
+  }
+}
+
+class _ThemePresetsStrip extends StatelessWidget {
+  final ThemeProvider themeProvider;
+
+  const _ThemePresetsStrip({required this.themeProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final activePreset = themeProvider.activePreset;
+    final textScaler = MediaQuery.textScalerOf(context);
+    final stripHeight = (68.0 + textScaler.scale(26.0)).clamp(94.0, 132.0);
+    final cardWidth = (88.0 + textScaler.scale(24.0)).clamp(110.0, 146.0);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 8, 0, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Theme Presets',
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                Text(
+                  activePreset?.name ?? 'Custom',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: activePreset != null
+                        ? colorScheme.primary
+                        : colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: stripHeight,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: ThemeProvider.curatedPresets.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (context, index) {
+                final preset = ThemeProvider.curatedPresets[index];
+                final isSelected = activePreset?.id == preset.id;
+                return _ThemePresetCard(
+                  preset: preset,
+                  width: cardWidth,
+                  isSelected: isSelected,
+                  onTap: () => themeProvider.applyPreset(preset),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ThemePresetCard extends StatelessWidget {
+  final ThemePreset preset;
+  final double width;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _ThemePresetCard({
+    required this.preset,
+    required this.width,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final previewScheme = ThemeProvider.buildColorScheme(
+      seed: preset.accentColor,
+      brightness: preset.themeMode == ThemeMode.light
+          ? Brightness.light
+          : Brightness.dark,
+      surfaceStyle: preset.surfaceStyle,
+    );
+
+    return Semantics(
+      label: '${preset.name} theme preset',
+      selected: isSelected,
+      button: true,
+      child: Material(
+        color: isSelected
+            ? colorScheme.primaryContainer.withValues(alpha: 0.36)
+            : colorScheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          key: Key('theme_preset_${preset.id}'),
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
+          child: Container(
+            width: width,
+            constraints: const BoxConstraints(minHeight: 48),
+            padding: const EdgeInsets.all(7),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isSelected
+                    ? colorScheme.primary
+                    : colorScheme.outlineVariant.withValues(alpha: 0.65),
+                width: isSelected ? 2.0 : 1.0,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: previewScheme.surface,
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(
+                        color:
+                            previewScheme.outlineVariant.withValues(alpha: 0.7),
+                        width: 1,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Container(
+                              width: 24,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: previewScheme.primary,
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                            ),
+                            if (isSelected)
+                              Container(
+                                width: 15,
+                                height: 15,
+                                decoration: BoxDecoration(
+                                  color: previewScheme.primary,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  Icons.check_rounded,
+                                  size: 10,
+                                  color: previewScheme.onPrimary,
+                                ),
+                              )
+                            else
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: previewScheme.surfaceContainerHighest,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                          ],
+                        ),
+                        Container(
+                          height: 11,
+                          decoration: BoxDecoration(
+                            color: previewScheme.surfaceContainerLow,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          alignment: Alignment.centerLeft,
+                          child: FractionallySizedBox(
+                            widthFactor: 0.58,
+                            child: Container(
+                              height: 3.5,
+                              decoration: BoxDecoration(
+                                color: previewScheme.onSurface
+                                    .withValues(alpha: 0.55),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  preset.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontSize: 11.5,
+                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600,
+                    color: isSelected
+                        ? colorScheme.primary
+                        : colorScheme.onSurface,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1029,22 +1332,27 @@ class _SettingsMenuPill<T> extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  option.label,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontSize: 13.5,
-                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                    color: isSelected
-                        ? colorScheme.onPrimaryContainer
-                        : colorScheme.onSurface,
+                Flexible(
+                  child: Text(
+                    option.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontSize: 13.5,
+                      fontWeight:
+                          isSelected ? FontWeight.w700 : FontWeight.w500,
+                      color: isSelected
+                          ? colorScheme.onPrimaryContainer
+                          : colorScheme.onSurface,
+                    ),
                   ),
                 ),
-                const SizedBox(width: 14),
+                const SizedBox(width: 12),
                 if (isSelected)
                   Icon(
                     Icons.check_rounded,
                     size: 18,
-                    color: colorScheme.primary,
+                    color: colorScheme.onPrimaryContainer,
                   )
                 else
                   const SizedBox(width: 18),
@@ -1054,7 +1362,11 @@ class _SettingsMenuPill<T> extends StatelessWidget {
         );
       }).toList(),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        constraints: const BoxConstraints(
+          minWidth: 48,
+          minHeight: 48,
+          maxWidth: 180,
+        ),
         child: Center(
           widthFactor: 1.0,
           heightFactor: 1.0,
@@ -1068,12 +1380,16 @@ class _SettingsMenuPill<T> extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  selectedLabel,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: colorScheme.onSurface,
+                Flexible(
+                  child: Text(
+                    selectedLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: colorScheme.onSurface,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 4),

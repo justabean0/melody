@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../models/song.dart';
 import '../../providers/playback_provider.dart';
 import '../../providers/library_provider.dart';
+import '../../providers/theme_provider.dart';
 import '../../services/audio_service.dart';
 import '../../services/download_service.dart';
 import '../../services/innertube_service.dart';
@@ -29,6 +30,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   String? _activeSongId;
   double _playbackSpeed = 1.0;
   bool _isResolvingArtist = false;
+  ColorScheme? _adaptiveScheme;
+  String? _adaptiveRequestKey;
 
   @override
   void initState() {
@@ -279,31 +282,72 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  void _showQueueBottomSheet(BuildContext context) {
+  ThemeProvider? _maybeWatchThemeProvider(BuildContext context) {
+    try {
+      return Provider.of<ThemeProvider>(context);
+    } on ProviderNotFoundException {
+      return null;
+    }
+  }
+
+  void _syncAdaptiveTint({
+    required Song song,
+    required ThemeProvider? themeProvider,
+    required ColorScheme baseScheme,
+  }) {
+    if (themeProvider == null || !themeProvider.adaptivePlayerTint) {
+      _adaptiveRequestKey = null;
+      _adaptiveScheme = null;
+      return;
+    }
+
+    final key =
+        '${song.id}|${song.thumbnailUrl}|${baseScheme.brightness.name}|${themeProvider.surfaceStyle.name}|${ThemeProvider.argb32(themeProvider.accentColor)}';
+    if (_adaptiveRequestKey == key) return;
+    _adaptiveRequestKey = key;
+    _adaptiveScheme = null;
+
+    themeProvider
+        .resolveAdaptivePlayerScheme(
+      thumbnailUrl: song.thumbnailUrl,
+      baseScheme: baseScheme,
+    )
+        .then((resolved) {
+      if (!mounted || _adaptiveRequestKey != key) return;
+      if (resolved != null) {
+        setState(() => _adaptiveScheme = resolved);
+      }
+    });
+  }
+
+  void _showQueueBottomSheet(BuildContext context, ThemeData sheetTheme) {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       showDragHandle: true,
+      backgroundColor: sheetTheme.colorScheme.surfaceContainerLow,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (sheetCtx) {
-        final theme = Theme.of(sheetCtx);
-        final colorScheme = theme.colorScheme;
+        final colorScheme = sheetTheme.colorScheme;
         final livePlayback = sheetCtx.watch<PlaybackProvider>();
 
-        return DraggableScrollableSheet(
-          initialChildSize: 0.65,
-          minChildSize: 0.4,
-          maxChildSize: 0.92,
-          expand: false,
-          builder: (_, scrollController) => _buildQueueView(
-            sheetCtx,
-            livePlayback,
-            theme,
-            colorScheme,
-            controller: scrollController,
+        return Theme(
+          data: sheetTheme,
+          child: DraggableScrollableSheet(
+            initialChildSize: 0.65,
+            minChildSize: 0.4,
+            maxChildSize: 0.92,
+            expand: false,
+            builder: (_, scrollController) => _buildQueueView(
+              sheetCtx,
+              livePlayback,
+              sheetTheme,
+              colorScheme,
+              controller: scrollController,
+            ),
           ),
         );
       },
@@ -314,8 +358,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   Widget build(BuildContext context) {
     final playback = context.watch<PlaybackProvider>();
     final song = playback.currentSong;
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+    final themeProvider = _maybeWatchThemeProvider(context);
+    final baseTheme = Theme.of(context);
+    final baseScheme = baseTheme.colorScheme;
     final library = context.watch<LibraryProvider>();
 
     if (song != null && song.id != _activeSongId) {
@@ -331,82 +376,133 @@ class _PlayerScreenState extends State<PlayerScreen>
       );
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        leadingWidth: 52,
-        titleSpacing: 0,
-        centerTitle: true,
-        leading: IconButton(
-          tooltip: 'Minimize player',
-          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-          icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 32),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 240),
-          child: SizedBox(
-            width: double.infinity,
-            child: TabBar(
-              controller: _tabController,
-              isScrollable: false,
-              indicatorSize: TabBarIndicatorSize.tab,
-              dividerColor: Colors.transparent,
-              labelPadding: const EdgeInsets.symmetric(horizontal: 4),
-              indicator: UnderlineTabIndicator(
-                borderSide: BorderSide(
-                  color: colorScheme.primary,
-                  width: 2.5,
-                ),
-                borderRadius: BorderRadius.circular(2),
-              ),
-              labelColor: colorScheme.onSurface,
-              unselectedLabelColor: colorScheme.onSurfaceVariant,
-              labelStyle: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-              unselectedLabelStyle: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w500,
-              ),
-              tabs: const [
-                Tab(
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: Center(
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text('Now Playing', maxLines: 1),
+    _syncAdaptiveTint(
+      song: song,
+      themeProvider: themeProvider,
+      baseScheme: baseScheme,
+    );
+
+    final hasAdaptiveTint = (themeProvider?.adaptivePlayerTint ?? false) &&
+        _adaptiveScheme != null;
+    final ColorScheme colorScheme =
+        hasAdaptiveTint ? _adaptiveScheme! : baseScheme;
+    final surfaceStyle =
+        themeProvider?.surfaceStyle ?? ThemeSurfaceStyle.oledBlack;
+    final ThemeData theme = hasAdaptiveTint
+        ? ThemeProvider.buildThemeData(
+            colorScheme,
+            surfaceStyle: surfaceStyle,
+          )
+        : baseTheme;
+    final useAmbientWash = hasAdaptiveTint &&
+        surfaceStyle != ThemeSurfaceStyle.highContrast;
+
+    return Theme(
+      data: theme,
+      child: Builder(
+        builder: (playerCtx) => Scaffold(
+          appBar: AppBar(
+            leadingWidth: 52,
+            titleSpacing: 0,
+            centerTitle: true,
+            leading: IconButton(
+              tooltip: 'Minimize player',
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 32),
+              onPressed: () => Navigator.of(playerCtx).pop(),
+            ),
+            title: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 240),
+              child: SizedBox(
+                width: double.infinity,
+                child: TabBar(
+                  controller: _tabController,
+                  isScrollable: false,
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  dividerColor: Colors.transparent,
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  indicator: UnderlineTabIndicator(
+                    borderSide: BorderSide(
+                      color: colorScheme.primary,
+                      width: 2.5,
+                    ),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                  labelColor: colorScheme.onSurface,
+                  unselectedLabelColor: colorScheme.onSurfaceVariant,
+                  labelStyle: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                  unselectedLabelStyle: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w500,
+                  ),
+                  tabs: const [
+                    Tab(
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: Center(
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text('Now Playing', maxLines: 1),
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                ),
-                Tab(
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: Center(
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text('Lyrics', maxLines: 1),
+                    Tab(
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: Center(
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text('Lyrics', maxLines: 1),
+                          ),
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
+            ),
+            actions: const [
+              SizedBox(width: 52),
+            ],
+          ),
+          body: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: useAmbientWash
+                  ? LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      stops: const [0.0, 0.72],
+                      colors: [
+                        Color.lerp(
+                          colorScheme.surface,
+                          colorScheme.surfaceContainerHigh,
+                          0.55,
+                        )!,
+                        colorScheme.surface,
+                      ],
+                    )
+                  : null,
+            ),
+            child: SafeArea(
+              top: false,
+              bottom: true,
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  _buildPlayerView(
+                    playerCtx,
+                    playback,
+                    library,
+                    theme,
+                    colorScheme,
+                  ),
+                  const LyricsView(),
+                ],
+              ),
             ),
           ),
-        ),
-        actions: const [
-          SizedBox(width: 52),
-        ],
-      ),
-      body: SafeArea(
-        top: false,
-        bottom: true,
-        child: TabBarView(
-          controller: _tabController,
-          children: [
-            _buildPlayerView(context, playback, library, theme, colorScheme),
-            const LyricsView(),
-          ],
         ),
       ),
     );
@@ -702,7 +798,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 setState(() => _playbackSpeed = speed);
                 playback.setPlaybackSpeed(speed);
               },
-              onOpenQueue: () => _showQueueBottomSheet(context),
+              onOpenQueue: () => _showQueueBottomSheet(context, theme),
               onDownloadPressed: () => _handleDownloadTap(context, song),
               onToggleLike: () => library.toggleLike(song),
             ),

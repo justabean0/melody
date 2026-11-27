@@ -25,27 +25,31 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   Color _successColor(ColorScheme colorScheme) {
     return colorScheme.brightness == Brightness.dark
         ? const Color(0xFF66BB6A)
-        : const Color(0xFF1B6E2D);
+        : const Color(0xFF165B24);
   }
 
   Color _warningColor(ColorScheme colorScheme) {
     return colorScheme.brightness == Brightness.dark
         ? const Color(0xFFFFB74D)
-        : const Color(0xFF8A5300);
+        : const Color(0xFF7A4800);
   }
 
   void _copyToClipboard() {
     final report = LogService.exportAllLogs();
     Clipboard.setData(ClipboardData(text: report));
-    final colorScheme = Theme.of(context).colorScheme;
-    final successBg = _successColor(colorScheme);
+    const successBg = Color(0xFF165B24);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: const Row(
           children: [
             Icon(Icons.check_circle_outline, color: Colors.white),
             SizedBox(width: 8),
-            Expanded(child: Text('Diagnostic logs copied to clipboard!')),
+            Expanded(
+              child: Text(
+                'Diagnostic logs copied to clipboard!',
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
           ],
         ),
         backgroundColor: successBg,
@@ -72,7 +76,6 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   Future<void> _saveToDownloads() async {
     final path = await LogService.saveLogToDownloads();
     if (!mounted) return;
-    final colorScheme = Theme.of(context).colorScheme;
     if (path != null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -80,10 +83,15 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             children: [
               const Icon(Icons.download_done_rounded, color: Colors.white),
               const SizedBox(width: 8),
-              Expanded(child: Text('Saved log file to $path')),
+              Expanded(
+                child: Text(
+                  'Saved log file to $path',
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
             ],
           ),
-          backgroundColor: _successColor(colorScheme),
+          backgroundColor: const Color(0xFF165B24),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           duration: const Duration(seconds: 5),

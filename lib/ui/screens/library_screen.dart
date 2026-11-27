@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../models/song.dart';
 import '../../providers/library_provider.dart';
 import '../../providers/playback_provider.dart';
+import '../../providers/theme_provider.dart';
 import '../../services/database_service.dart';
 import '../../services/download_service.dart';
 import '../../services/local_audio_service.dart';
@@ -1310,9 +1311,11 @@ class _LikedArtworkBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final startColor = Color.lerp(colorScheme.primary, Colors.deepPurple, 0.35)!;
-    final midColor = colorScheme.primary;
-    final endColor = Color.lerp(colorScheme.primary, colorScheme.tertiary, 0.5)!;
+    final startColor = colorScheme.primary;
+    final midColor = Color.lerp(colorScheme.primary, colorScheme.tertiary, 0.35)!;
+    final endColor =
+        Color.lerp(colorScheme.primary, colorScheme.primaryContainer, 0.48)!;
+    final inkColor = ThemeProvider.bestContrastInk(midColor);
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(borderRadius),
@@ -1322,11 +1325,12 @@ class _LikedArtworkBadge extends StatelessWidget {
         child: CustomPaint(
           painter: _LikedSunsetMountainPainter(
             colors: [startColor, midColor, endColor],
+            highlightInk: inkColor,
           ),
           child: Center(
             child: Icon(
               Icons.favorite_rounded,
-              color: Colors.white,
+              color: inkColor,
               size: size * 0.44,
             ),
           ),
@@ -1338,8 +1342,12 @@ class _LikedArtworkBadge extends StatelessWidget {
 
 class _LikedSunsetMountainPainter extends CustomPainter {
   final List<Color> colors;
+  final Color highlightInk;
 
-  const _LikedSunsetMountainPainter({required this.colors});
+  const _LikedSunsetMountainPainter({
+    required this.colors,
+    required this.highlightInk,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1356,7 +1364,7 @@ class _LikedSunsetMountainPainter extends CustomPainter {
     canvas.drawCircle(
       Offset(size.width * 0.72, size.height * 0.28),
       size.width * 0.18,
-      Paint()..color = Colors.white.withValues(alpha: 0.16),
+      Paint()..color = highlightInk.withValues(alpha: 0.16),
     );
 
     // Back mountain ridge
@@ -1392,7 +1400,7 @@ class _LikedSunsetMountainPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _LikedSunsetMountainPainter oldDelegate) =>
-      oldDelegate.colors != colors;
+      oldDelegate.colors != colors || oldDelegate.highlightInk != highlightInk;
 }
 
 enum _PlaytimeScope { daily, monthly }

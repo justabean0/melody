@@ -345,7 +345,7 @@ void main() {
   });
 
   group('Material 3 ColorScheme & Contrast Verification Tests', () {
-    test('All 8 accent swatches verify >= 7:1 primary contrast in Light, Standard Dark, and AMOLED Dark', () {
+    test('All accent swatches verify >= 7:1 primary contrast in Light, Standard Dark, and AMOLED Dark', () {
       for (final accent in ThemeProvider.availableAccents) {
         for (final brightness in [Brightness.light, Brightness.dark]) {
           final pureBlackModes =
@@ -368,7 +368,10 @@ void main() {
             );
             if (pureBlack) {
               expect(scheme.surface, equals(Colors.black));
-              expect(scheme.surfaceContainerLow, equals(const Color(0xFF131318)));
+              final expectedLow = ThemeProvider.isMonochromeSeed(accent)
+                  ? const Color(0xFF121214)
+                  : const Color(0xFF131318);
+              expect(scheme.surfaceContainerLow, equals(expectedLow));
             }
           }
         }
@@ -548,10 +551,16 @@ void main() {
       expect(find.text('AUDIO & PLAYBACK'), findsOneWidget);
 
       // Audio Normalization stub was removed; wired controls are present with exact defaults
+      await tester.ensureVisible(find.text('Streaming Quality'));
+      await tester.pumpAndSettle();
       expect(find.text('Audio Normalization'), findsNothing);
       expect(find.text('Streaming Quality'), findsOneWidget);
       expect(find.text('Highest available (Opus / AAC 160kbps+)'), findsOneWidget);
 
+      await tester.ensureVisible(
+        find.widgetWithText(SwitchListTile, 'Skip Silence'),
+      );
+      await tester.pumpAndSettle();
       final skipSilenceSwitch = tester.widget<SwitchListTile>(
         find.widgetWithText(SwitchListTile, 'Skip Silence'),
       );
@@ -575,7 +584,9 @@ void main() {
       expect(bgPlaybackSwitch.value, isFalse);
 
       // Switching Streaming Quality updates subtitle and persists normalized tier
-      await tester.tap(find.text('High'));
+      await tester.ensureVisible(find.byKey(const Key('settings_streaming_quality_menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('settings_streaming_quality_menu')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Medium').last);
       await tester.pumpAndSettle();
@@ -820,18 +831,30 @@ void main() {
       await tester.pump(const Duration(seconds: 11));
     });
 
-    testWidgets('SettingsScreen removes Pure Black (AMOLED) toggle and ThemeProvider always uses #000000 Dark Mode surface', (tester) async {
+    testWidgets('SettingsScreen supports Surface Styles while keeping OLED #000000 default and migrating legacy pureBlack=false', (tester) async {
+      // Fresh install defaults to OLED Black (#000000 Dark / crisp #FFFFFF Light)
+      SharedPreferences.setMockInitialValues({'melody_theme_mode': 'dark'});
+      var prefs = await SharedPreferences.getInstance();
+      DatabaseService.setPrefsForTesting(prefs);
+
+      final defaultThemeProvider = ThemeProvider();
+      expect(defaultThemeProvider.surfaceStyle, equals(ThemeSurfaceStyle.oledBlack));
+      expect(defaultThemeProvider.darkTheme.colorScheme.surface, equals(const Color(0xFF000000)));
+      expect(defaultThemeProvider.darkTheme.scaffoldBackgroundColor, equals(const Color(0xFF000000)));
+      expect(defaultThemeProvider.lightTheme.colorScheme.surface, equals(const Color(0xFFFFFFFF)));
+
+      // Explicit legacy pure_black=false migrates cleanly to Material Neutral (#121212 Dark)
       SharedPreferences.setMockInitialValues({
         'melody_pure_black': false,
         'melody_theme_mode': 'dark',
       });
-      final prefs = await SharedPreferences.getInstance();
+      prefs = await SharedPreferences.getInstance();
       DatabaseService.setPrefsForTesting(prefs);
 
       final themeProvider = ThemeProvider();
-      expect(themeProvider.darkTheme.colorScheme.surface, equals(const Color(0xFF000000)));
-      expect(themeProvider.darkTheme.scaffoldBackgroundColor, equals(const Color(0xFF000000)));
-      expect(themeProvider.lightTheme.colorScheme.surface, equals(const Color(0xFFF8F5FA)));
+      expect(themeProvider.surfaceStyle, equals(ThemeSurfaceStyle.materialNeutral));
+      expect(themeProvider.darkTheme.colorScheme.surface, equals(const Color(0xFF121212)));
+      expect(themeProvider.lightTheme.colorScheme.surface, equals(const Color(0xFFF7F7F9)));
 
       await tester.pumpWidget(
         wrapPhone(
@@ -843,8 +866,11 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Pure Black (AMOLED)'), findsNothing);
+      expect(find.text('Theme Presets'), findsOneWidget);
       expect(find.text('Theme Mode'), findsOneWidget);
+      expect(find.text('Surface Style'), findsOneWidget);
       expect(find.text('Accent Color'), findsOneWidget);
+      expect(find.text('Adaptive Player Tint'), findsOneWidget);
     });
 
     testWidgets('Settings nav icon uses matched outlined/filled gear pair without Icons.settings_rounded', (tester) async {
@@ -1572,6 +1598,10 @@ void main() {
       expect(themeProvider.themeMode, equals(ThemeMode.system));
 
       // Verify Streaming Quality menu stays anchored below trigger for High -> Medium -> Low
+      await tester.ensureVisible(
+        find.byKey(const Key('settings_streaming_quality_menu')),
+      );
+      await tester.pumpAndSettle();
       final qualityTriggerRect = tester.getRect(
         find.byKey(const Key('settings_streaming_quality_menu')),
       );
