@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
+import '../models/browse_result.dart';
 import '../models/song.dart';
 import 'battery_service.dart';
 
@@ -125,6 +126,16 @@ class DatabaseService {
 
   static String _feedCacheKey(String cacheKey) => 'melody_feed_cache_${_feedCacheVersion}_$cacheKey';
   static String _feedCacheTimestampKey(String cacheKey) => 'melody_feed_cache_ts_${_feedCacheVersion}_$cacheKey';
+  static String _feedCacheTasteVersionKey(String cacheKey) => 'melody_feed_cache_taste_${_feedCacheVersion}_$cacheKey';
+  static String _browseCacheKey(String cacheKey) => 'melody_browse_cache_${_feedCacheVersion}_$cacheKey';
+  static String _browseCacheTimestampKey(String cacheKey) => 'melody_browse_cache_ts_${_feedCacheVersion}_$cacheKey';
+  static String _podcastCacheKey(String langKey) => 'melody_podcast_cache_${_feedCacheVersion}_$langKey';
+  static String _podcastCacheTimestampKey(String langKey) => 'melody_podcast_cache_ts_${_feedCacheVersion}_$langKey';
+
+  static int _tasteVersion = 0;
+
+  /// Monotonically increases whenever playback history or liked songs change.
+  static int get tasteVersion => _tasteVersion;
 
   /// Reactive notifier for real-time synchronization when user changes music languages
   static final ValueNotifier<List<String>> musicLanguagesNotifier = ValueNotifier<List<String>>([]);
@@ -405,6 +416,7 @@ class DatabaseService {
     }
     final raw = list.map((s) => jsonEncode(s.toJson())).toList();
     await _prefs?.setStringList(_favoritesKey, raw);
+    _tasteVersion++;
   }
 
   static bool isLiked(String songId) {
@@ -923,11 +935,13 @@ class DatabaseService {
     if (list.length > 50) list.removeLast();
     final raw = list.map((s) => jsonEncode(s.toJson())).toList();
     await _prefs?.setStringList(_historyKey, raw);
+    _tasteVersion++;
     _historyChangedController.add(null);
   }
 
   static Future<void> clearHistory() async {
     await _prefs?.remove(_historyKey);
+    _tasteVersion++;
     _historyChangedController.add(null);
   }
 
@@ -1072,6 +1086,10 @@ class DatabaseService {
     return DateTime.fromMillisecondsSinceEpoch(ms);
   }
 
+  static int? getCachedFeedTasteVersion(String cacheKey) {
+    return _prefs?.getInt(_feedCacheTasteVersionKey(cacheKey));
+  }
+
   static Future<void> saveCachedFeed(String cacheKey, List<Song> songs) async {
     try {
       final jsonStr = jsonEncode(songs.map((s) => s.toJson()).toList());
@@ -1080,6 +1098,10 @@ class DatabaseService {
         _feedCacheTimestampKey(cacheKey),
         DateTime.now().millisecondsSinceEpoch,
       );
+      await _prefs?.setInt(
+        _feedCacheTasteVersionKey(cacheKey),
+        _tasteVersion,
+      );
     } catch (_) {}
   }
 
@@ -1087,6 +1109,126 @@ class DatabaseService {
     try {
       await _prefs?.remove(_feedCacheKey(cacheKey));
       await _prefs?.remove(_feedCacheTimestampKey(cacheKey));
+      await _prefs?.remove(_feedCacheTasteVersionKey(cacheKey));
+      await _prefs?.remove(_browseCacheKey(cacheKey));
+      await _prefs?.remove(_browseCacheTimestampKey(cacheKey));
+    } catch (_) {}
+  }
+
+  /// Reads cached Featured & Trending / Albums items for [cacheKey].
+  static List<BrowseMediaItem> getCachedBrowseItems(String cacheKey) {
+    final raw = _prefs?.getString(_browseCacheKey(cacheKey));
+    if (raw == null) return [];
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      return list
+          .whereType<Map>()
+          .map((item) => BrowseMediaItem.fromJson(Map<String, dynamic>.from(item)))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Returns timestamp when [cacheKey] browse shelves were persisted.
+  static DateTime? getCachedBrowseTimestamp(String cacheKey) {
+    final ms = _prefs?.getInt(_browseCacheTimestampKey(cacheKey));
+    if (ms == null) return null;
+    return DateTime.fromMillisecondsSinceEpoch(ms);
+  }
+
+  /// Persists Featured & Trending / Albums browse items for [cacheKey].
+  static Future<void> saveCachedBrowseItems(
+    String cacheKey,
+    List<BrowseMediaItem> items,
+  ) async {
+    try {
+      final jsonStr = jsonEncode(items.map((item) => item.toJson()).toList());
+      await _prefs?.setString(_browseCacheKey(cacheKey), jsonStr);
+      await _prefs?.setInt(
+        _browseCacheTimestampKey(cacheKey),
+        DateTime.now().millisecondsSinceEpoch,
+      );
+    } catch (_) {}
+  }
+
+  /// Restores all Home feed sections (Quick Picks + Featured & Trending + Albums)
+  /// synchronously from disk so fresh app launches render in one initial frame.
+  static ({List<Song> songs, List<BrowseMediaItem> browseItems, DateTime? timestamp})
+      getCachedHomeFeed(String cacheKey, {String? browseFallbackKey}) {
+    final songs = getCachedFeed(cacheKey);
+    var browse = getCachedBrowseItems(cacheKey);
+    if (browse.isEmpty && browseFallbackKey != null && browseFallbackKey.isNotEmpty) {
+      browse = getCachedBrowseItems(browseFallbackKey);
+    }
+    return (
+      songs: songs,
+      browseItems: browse,
+      timestamp: getCachedFeedTimestamp(cacheKey),
+    );
+  }
+
+  /// Persists all Home feed sections together in disk cache.
+  static Future<void> saveCachedHomeFeed(
+    String cacheKey, {
+    required List<Song> songs,
+    required List<BrowseMediaItem> browseItems,
+    String? browseFallbackKey,
+  }) async {
+    await Future.wait([
+      if (songs.isNotEmpty) saveCachedFeed(cacheKey, songs),
+      if (browseItems.isNotEmpty) saveCachedBrowseItems(cacheKey, browseItems),
+      if (browseItems.isNotEmpty &&
+          browseFallbackKey != null &&
+          browseFallbackKey.isNotEmpty)
+        saveCachedBrowseItems(browseFallbackKey, browseItems),
+    ]);
+  }
+
+  /// Restores cached Podcasts feed (shows + episodes) for [langKey].
+  static ({List<BrowseMediaItem> shows, List<Song> episodes, DateTime? timestamp})
+      getCachedPodcasts(String langKey) {
+    final raw = _prefs?.getString(_podcastCacheKey(langKey));
+    final ms = _prefs?.getInt(_podcastCacheTimestampKey(langKey));
+    final timestamp = ms != null ? DateTime.fromMillisecondsSinceEpoch(ms) : null;
+    if (raw == null || raw.isEmpty) {
+      return (shows: const [], episodes: const [], timestamp: timestamp);
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        final shows = (decoded['shows'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map((e) => BrowseMediaItem.fromJson(Map<String, dynamic>.from(e)))
+            .where((b) => b.type == 'podcast')
+            .toList();
+        final episodes = (decoded['episodes'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map((e) => Song.fromJson(Map<String, dynamic>.from(e)))
+            .where((s) => s.isPodcast)
+            .toList();
+        return (shows: shows, episodes: episodes, timestamp: timestamp);
+      }
+    } catch (_) {}
+    return (shows: const [], episodes: const [], timestamp: timestamp);
+  }
+
+  /// Persists Podcasts feed (shows + episodes) together in disk cache.
+  static Future<void> saveCachedPodcasts(
+    String langKey, {
+    required List<BrowseMediaItem> shows,
+    required List<Song> episodes,
+  }) async {
+    try {
+      final jsonStr = jsonEncode({
+        'shows': shows.map((s) => s.toJson()).toList(),
+        'episodes': episodes.map((e) => e.toJson()).toList(),
+      });
+      await _prefs?.setString(_podcastCacheKey(langKey), jsonStr);
+      await _prefs?.setInt(
+        _podcastCacheTimestampKey(langKey),
+        DateTime.now().millisecondsSinceEpoch,
+      );
     } catch (_) {}
   }
 

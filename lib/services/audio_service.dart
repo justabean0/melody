@@ -9,6 +9,7 @@ import 'audio_cache_service.dart';
 import 'database_service.dart';
 import 'download_service.dart';
 import 'log_service.dart';
+import 'recommendation_service.dart';
 import 'stream_resolver_service.dart';
 
 enum MelodyLoopMode { off, all, one }
@@ -35,6 +36,29 @@ class MelodyAudioService {
 
   final List<Song> _queue = [];
   List<Song> get queue => List.unmodifiable(_queue);
+
+  final Set<String> _userQueuedIds = {};
+  final Set<String> _autoplayQueuedIds = {};
+  final Set<String> _sessionPlayedIds = {};
+  final Set<String> _sessionPlayedNormalizedKeys = {};
+  bool _autoplayClearedByUser = false;
+  bool _isDisposed = false;
+  Future<List<Song>>? _inflightAutoplayFuture;
+  String? _inflightAutoplaySeedId;
+
+  /// Optional test override for autoplay recommendation resolution.
+  @visibleForTesting
+  Future<List<Song>> Function(
+    Song seedSong, {
+    Set<String> excludeIds,
+    Set<String> excludeNormalizedKeys,
+  })? autoplayFetcherOverride;
+
+  /// Returns true if [songId] was explicitly queued by the user.
+  bool isUserQueued(String songId) => _userQueuedIds.contains(songId);
+
+  /// Returns true if [songId] was added by smart autoplay.
+  bool isAutoplayQueued(String songId) => _autoplayQueuedIds.contains(songId);
 
   int _currentIndex = -1;
   int get currentIndex => _currentIndex;
@@ -136,11 +160,11 @@ class MelodyAudioService {
       final wasPlaying = _isPlaying;
       _isPlaying = state.playing && state.processingState != ProcessingState.completed;
 
-      if (state.processingState == ProcessingState.ready) {
+      if (state.processingState == ProcessingState.ready && !_isLoading) {
         _hasHandledCompletion = false;
       }
 
-      if (state.processingState == ProcessingState.completed) {
+      if (state.processingState == ProcessingState.completed && !_isLoading) {
         _captureListeningProgress(_player.position, maxDeltaMs: 5000);
         _flushListeningTime();
         if (!_hasHandledCompletion) {
@@ -283,7 +307,9 @@ class MelodyAudioService {
     _isPausedByUser = false;
     _needsStreamRecovery = false;
     _recoveryAttempts = 0;
-    _hasHandledCompletion = false;
+    _userQueuedIds.clear();
+    _autoplayQueuedIds.clear();
+    _autoplayClearedByUser = false;
 
     if (contextQueue != null && contextQueue.isNotEmpty) {
       _queue.clear();
@@ -308,7 +334,9 @@ class MelodyAudioService {
     _isPausedByUser = false;
     _needsStreamRecovery = false;
     _recoveryAttempts = 0;
-    _hasHandledCompletion = false;
+    _userQueuedIds.clear();
+    _autoplayQueuedIds.clear();
+    _autoplayClearedByUser = false;
 
     _queue.clear();
     _queue.addAll(queue);
@@ -358,9 +386,9 @@ class MelodyAudioService {
     _isPausedByUser = false;
     _needsStreamRecovery = false;
     _recoveryAttempts = 0;
-    _hasHandledCompletion = false;
+    _isLoading = true;
 
-    // 1. Immediately cut off old audio so it stops playing right away
+    // 1. Immediately cut off old audio while keeping completion guard active during teardown
     try {
       await _player.stop();
     } catch (_) {}
@@ -370,11 +398,13 @@ class MelodyAudioService {
     _activeSessionSong = _currentSong;
     _activeSessionKey =
         'plog_${DateTime.now().microsecondsSinceEpoch}_${_currentSong!.id}';
+    _recordSessionPlayed(_currentSong!);
+    _userQueuedIds.remove(_currentSong!.id);
+    _autoplayQueuedIds.remove(_currentSong!.id);
 
     // 2. Immediately reset position and initialize duration to current song metadata
     _position = Duration.zero;
     _duration = Duration(seconds: _currentSong!.duration);
-    _isLoading = true;
 
     // Update notification immediately with new song info and duration
     _updateNotification();
@@ -399,6 +429,7 @@ class MelodyAudioService {
       if (localUri != null) {
         final localSource = _createAudioSource(localUri);
         await _player.setAudioSource(localSource).timeout(const Duration(seconds: 8));
+        _hasHandledCompletion = false;
         if ((_playbackSpeed - 1.0).abs() > 0.01) {
           try {
             await _player.setSpeed(_playbackSpeed);
@@ -422,6 +453,7 @@ class MelodyAudioService {
         }));
 
         _triggerNextTrackPrefetch();
+        _scheduleAutoplayPrefetchIfNeeded(_currentSong!, opToken);
         _updateNotification();
       } else {
         // 1. Resolve audio stream with instant cache check & hybrid fast path
@@ -440,6 +472,7 @@ class MelodyAudioService {
         try {
           final source = _createAudioSource(playableUrl);
           await _player.setAudioSource(source).timeout(const Duration(seconds: 8));
+          _hasHandledCompletion = false;
           if ((_playbackSpeed - 1.0).abs() > 0.01) {
             try {
               await _player.setSpeed(_playbackSpeed);
@@ -494,6 +527,7 @@ class MelodyAudioService {
 
           try {
             await _player.setAudioSource(directFallbackSource).timeout(const Duration(seconds: 10));
+            _hasHandledCompletion = false;
             if ((_playbackSpeed - 1.0).abs() > 0.01) {
               try {
                 await _player.setSpeed(_playbackSpeed);
@@ -538,9 +572,10 @@ class MelodyAudioService {
         // 3. Keep 5-second head of this listened song in local cache for instant future replays
         AudioCacheService.ensureHeadCached(_currentSong!.id, streamUrl);
 
-        // 4. NEXT-TRACK PRE-FETCHING:
-        // In the background, pre-resolve next track stream & pre-cache its 5-second head
+        // 4. NEXT-TRACK PRE-FETCHING & BACKGROUND AUTOPLAY:
+        // Pre-resolve next track stream & pre-fetch upcoming similar autoplay tracks before track ends
         _triggerNextTrackPrefetch();
+        _scheduleAutoplayPrefetchIfNeeded(_currentSong!, opToken);
         _updateNotification();
       }
     } catch (e) {
@@ -553,6 +588,175 @@ class MelodyAudioService {
         _isLoading = false;
         _stateChangeController.add(null);
       }
+    }
+  }
+
+  void _recordSessionPlayed(Song song) {
+    _sessionPlayedIds.add(song.id);
+    final normTitle = RecommendationService.normalizeTrackKey(song.title);
+    if (normTitle.isNotEmpty) {
+      final artistKey = RecommendationService.primaryArtistKey(song.artist);
+      _sessionPlayedNormalizedKeys.add(
+        artistKey.isNotEmpty ? '$normTitle|$artistKey' : normTitle,
+      );
+    }
+    if (_sessionPlayedIds.length > 100) {
+      _sessionPlayedIds.remove(_sessionPlayedIds.first);
+    }
+    if (_sessionPlayedNormalizedKeys.length > 100) {
+      _sessionPlayedNormalizedKeys.remove(_sessionPlayedNormalizedKeys.first);
+    }
+  }
+
+  void _scheduleAutoplayPrefetchIfNeeded(Song seed, int opToken) {
+    if (_isDisposed || _isPausedByUser || seed.isPodcast || _autoplayClearedByUser) {
+      return;
+    }
+    if (_loopMode == MelodyLoopMode.one) return;
+    // Prefetch when on the last or second-to-last item in queue
+    if (_currentIndex < _queue.length - 2) return;
+    unawaited(_prefetchAutoplayRecommendations(seed, opToken));
+  }
+
+  Future<List<Song>> _prefetchAutoplayRecommendations(
+    Song seed,
+    int opToken, {
+    bool forceWhenEmpty = false,
+  }) async {
+    if (_isDisposed || seed.isPodcast) return const [];
+    if (!forceWhenEmpty && _autoplayClearedByUser) return const [];
+
+    final excludeIds = <String>{
+      ..._sessionPlayedIds,
+      ..._queue.map((s) => s.id),
+    };
+    final excludeNormalized = Set<String>.from(_sessionPlayedNormalizedKeys);
+
+    Future<List<Song>> future;
+    if (_inflightAutoplayFuture != null && _inflightAutoplaySeedId == seed.id) {
+      future = _inflightAutoplayFuture!;
+    } else {
+      _inflightAutoplaySeedId = seed.id;
+      final fetcher = autoplayFetcherOverride;
+      future = fetcher != null
+          ? fetcher(
+              seed,
+              excludeIds: excludeIds,
+              excludeNormalizedKeys: excludeNormalized,
+            )
+          : RecommendationService.getAutoplayRecommendations(
+              seed,
+              excludeIds: excludeIds,
+              excludeNormalizedKeys: excludeNormalized,
+            );
+      _inflightAutoplayFuture = future;
+    }
+
+    try {
+      final recs = await future;
+      if (_inflightAutoplaySeedId == seed.id) {
+        _inflightAutoplayFuture = null;
+        _inflightAutoplaySeedId = null;
+      }
+      if (_isDisposed ||
+          _isPausedByUser ||
+          opToken != _playOperationToken ||
+          _currentSong?.id != seed.id) {
+        return const [];
+      }
+      if (!forceWhenEmpty && _autoplayClearedByUser) return const [];
+
+      final existingIds = _queue.map((s) => s.id).toSet();
+      final appended = <Song>[];
+      for (final r in recs) {
+        if (existingIds.add(r.id) && !_sessionPlayedIds.contains(r.id)) {
+          _queue.add(r);
+          _autoplayQueuedIds.add(r.id);
+          appended.add(r);
+        }
+      }
+      if (appended.isNotEmpty) {
+        _triggerNextTrackPrefetch();
+        unawaited(_saveCurrentSession());
+        if (!_isDisposed && !_stateChangeController.isClosed) {
+          _stateChangeController.add(null);
+        }
+      }
+      return appended;
+    } catch (e) {
+      if (_inflightAutoplaySeedId == seed.id) {
+        _inflightAutoplayFuture = null;
+        _inflightAutoplaySeedId = null;
+      }
+      debugPrint('AudioService: Autoplay prefetch error: $e');
+      return const [];
+    }
+  }
+
+  Future<void> _continueWithAutoplayOnTrackEnd() async {
+    final seed = _currentSong;
+    final opToken = _playOperationToken;
+    if (seed == null || seed.isPodcast || _isPausedByUser || _isDisposed) {
+      _isPlaying = false;
+      _updateNotification();
+      if (!_isDisposed && !_stateChangeController.isClosed) {
+        _stateChangeController.add(null);
+      }
+      return;
+    }
+
+    await _prefetchAutoplayRecommendations(seed, opToken, forceWhenEmpty: true);
+    if (_isDisposed || _isPausedByUser || opToken != _playOperationToken) {
+      return;
+    }
+
+    if (hasNext) {
+      await playNext();
+    } else {
+      _isPlaying = false;
+      _updateNotification();
+      if (!_isDisposed && !_stateChangeController.isClosed) {
+        _stateChangeController.add(null);
+      }
+    }
+  }
+
+  /// Exposes track-end handling for deterministic unit tests.
+  @visibleForTesting
+  Future<void> handleTrackEndedForTesting() async {
+    if (_loopMode == MelodyLoopMode.one) {
+      await seek(Duration.zero);
+      return;
+    }
+    if (hasNext) {
+      await playNext();
+      return;
+    }
+    if (_loopMode == MelodyLoopMode.all && _queue.isNotEmpty) {
+      _currentIndex = 0;
+      await _playCurrent();
+      return;
+    }
+    await _continueWithAutoplayOnTrackEnd();
+  }
+
+  /// Seeds a song/queue state synchronously for unit tests without invoking ExoPlayer.
+  @visibleForTesting
+  void seedQueueForTesting(List<Song> songs, {int currentIndex = 0}) {
+    _queue
+      ..clear()
+      ..addAll(songs);
+    _userQueuedIds.clear();
+    _autoplayQueuedIds.clear();
+    _autoplayClearedByUser = false;
+    _isPausedByUser = false;
+    if (_queue.isEmpty) {
+      _currentIndex = -1;
+      _currentSong = null;
+    } else {
+      _currentIndex = currentIndex.clamp(0, _queue.length - 1);
+      _currentSong = _queue[_currentIndex];
+      _recordSessionPlayed(_currentSong!);
     }
   }
 
@@ -628,9 +832,7 @@ class MelodyAudioService {
       _currentIndex = 0;
       _playCurrent();
     } else {
-      _isPlaying = false;
-      _updateNotification();
-      _stateChangeController.add(null);
+      unawaited(_continueWithAutoplayOnTrackEnd());
     }
   }
 
@@ -747,7 +949,9 @@ class MelodyAudioService {
     _flushListeningTime();
     _lastTrackedPosition = position;
     _position = position;
-    _hasHandledCompletion = false;
+    if (_duration <= Duration.zero || position < _duration - const Duration(seconds: 2)) {
+      _hasHandledCompletion = false;
+    }
     LogService.recordBreadcrumb('Playback seek to $position', category: 'playback');
     _updateNotification();
     _positionChangeController.add(position);
@@ -974,7 +1178,9 @@ class MelodyAudioService {
 
   void removeFromQueue(int index) {
     if (index < 0 || index >= _queue.length) return;
-    _queue.removeAt(index);
+    final removed = _queue.removeAt(index);
+    _userQueuedIds.remove(removed.id);
+    _autoplayQueuedIds.remove(removed.id);
     if (index < _currentIndex) {
       _currentIndex--;
     } else if (index == _currentIndex) {
@@ -989,41 +1195,75 @@ class MelodyAudioService {
         _currentIndex = -1;
         _updateNotification();
       }
+    } else if (index == _currentIndex + 1) {
+      _triggerNextTrackPrefetch();
     }
+    unawaited(_saveCurrentSession());
     _stateChangeController.add(null);
   }
 
+  /// Inserts [song] at the top of the upcoming queue (`currentIndex + 1`) so it
+  /// plays immediately after the current track finishes, ahead of any autoplay items.
   void addToQueue(Song song) {
-    if (!_queue.any((s) => s.id == song.id)) {
-      _queue.add(song);
-      if (_currentSong == null) {
-        _currentIndex = 0;
-        _playCurrent();
-      } else {
-        _stateChangeController.add(null);
-      }
-    }
+    _insertAtTopOfUpcomingQueue(song);
   }
 
+  /// Places [song] at `currentIndex + 1` to play next right after the current track.
   void playNextInQueue(Song song) {
+    _insertAtTopOfUpcomingQueue(song);
+  }
+
+  void _insertAtTopOfUpcomingQueue(Song song) {
+    if (_currentSong == null ||
+        _currentIndex < 0 ||
+        _currentIndex >= _queue.length) {
+      _queue.clear();
+      _queue.add(song);
+      _currentIndex = 0;
+      _userQueuedIds.remove(song.id);
+      _autoplayQueuedIds.remove(song.id);
+      _autoplayClearedByUser = false;
+      _playCurrent();
+      return;
+    }
+
+    if (song.id == _currentSong!.id) return;
+
     final existingIdx = _queue.indexWhere((s) => s.id == song.id);
     if (existingIdx != -1 && existingIdx != _currentIndex) {
       _queue.removeAt(existingIdx);
       if (existingIdx < _currentIndex) _currentIndex--;
     }
 
-    if (_currentIndex >= 0 && _currentIndex < _queue.length) {
-      _queue.insert(_currentIndex + 1, song);
-    } else {
-      _queue.add(song);
-      _currentIndex = 0;
-      _playCurrent();
-      return;
-    }
+    final insertIndex = (_currentIndex + 1).clamp(0, _queue.length);
+    _queue.insert(insertIndex, song);
+    _autoplayQueuedIds.remove(song.id);
+    _userQueuedIds.add(song.id);
+    _autoplayClearedByUser = false;
+
+    _triggerNextTrackPrefetch();
+    unawaited(_saveCurrentSession());
+    _stateChangeController.add(null);
+  }
+
+  /// Reorders an upcoming queue item from [oldIndex] to [newIndex] (both > currentIndex).
+  void reorderQueue(int oldIndex, int newIndex) {
+    if (oldIndex <= _currentIndex || oldIndex >= _queue.length) return;
+    if (newIndex <= _currentIndex || newIndex >= _queue.length) return;
+    if (oldIndex == newIndex) return;
+
+    final moved = _queue.removeAt(oldIndex);
+    _queue.insert(newIndex, moved);
+
+    _triggerNextTrackPrefetch();
+    unawaited(_saveCurrentSession());
     _stateChangeController.add(null);
   }
 
   void clearQueue() {
+    _userQueuedIds.clear();
+    _autoplayQueuedIds.clear();
+    _autoplayClearedByUser = true;
     if (_currentSong != null) {
       _queue.clear();
       _queue.add(_currentSong!);
@@ -1032,10 +1272,12 @@ class MelodyAudioService {
       _queue.clear();
       _currentIndex = -1;
     }
+    unawaited(_saveCurrentSession());
     _stateChangeController.add(null);
   }
 
   void dispose() {
+    _isDisposed = true;
     _flushListeningTime(resetRemainder: true);
     try {
       const MethodChannel('com.melody.music/playback').invokeMethod('hideNotification');

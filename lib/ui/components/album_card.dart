@@ -10,6 +10,7 @@ class MediaCard extends StatelessWidget {
   final double size;
   final bool isCircle;
   final bool showSubtitle;
+  final IconData? fallbackIcon;
 
   const MediaCard({
     super.key,
@@ -20,6 +21,7 @@ class MediaCard extends StatelessWidget {
     this.size = 138,
     this.isCircle = false,
     this.showSubtitle = true,
+    this.fallbackIcon,
   });
 
   @override
@@ -57,7 +59,8 @@ class MediaCard extends StatelessWidget {
                     height: size,
                     color: colorScheme.surfaceContainerHigh,
                     child: Icon(
-                      isCircle ? Icons.person_rounded : Icons.album_rounded,
+                      fallbackIcon ??
+                          (isCircle ? Icons.person_rounded : Icons.album_rounded),
                       size: size * 0.4,
                       color: colorScheme.onSurfaceVariant,
                     ),

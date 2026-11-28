@@ -10,6 +10,7 @@ class Song {
   final bool isVideo;
   final String? localUri;
   final bool isLocal;
+  final bool isPodcast;
 
   const Song({
     required this.id,
@@ -23,6 +24,7 @@ class Song {
     this.isVideo = false,
     this.localUri,
     this.isLocal = false,
+    this.isPodcast = false,
   });
 
   bool get hasLocalSource => localUri != null && localUri!.trim().isNotEmpty;
@@ -50,6 +52,7 @@ class Song {
       'isVideo': isVideo,
       if (localUri != null) 'localUri': localUri,
       if (isLocal) 'isLocal': isLocal,
+      if (isPodcast) 'isPodcast': isPodcast,
     };
   }
 
@@ -66,6 +69,7 @@ class Song {
       isVideo: json['isVideo'] as bool? ?? false,
       localUri: json['localUri'] as String?,
       isLocal: json['isLocal'] as bool? ?? false,
+      isPodcast: json['isPodcast'] as bool? ?? false,
     );
   }
 
@@ -81,6 +85,7 @@ class Song {
     bool? isVideo,
     String? localUri,
     bool? isLocal,
+    bool? isPodcast,
   }) {
     return Song(
       id: id ?? this.id,
@@ -94,6 +99,7 @@ class Song {
       isVideo: isVideo ?? this.isVideo,
       localUri: localUri ?? this.localUri,
       isLocal: isLocal ?? this.isLocal,
+      isPodcast: isPodcast ?? this.isPodcast,
     );
   }
 

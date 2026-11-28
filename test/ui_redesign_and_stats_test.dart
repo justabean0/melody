@@ -396,7 +396,7 @@ void main() {
       expect(find.text('Melody'), findsOneWidget);
       expect(find.byType(Image), findsWidgets);
       expect(find.text('Quick Picks'), findsOneWidget);
-      expect(find.text('Play all'), findsOneWidget);
+      expect(find.text('Play all'), findsNothing);
       expect(find.text('Alfaaz'), findsOneWidget);
       expect(find.text('Blue'), findsOneWidget);
 

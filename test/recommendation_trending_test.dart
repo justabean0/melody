@@ -2052,9 +2052,9 @@ void main() {
       expect(songIds[1], equals('ben_hub_1'));
     });
 
-    test('getPersonalizedQuickPicks gates Hindi listening history when Hindi is not selected', () async {
+    test('getPersonalizedQuickPicks blocks unseeded bleed while allowing earned unselected-language taste', () async {
       AntiBotService.reset();
-      final searchQueries = <String>[];
+      final nextSeeds = <String>[];
 
       InnerTubeService.clientOverride = MockClient((request) async {
         if (request.url.path.contains('sw.js_data')) {
@@ -2064,12 +2064,57 @@ void main() {
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         final path = request.url.path;
 
+        if (path.contains('next')) {
+          final seedId = body['videoId'] as String? ?? '';
+          nextSeeds.add(seedId);
+          if (seedId == 'ge4M2dVBgTw') {
+            return _mockJsonResponse({
+              'contents': {
+                'singleColumnMusicWatchNextResultsRenderer': {
+                  'tabbedRenderer': {
+                    'watchNextTabbedResultsRenderer': {
+                      'tabs': [
+                        {
+                          'tabRenderer': {
+                            'content': {
+                              'musicQueueRenderer': {
+                                'content': {
+                                  'playlistPanelRenderer': {
+                                    'contents': [
+                                      {
+                                        'playlistPanelVideoRenderer': {
+                                          'videoId': 'hin_related_1',
+                                          'title': {'runs': [{'text': 'Tum Hi Ho'}]},
+                                          'longBylineText': {'runs': [{'text': 'Arijit Singh'}]},
+                                        }
+                                      },
+                                      {
+                                        'playlistPanelVideoRenderer': {
+                                          'videoId': 'hin_related_2',
+                                          'title': {'runs': [{'text': 'Kun Faya Kun'}]},
+                                          'longBylineText': {'runs': [{'text': 'A.R. Rahman'}]},
+                                        }
+                                      },
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            });
+          }
+          return _mockJsonResponse({});
+        }
+
         if (path.contains('search')) {
           final query = body['query'] as String? ?? '';
-          searchQueries.add(query);
-          final vid = query.startsWith('Bengali') ? 'ben_track_1' : 'eng_track_1';
-          final title = query.startsWith('Bengali') ? 'Mayabini' : 'Blinding Lights';
-          final artist = query.startsWith('Bengali') ? 'Bengali Singer' : 'The Weeknd';
+          final isBengali = query.startsWith('Bengali');
           return _mockJsonResponse({
             'contents': {
               'tabbedSearchResultsRenderer': {
@@ -2081,17 +2126,48 @@ void main() {
                           'contents': [
                             {
                               'musicShelfRenderer': {
-                                'contents': [
-                                  {
-                                    'musicResponsiveListItemRenderer': {
-                                      'playlistItemData': {'videoId': vid},
-                                      'flexColumns': [
-                                        {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': title}]}}},
-                                        {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': artist}]}}},
-                                      ],
-                                    }
-                                  }
-                                ]
+                                'contents': isBengali
+                                    ? [
+                                        {
+                                          'musicResponsiveListItemRenderer': {
+                                            'playlistItemData': {'videoId': 'ben_track_1'},
+                                            'flexColumns': [
+                                              {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': 'Mayabini'}]}}},
+                                              {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': 'Zubeen Garg'}]}}},
+                                            ],
+                                          }
+                                        },
+                                      ]
+                                    : [
+                                        {
+                                          'musicResponsiveListItemRenderer': {
+                                            'playlistItemData': {'videoId': 'eng_track_1'},
+                                            'flexColumns': [
+                                              {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': 'Blinding Lights'}]}}},
+                                              {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': 'The Weeknd'}]}}},
+                                            ],
+                                          }
+                                        },
+                                        // Unseeded French & Hindi chart bleed should be blocked in cold baseline search
+                                        {
+                                          'musicResponsiveListItemRenderer': {
+                                            'playlistItemData': {'videoId': 'fr_bleed_1'},
+                                            'flexColumns': [
+                                              {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': 'Dernière Danse'}]}}},
+                                              {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': 'Indila'}]}}},
+                                            ],
+                                          }
+                                        },
+                                        {
+                                          'musicResponsiveListItemRenderer': {
+                                            'playlistItemData': {'videoId': 'hin_bleed_1'},
+                                            'flexColumns': [
+                                              {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': 'Saiyaara (Hindi Song)'}]}}},
+                                              {'musicResponsiveListItemFlexColumnRenderer': {'text': {'runs': [{'text': 'Mohit Chauhan'}]}}},
+                                            ],
+                                          }
+                                        },
+                                      ]
                               }
                             }
                           ]
@@ -2107,7 +2183,15 @@ void main() {
         return _mockJsonResponse({});
       });
 
-      // Seed history with a Hindi track while user selects English + Bengali (no Hindi)
+      // Cold start (empty history & likes): unseeded French & Hindi chart bleed must be filtered out
+      final coldPicks = await RecommendationService.getPersonalizedQuickPicks(
+        languages: ['English', 'Bengali'],
+      );
+      expect(coldPicks.map((s) => s.id), containsAll(['eng_track_1', 'ben_track_1']));
+      expect(coldPicks.map((s) => s.id), isNot(contains('fr_bleed_1')));
+      expect(coldPicks.map((s) => s.id), isNot(contains('hin_bleed_1')));
+
+      // Earned taste: playing an unselected-language track (Hindi) seeds related tracks in Quick Picks
       await DatabaseService.addToHistory(const Song(
         id: 'ge4M2dVBgTw',
         title: 'Saiyaara',
@@ -2116,14 +2200,21 @@ void main() {
         thumbnailUrl: 'https://i.ytimg.com/saiyaara.jpg',
       ));
 
-      final picks = await RecommendationService.getPersonalizedQuickPicks(
+      final warmedPicks = await RecommendationService.getPersonalizedQuickPicks(
         languages: ['English', 'Bengali'],
+        activeSong: const Song(
+          id: 'ge4M2dVBgTw',
+          title: 'Saiyaara',
+          artist: 'Mohit Chauhan',
+          duration: 250,
+          thumbnailUrl: 'https://i.ytimg.com/saiyaara.jpg',
+        ),
       );
 
-      expect(searchQueries.any((q) => q.contains('Saiyaara')), isFalse);
-      expect(searchQueries.any((q) => q.startsWith('English ')), isTrue);
-      expect(searchQueries.any((q) => q.startsWith('Bengali ')), isTrue);
-      expect(picks.map((s) => s.id), isNot(contains('ge4M2dVBgTw')));
+      expect(nextSeeds, contains('ge4M2dVBgTw'));
+      expect(warmedPicks.map((s) => s.id), containsAll(['hin_related_1', 'hin_related_2']));
+      // Active song itself should not flood Quick Picks
+      expect(warmedPicks.map((s) => s.id), isNot(contains('ge4M2dVBgTw')));
     });
 
     test('getPersonalizedQuickPicks backfills to at least 16 eligible tracks and strips play/view counts from artists', () async {

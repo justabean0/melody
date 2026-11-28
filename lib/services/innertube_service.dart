@@ -17,7 +17,13 @@ class InnerTubeService {
   static final yt.YoutubeExplode _ytExplode = yt.YoutubeExplode();
   static final Map<String, List<Song>> _quickPicksMemoryCache = {};
   static final Map<String, DateTime> _quickPicksCacheTimestamp = {};
+  static final Map<String, int> _quickPicksTasteVersion = {};
   static const Duration _cacheTtl = Duration(minutes: 3);
+
+  static const String podcastShowsSearchParams =
+      'EgWKAQJQAWoSEBEQBRAQEAMQBBAKEBUQCRAO';
+  static const String podcastEpisodesSearchParams =
+      'EgWKAQJIAWoSEBEQBRAQEAMQBBAKEBUQCRAO';
 
   @visibleForTesting
   static http.Client? clientOverride;
@@ -254,24 +260,24 @@ class InnerTubeService {
 
   static final RegExp _durationPattern = RegExp(r'^\d{1,2}:\d{2}(:\d{2})?$');
 
-  /// Parses natural-language duration labels like "3 minutes, 42 seconds", "1 hour, 2 minutes, 5 seconds", "45 seconds".
+  /// Parses natural-language duration labels like "3 minutes, 42 seconds", "2 hr 44 min", "45 seconds".
   @visibleForTesting
   static int parseNaturalLanguageDuration(String? text) {
     if (text == null || text.trim().isEmpty) return 0;
     final lower = text.toLowerCase().trim();
-    if (!lower.contains('second') && !lower.contains('minute') && !lower.contains('hour')) {
+    if (!RegExp(r'\b(?:hours?|hrs?|minutes?|mins?|seconds?|secs?)\b').hasMatch(lower)) {
       return 0;
     }
     int totalSec = 0;
-    final hourMatch = RegExp(r'(\d+)\s+hour').firstMatch(lower);
+    final hourMatch = RegExp(r'(\d+)\s+(?:hours?|hrs?)\b').firstMatch(lower);
     if (hourMatch != null) {
       totalSec += (int.tryParse(hourMatch.group(1)!) ?? 0) * 3600;
     }
-    final minMatch = RegExp(r'(\d+)\s+minute').firstMatch(lower);
+    final minMatch = RegExp(r'(\d+)\s+(?:minutes?|mins?)\b').firstMatch(lower);
     if (minMatch != null) {
       totalSec += (int.tryParse(minMatch.group(1)!) ?? 0) * 60;
     }
-    final secMatch = RegExp(r'(\d+)\s+second').firstMatch(lower);
+    final secMatch = RegExp(r'(\d+)\s+(?:seconds?|secs?)\b').firstMatch(lower);
     if (secMatch != null) {
       totalSec += int.tryParse(secMatch.group(1)!) ?? 0;
     }
@@ -547,7 +553,7 @@ class InnerTubeService {
 
   static final RegExp _metadataYearPattern = RegExp(r'^(19|20)\d{2}$');
   static final RegExp _metadataNaturalDurationPattern = RegExp(
-    r'^\d+\s+(?:hour|minute|second)s?(?:\s*,?\s*\d+\s+(?:hour|minute|second)s?)*$',
+    r'^\d+\s+(?:hour|hr|minute|min|second|sec)s?(?:\s*,?\s*\d+\s+(?:hour|hr|minute|min|second|sec)s?)*$',
     caseSensitive: false,
   );
   static final RegExp _metadataCountPattern = RegExp(
@@ -2340,6 +2346,7 @@ class InnerTubeService {
   static void clearQuickPicksCache() {
     _quickPicksMemoryCache.clear();
     _quickPicksCacheTimestamp.clear();
+    _quickPicksTasteVersion.clear();
   }
 
   /// Fetch Quick Picks / Home feed songs personalized by chosen music languages and listened genre algorithm.
@@ -2348,20 +2355,26 @@ class InnerTubeService {
     List<String>? languages,
     String mood = 'All',
     bool forceRefresh = false,
+    Song? activeSong,
   }) async {
     final activeLanguages = (languages != null && languages.isNotEmpty)
         ? languages
         : DatabaseService.getMusicLanguages();
 
     final cacheKey = '$mood:${activeLanguages.join(",")}';
+    final currentTasteVersion = DatabaseService.tasteVersion;
 
-    // 1. Fast cache hit: return immediately if available and within 3-minute TTL
+    // 1. Fast cache hit: return immediately if available, within 3-minute TTL,
+    // and not invalidated by newer user plays/likes.
     if (!forceRefresh) {
       final cachedAt = _quickPicksCacheTimestamp[cacheKey] ??
           DatabaseService.getCachedFeedTimestamp(cacheKey);
       final isFresh = cachedAt != null && DateTime.now().difference(cachedAt) < _cacheTtl;
+      final memTasteOk = !_quickPicksTasteVersion.containsKey(cacheKey) ||
+          _quickPicksTasteVersion[cacheKey] == currentTasteVersion;
 
       if (isFresh &&
+          memTasteOk &&
           _quickPicksMemoryCache.containsKey(cacheKey) &&
           _quickPicksMemoryCache[cacheKey]!.isNotEmpty) {
         final memHits = sanitizeSongs(_quickPicksMemoryCache[cacheKey]!);
@@ -2371,10 +2384,13 @@ class InnerTubeService {
         );
         return memHits;
       }
+      final diskTaste = DatabaseService.getCachedFeedTasteVersion(cacheKey);
+      final diskTasteOk = diskTaste == null || diskTaste == currentTasteVersion;
       final diskCached = sanitizeSongs(DatabaseService.getCachedFeed(cacheKey));
-      if (diskCached.isNotEmpty && isFresh) {
+      if (diskCached.isNotEmpty && isFresh && diskTasteOk) {
         _quickPicksMemoryCache[cacheKey] = diskCached;
         _quickPicksCacheTimestamp[cacheKey] = cachedAt;
+        _quickPicksTasteVersion[cacheKey] = diskTaste ?? currentTasteVersion;
         LogService.info(
           'getQuickPicks cache=DISK key="$cacheKey" activeLanguages=$activeLanguages mood=$mood songs=${diskCached.length}',
           tag: 'Feed',
@@ -2392,11 +2408,13 @@ class InnerTubeService {
     final songs = sanitizeSongs(await RecommendationService.getPersonalizedQuickPicks(
       languages: activeLanguages,
       mood: mood,
+      activeSong: activeSong,
     ));
 
     if (songs.isNotEmpty) {
       _quickPicksMemoryCache[cacheKey] = songs;
       _quickPicksCacheTimestamp[cacheKey] = DateTime.now();
+      _quickPicksTasteVersion[cacheKey] = DatabaseService.tasteVersion;
       await DatabaseService.saveCachedFeed(cacheKey, songs);
       return songs;
     }
@@ -2410,25 +2428,801 @@ class InnerTubeService {
     return [];
   }
 
-  /// Get related songs for Radio / Auto-mix queue
-  static Future<List<Song>> getRelatedSongs(String videoId) async {
+  /// Parses an InnerTube `next` response into radio queue tracks and the related-tab browseId.
+  @visibleForTesting
+  static ({List<Song> songs, String? relatedBrowseId}) parseWatchNextResponse(
+    Map<String, dynamic> data,
+  ) {
+    final songs = <Song>[];
+    final seenIds = <String>{};
+    String? relatedBrowseId;
+
+    final tabs = data['contents']?['singleColumnMusicWatchNextResultsRenderer']
+            ?['tabbedRenderer']?['watchNextTabbedResultsRenderer']?['tabs']
+        as List<dynamic>?;
+
+    if (tabs != null) {
+      for (final tab in tabs) {
+        if (tab is! Map<String, dynamic>) continue;
+        final tabRenderer = tab['tabRenderer'] as Map<String, dynamic>?;
+        if (tabRenderer == null) continue;
+
+        final endpoint = tabRenderer['endpoint']?['browseEndpoint'] as Map<String, dynamic>?;
+        final endpointBrowseId = endpoint?['browseId']?.toString();
+        final pageType = endpoint?['browseEndpointContextSupportedConfigs']
+                ?['browseEndpointContextMusicConfig']?['pageType']
+            ?.toString();
+        if (endpointBrowseId != null &&
+            endpointBrowseId.isNotEmpty &&
+            (pageType == 'MUSIC_PAGE_TYPE_TRACK_RELATED' ||
+                endpointBrowseId.startsWith('MPTRt_'))) {
+          relatedBrowseId ??= endpointBrowseId;
+        }
+
+        final playlistContents = tabRenderer['content']?['musicQueueRenderer']
+                ?['content']?['playlistPanelRenderer']?['contents']
+            as List<dynamic>?;
+        if (playlistContents != null) {
+          for (final item in playlistContents) {
+            if (item is! Map<String, dynamic>) continue;
+            final renderer = item['playlistPanelVideoRenderer'] as Map<String, dynamic>?;
+            if (renderer == null) continue;
+
+            final videoId = renderer['videoId']?.toString() ??
+                renderer['navigationEndpoint']?['watchEndpoint']?['videoId']?.toString() ??
+                '';
+            if (videoId.isEmpty || !seenIds.add(videoId)) continue;
+
+            final musicVideoType = renderer['navigationEndpoint']?['watchEndpoint']
+                        ?['watchEndpointMusicSupportedConfigs']
+                    ?['watchEndpointMusicConfig']?['musicVideoType']
+                ?.toString();
+            final isPodcast = musicVideoType == 'MUSIC_VIDEO_TYPE_PODCAST_EPISODE';
+            final isVideo = musicVideoType != null &&
+                musicVideoType != 'MUSIC_VIDEO_TYPE_ATV' &&
+                !isPodcast;
+
+            final title = _runsToText(renderer['title']).trim();
+            if (title.isEmpty) continue;
+
+            final bylineObj = renderer['longBylineText'] ?? renderer['shortBylineText'];
+            final bylineRuns = _extractRuns(bylineObj);
+            final separated = _splitRunsBySeparator(bylineRuns);
+            String artist = 'Unknown Artist';
+            String? artistId;
+            if (separated.isNotEmpty) {
+              final extracted = _extractArtistFromParts(separated, skipAlbumLinks: true);
+              if (extracted != null) {
+                artist = extracted.artist;
+                artistId = extracted.artistId;
+              }
+            }
+            if (artist == 'Unknown Artist') {
+              final formatted = formatArtistRuns(bylineRuns);
+              if (formatted.isNotEmpty) artist = formatted;
+            }
+
+            final duration = parseDuration(_runsToText(renderer['lengthText']));
+            final thumbUrl = _extractThumbnailUrl(renderer['thumbnail']);
+
+            songs.add(Song(
+              id: videoId,
+              title: title,
+              artist: artist.isNotEmpty ? artist : 'Unknown Artist',
+              artistId: artistId,
+              duration: duration,
+              thumbnailUrl: thumbUrl,
+              isVideo: isVideo,
+              isPodcast: isPodcast,
+            ));
+          }
+        }
+      }
+    }
+
+    return (songs: songs, relatedBrowseId: relatedBrowseId);
+  }
+
+  /// Calls YouTube Music `/youtubei/v1/next` (`RDAMVM<videoId>` radio) to fetch
+  /// similar radio tracks and the related-tab `MPTRt_` browseId.
+  static Future<({List<Song> songs, String? relatedBrowseId})> getWatchNextMix(
+    String videoId, {
+    String? gl,
+    String? hl,
+  }) async {
+    final cleanId = videoId.trim();
+    if (cleanId.isEmpty) return (songs: const <Song>[], relatedBrowseId: null);
+
+    final effectiveGl = (gl != null && gl.isNotEmpty) ? gl : _gl;
+    final effectiveHl = (hl != null && hl.isNotEmpty) ? hl : _hl;
+
     try {
-      final video = await _ytExplode.videos.get(yt.VideoId(videoId));
-      final related = await _ytExplode.videos.getRelatedVideos(video);
-      if (related != null) {
-        return related.take(15).map((v) {
-          final cleaned = cleanArtistText(v.author);
-          return Song(
-            id: v.id.value,
-            title: v.title,
-            artist: cleaned.isNotEmpty ? cleaned : 'Unknown Artist',
-            duration: v.duration?.inSeconds ?? 0,
-            thumbnailUrl: 'https://i.ytimg.com/vi/${v.id.value}/hqdefault.jpg',
-          );
-        }).toList();
+      if (effectiveGl == 'IN' && visitorData == null) {
+        await fetchVisitorData();
       }
     } catch (_) {}
-    return [];
+
+    final body = <String, dynamic>{
+      ..._clientContext(gl: effectiveGl, hl: effectiveHl),
+      'videoId': cleanId,
+      'playlistId': 'RDAMVM$cleanId',
+      'isAudioOnly': true,
+    };
+
+    try {
+      final response = await _httpClient
+          .post(
+            Uri.parse('$_baseUrl/next'),
+            headers: _headers(gl: effectiveGl),
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 6));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic>) {
+          return parseWatchNextResponse(data);
+        }
+      }
+    } catch (e) {
+      debugPrint('InnerTubeService.getWatchNextMix failed for $cleanId: $e');
+    }
+    return (songs: const <Song>[], relatedBrowseId: null);
+  }
+
+  /// Browses a track's related tab (`MPTRt_...`) to extract "You might also like" songs.
+  static Future<List<Song>> browseRelatedTracks(
+    String browseId, {
+    String? gl,
+    String? hl,
+  }) async {
+    if (browseId.trim().isEmpty) return const [];
+    try {
+      final response = await _browse(browseId: browseId, gl: gl, hl: hl);
+      if (response == null) return const [];
+
+      final sections = _extractSectionListContents(response);
+      final songs = <Song>[];
+      final seenIds = <String>{};
+
+      for (final section in sections) {
+        if (section is! Map<String, dynamic>) continue;
+        final shelf = section['musicCarouselShelfRenderer'] as Map<String, dynamic>? ??
+            section['musicShelfRenderer'] as Map<String, dynamic>?;
+        if (shelf == null) continue;
+
+        final items = shelf['contents'] as List<dynamic>? ?? const [];
+        for (final item in items) {
+          if (item is! Map<String, dynamic>) continue;
+          final listItem = item['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+          final twoRow = item['musicTwoRowItemRenderer'] as Map<String, dynamic>?;
+          final dynamic parsed = listItem != null
+              ? _parseMusicResponsiveListItemRenderer(listItem)
+              : (twoRow != null ? _parseMusicTwoRowItemRenderer(twoRow) : null);
+          if (parsed is Song && seenIds.add(parsed.id)) {
+            songs.add(parsed);
+          }
+        }
+      }
+
+      return sanitizeSongs(songs);
+    } catch (e) {
+      debugPrint('InnerTubeService.browseRelatedTracks failed for $browseId: $e');
+      return const [];
+    }
+  }
+
+  /// Get related songs for Radio / Auto-mix queue using InnerTube `next` + `MPTRt_` related tracks.
+  static Future<List<Song>> getRelatedSongs(
+    String videoId, {
+    String? gl,
+    String? hl,
+  }) async {
+    final mix = await getWatchNextMix(videoId, gl: gl, hl: hl);
+    final combined = <Song>[];
+    final seenIds = <String>{videoId};
+
+    List<Song> relatedTabSongs = const [];
+    if (mix.relatedBrowseId != null && mix.relatedBrowseId!.isNotEmpty) {
+      relatedTabSongs = await browseRelatedTracks(
+        mix.relatedBrowseId!,
+        gl: gl,
+        hl: hl,
+      );
+    }
+
+    for (final s in relatedTabSongs) {
+      if (seenIds.add(s.id)) combined.add(s);
+    }
+    for (final s in mix.songs) {
+      if (seenIds.add(s.id)) combined.add(s);
+    }
+
+    if (combined.isNotEmpty) {
+      return sanitizeSongs(combined);
+    }
+
+    if (clientOverride == null) {
+      try {
+        final video = await _ytExplode.videos.get(yt.VideoId(videoId));
+        final related = await _ytExplode.videos.getRelatedVideos(video);
+        if (related != null) {
+          return related.take(15).map((v) {
+            final cleaned = cleanArtistText(v.author);
+            return Song(
+              id: v.id.value,
+              title: v.title,
+              artist: cleaned.isNotEmpty ? cleaned : 'Unknown Artist',
+              duration: v.duration?.inSeconds ?? 0,
+              thumbnailUrl: 'https://i.ytimg.com/vi/${v.id.value}/hqdefault.jpg',
+            );
+          }).toList();
+        }
+      } catch (_) {}
+    }
+
+    return const [];
+  }
+
+  static bool _isPodcastShowPageType(String? pageType, String browseId) {
+    if (browseId.isEmpty) return false;
+    if (browseId.startsWith('MPREb_') ||
+        browseId.startsWith('VL') ||
+        browseId.startsWith('PL') ||
+        browseId.startsWith('RDCLAK5uy_') ||
+        browseId.startsWith('UC')) {
+      return false;
+    }
+    return pageType == 'MUSIC_PAGE_TYPE_PODCAST_SHOW_DETAIL_PAGE' ||
+        pageType == 'MUSIC_PAGE_TYPE_PODCAST' ||
+        browseId.startsWith('MPSP');
+  }
+
+  static bool _isPodcastEpisodeMetadata(
+    Map<String, dynamic> item, {
+    bool insidePodcastShelf = false,
+  }) {
+    final onTapWatch = item['onTap']?['watchEndpoint'] as Map<String, dynamic>?;
+    final navWatch = item['navigationEndpoint']?['watchEndpoint'] as Map<String, dynamic>?;
+    final overlayWatch = item['overlay']?['musicItemThumbnailOverlayRenderer']
+        ?['content']?['musicPlayButtonRenderer']?['playNavigationEndpoint']
+        ?['watchEndpoint'] as Map<String, dynamic>?;
+
+    final musicVideoType = onTapWatch?['watchEndpointMusicSupportedConfigs']
+                ?['watchEndpointMusicConfig']?['musicVideoType']
+            ?.toString() ??
+        overlayWatch?['watchEndpointMusicSupportedConfigs']
+                ?['watchEndpointMusicConfig']?['musicVideoType']
+            ?.toString() ??
+        navWatch?['watchEndpointMusicSupportedConfigs']
+                ?['watchEndpointMusicConfig']?['musicVideoType']
+            ?.toString() ??
+        item['musicVideoType']?.toString();
+
+    if (musicVideoType == 'MUSIC_VIDEO_TYPE_PODCAST_EPISODE') {
+      return true;
+    }
+    if (musicVideoType != null && musicVideoType.isNotEmpty) {
+      return false;
+    }
+
+    final titleRuns = _extractRuns(item['title']);
+    Map<String, dynamic>? titleBrowse;
+    if (titleRuns.isNotEmpty) {
+      final runNav = titleRuns.first['navigationEndpoint'];
+      if (runNav is Map<String, dynamic>) {
+        final browse = runNav['browseEndpoint'];
+        if (browse is Map<String, dynamic>) titleBrowse = browse;
+      }
+    }
+    titleBrowse ??=
+        item['navigationEndpoint']?['browseEndpoint'] as Map<String, dynamic>?;
+    final browseId = titleBrowse?['browseId']?.toString() ?? '';
+    final pageType = titleBrowse?['browseEndpointContextSupportedConfigs']
+            ?['browseEndpointContextMusicConfig']?['pageType']
+        ?.toString();
+
+    if (browseId.startsWith('MPED') ||
+        pageType == 'MUSIC_PAGE_TYPE_NON_MUSIC_AUDIO_TRACK_PAGE' ||
+        pageType == 'MUSIC_PAGE_TYPE_PODCAST_EPISODE') {
+      return true;
+    }
+
+    return insidePodcastShelf;
+  }
+
+  static Map<String, dynamic>? _extractPodcastShowBrowseEndpoint(
+    Map<String, dynamic> item,
+    List<Map<String, dynamic>> titleRuns,
+  ) {
+    final direct = item['navigationEndpoint']?['browseEndpoint'];
+    if (direct is Map<String, dynamic>) return direct;
+    if (titleRuns.isEmpty) return null;
+    final runNav = titleRuns.first['navigationEndpoint'];
+    if (runNav is Map<String, dynamic>) {
+      final browse = runNav['browseEndpoint'];
+      if (browse is Map<String, dynamic>) return browse;
+    }
+    return null;
+  }
+
+  static BrowseMediaItem? _parsePodcastShowFromTwoRow(Map<String, dynamic> item) {
+    final title = _runsToText(item['title']).trim();
+    if (title.isEmpty) return null;
+
+    final titleRuns = _extractRuns(item['title']);
+    final browseEndpoint = _extractPodcastShowBrowseEndpoint(item, titleRuns);
+    if (browseEndpoint == null) return null;
+
+    final browseId = browseEndpoint['browseId']?.toString() ?? '';
+    final pageType = browseEndpoint['browseEndpointContextSupportedConfigs']
+            ?['browseEndpointContextMusicConfig']?['pageType']
+        ?.toString();
+    if (!_isPodcastShowPageType(pageType, browseId)) return null;
+
+    final subtitleRuns = _extractRuns(item['subtitle']);
+    final cleanedHost = formatArtistRuns(subtitleRuns);
+    final rawSub = _runsToText(subtitleRuns).trim();
+    final host = cleanedHost.isNotEmpty
+        ? cleanedHost
+        : (rawSub.isNotEmpty ? rawSub : 'Podcast');
+    final thumbUrl =
+        _extractThumbnailUrl(item['thumbnailRenderer'] ?? item['thumbnail']);
+
+    return BrowseMediaItem(
+      id: browseId,
+      title: title,
+      subtitle: host,
+      thumbnailUrl: thumbUrl,
+      browseId: browseId,
+      type: 'podcast',
+    );
+  }
+
+  static BrowseMediaItem? _parsePodcastShowFromListItem(
+    Map<String, dynamic> item,
+  ) {
+    final flexCols = item['flexColumns'] as List<dynamic>? ?? const [];
+    if (flexCols.isEmpty) return null;
+
+    final col0 = flexCols[0]['musicResponsiveListItemFlexColumnRenderer']
+        as Map<String, dynamic>?;
+    final titleRuns = _extractRuns(col0?['text']);
+    final title = _runsToText(titleRuns).trim();
+    if (title.isEmpty) return null;
+
+    final browseEndpoint = _extractPodcastShowBrowseEndpoint(item, titleRuns);
+    if (browseEndpoint == null) return null;
+
+    final browseId = browseEndpoint['browseId']?.toString() ?? '';
+    final pageType = browseEndpoint['browseEndpointContextSupportedConfigs']
+            ?['browseEndpointContextMusicConfig']?['pageType']
+        ?.toString();
+    if (!_isPodcastShowPageType(pageType, browseId)) return null;
+
+    String host = 'Podcast';
+    if (flexCols.length > 1) {
+      final col1 = flexCols[1]['musicResponsiveListItemFlexColumnRenderer']
+          as Map<String, dynamic>?;
+      final subRuns = _extractRuns(col1?['text']);
+      final formatted = formatArtistRuns(subRuns);
+      if (formatted.isNotEmpty) {
+        host = formatted;
+      }
+    }
+
+    final thumbUrl = _extractThumbnailUrl(item['thumbnail']);
+    return BrowseMediaItem(
+      id: browseId,
+      title: title,
+      subtitle: host,
+      thumbnailUrl: thumbUrl,
+      browseId: browseId,
+      type: 'podcast',
+    );
+  }
+
+  static Song? _parsePodcastEpisodeFromMultiRow(
+    Map<String, dynamic> item, {
+    String? defaultShowName,
+    String? defaultShowId,
+    String? defaultThumbnail,
+    bool insidePodcastShelf = true,
+  }) {
+    if (!_isPodcastEpisodeMetadata(item, insidePodcastShelf: insidePodcastShelf)) {
+      return null;
+    }
+
+    final overlayPlay = item['overlay']?['musicItemThumbnailOverlayRenderer']
+        ?['content']?['musicPlayButtonRenderer']?['playNavigationEndpoint']
+        as Map<String, dynamic>?;
+    final videoId = item['onTap']?['watchEndpoint']?['videoId']?.toString() ??
+        overlayPlay?['watchEndpoint']?['videoId']?.toString() ??
+        item['navigationEndpoint']?['watchEndpoint']?['videoId']?.toString() ??
+        '';
+    if (videoId.isEmpty) return null;
+
+    final title = _runsToText(item['title']).trim();
+    if (title.isEmpty) return null;
+
+    final secondRuns = _extractRuns(item['secondTitle']);
+    final showFromSecond = _runsToText(secondRuns).trim();
+    String? showBrowseId;
+    if (secondRuns.isNotEmpty) {
+      final runNav = secondRuns.first['navigationEndpoint'];
+      if (runNav is Map<String, dynamic>) {
+        showBrowseId = runNav['browseEndpoint']?['browseId']?.toString();
+      }
+    }
+    final showName = showFromSecond.isNotEmpty
+        ? showFromSecond
+        : ((defaultShowName != null && defaultShowName.isNotEmpty)
+            ? defaultShowName
+            : 'Podcast Episode');
+
+    int duration = _extractDurationFromRenderer(item);
+    if (duration <= 0) {
+      final progress =
+          item['playbackProgress']?['musicPlaybackProgressRenderer'];
+      if (progress is Map<String, dynamic>) {
+        final durRuns = _extractRuns(
+          progress['durationText'] ?? progress['playbackProgressText'],
+        );
+        for (final r in durRuns.reversed) {
+          final parsed = parseDuration(r['text']?.toString());
+          if (parsed > 0) {
+            duration = parsed;
+            break;
+          }
+        }
+      }
+    }
+    if (duration <= 0) {
+      final subRuns = _extractRuns(item['subtitle']);
+      for (final r in subRuns.reversed) {
+        final parsed = parseDuration(r['text']?.toString());
+        if (parsed > 0) {
+          duration = parsed;
+          break;
+        }
+      }
+    }
+
+    final thumb = _extractThumbnailUrl(item['thumbnail']);
+    final effectiveThumb =
+        thumb.isNotEmpty ? thumb : (defaultThumbnail ?? '');
+
+    return Song(
+      id: videoId,
+      title: title,
+      artist: showName,
+      artistId: showBrowseId ?? defaultShowId,
+      duration: duration,
+      thumbnailUrl: effectiveThumb,
+      isVideo: false,
+      isPodcast: true,
+    );
+  }
+
+  static Song? _parsePodcastEpisodeFromListItem(
+    Map<String, dynamic> item, {
+    String? defaultShowName,
+    String? defaultShowId,
+    String? defaultThumbnail,
+    bool insidePodcastShelf = false,
+  }) {
+    if (!_isPodcastEpisodeMetadata(item, insidePodcastShelf: insidePodcastShelf)) {
+      return null;
+    }
+
+    final parsed = _parseMusicResponsiveListItemRenderer(item);
+    if (parsed is Song) {
+      final effectiveArtist = (parsed.artist == 'Unknown Artist' &&
+              defaultShowName != null &&
+              defaultShowName.isNotEmpty)
+          ? defaultShowName
+          : parsed.artist;
+      return parsed.copyWith(
+        artist: effectiveArtist,
+        artistId: parsed.artistId ?? defaultShowId,
+        thumbnailUrl: parsed.thumbnailUrl.isNotEmpty
+            ? parsed.thumbnailUrl
+            : (defaultThumbnail ?? ''),
+        isVideo: false,
+        isPodcast: true,
+      );
+    }
+    return null;
+  }
+
+  /// Parses `FEmusic_podcasts` / `FEmusic_non_music_audio` browse JSON strictly
+  /// into podcast shows and podcast episodes (rejecting music songs/albums/playlists).
+  @visibleForTesting
+  static ({List<BrowseMediaItem> shows, List<Song> episodes})
+      parsePodcastsBrowseResponse(Map<String, dynamic> data) {
+    final shows = <BrowseMediaItem>[];
+    final episodes = <Song>[];
+    final seenShowIds = <String>{};
+    final seenEpisodeIds = <String>{};
+
+    final sections = _extractSectionListContents(data);
+    for (final section in sections) {
+      if (section is! Map<String, dynamic>) continue;
+      final shelf = section['musicCarouselShelfRenderer'] as Map<String, dynamic>? ??
+          section['musicShelfRenderer'] as Map<String, dynamic>? ??
+          section['gridRenderer'] as Map<String, dynamic>?;
+      if (shelf == null) continue;
+
+      final items = (shelf['contents'] ?? shelf['items']) as List<dynamic>? ??
+          const [];
+      for (final item in items) {
+        if (item is! Map<String, dynamic>) continue;
+        final twoRow = item['musicTwoRowItemRenderer'] as Map<String, dynamic>?;
+        if (twoRow != null) {
+          final show = _parsePodcastShowFromTwoRow(twoRow);
+          if (show != null && seenShowIds.add(show.id)) {
+            shows.add(show);
+          }
+          continue;
+        }
+        final multiRow =
+            item['musicMultiRowListItemRenderer'] as Map<String, dynamic>?;
+        if (multiRow != null) {
+          final ep = _parsePodcastEpisodeFromMultiRow(
+            multiRow,
+            insidePodcastShelf: true,
+          );
+          if (ep != null && seenEpisodeIds.add(ep.id)) {
+            episodes.add(ep);
+          }
+          continue;
+        }
+        final listItem =
+            item['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+        if (listItem != null) {
+          final show = _parsePodcastShowFromListItem(listItem);
+          if (show != null && seenShowIds.add(show.id)) {
+            shows.add(show);
+            continue;
+          }
+          final ep = _parsePodcastEpisodeFromListItem(
+            listItem,
+            insidePodcastShelf: false,
+          );
+          if (ep != null && seenEpisodeIds.add(ep.id)) {
+            episodes.add(ep);
+          }
+        }
+      }
+    }
+
+    return (shows: shows, episodes: episodes);
+  }
+
+  /// Fetches podcast shows & episodes from YouTube Music's podcast browse endpoint.
+  static Future<({List<BrowseMediaItem> shows, List<Song> episodes})>
+      getPodcastsBrowse({String? gl, String? hl}) async {
+    for (final browseId in const ['FEmusic_podcasts', 'FEmusic_non_music_audio']) {
+      final res = await _browse(browseId: browseId, gl: gl, hl: hl);
+      if (res != null) {
+        final parsed = parsePodcastsBrowseResponse(res);
+        if (parsed.shows.isNotEmpty || parsed.episodes.isNotEmpty) {
+          return parsed;
+        }
+      }
+    }
+    return (shows: const <BrowseMediaItem>[], episodes: const <Song>[]);
+  }
+
+  /// Searches YouTube Music strictly for podcast shows and podcast episodes.
+  static Future<({List<BrowseMediaItem> shows, List<Song> episodes})>
+      searchPodcasts(
+    String query, {
+    String? gl,
+    String? hl,
+  }) async {
+    final clean = query.trim();
+    if (clean.isEmpty || AntiBotService.isSafeModeActive) {
+      return (shows: const <BrowseMediaItem>[], episodes: const <Song>[]);
+    }
+
+    final effectiveGl = (gl != null && gl.isNotEmpty) ? gl : _gl;
+    try {
+      if (effectiveGl == 'IN' && visitorData == null) {
+        await fetchVisitorData();
+      }
+    } catch (_) {}
+
+    Future<List<Map<String, dynamic>>> runFilteredSearch(String params) async {
+      try {
+        final body = <String, dynamic>{
+          ..._clientContext(gl: effectiveGl, hl: hl),
+          'query': clean,
+          'params': params,
+        };
+        final res = await _httpClient
+            .post(
+              Uri.parse('$_baseUrl/search'),
+              headers: _headers(gl: effectiveGl),
+              body: jsonEncode(body),
+            )
+            .timeout(const Duration(seconds: 7));
+        if (res.statusCode != 200) return const [];
+        final data = jsonDecode(res.body);
+        if (data is! Map<String, dynamic>) return const [];
+
+        final tabs =
+            data['contents']?['tabbedSearchResultsRenderer']?['tabs'] as List<dynamic>?;
+        final tab = (tabs != null && tabs.isNotEmpty) ? tabs[0] : null;
+        final sections = tab?['tabRenderer']?['content']?['sectionListRenderer']
+                ?['contents'] as List<dynamic>? ??
+            const [];
+        final renderers = <Map<String, dynamic>>[];
+        for (final section in sections) {
+          if (section is! Map<String, dynamic>) continue;
+          final shelf = section['musicShelfRenderer'] as Map<String, dynamic>?;
+          final contents = shelf?['contents'] as List<dynamic>? ?? const [];
+          for (final item in contents) {
+            if (item is! Map<String, dynamic>) continue;
+            final listItem =
+                item['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+            if (listItem != null) {
+              renderers.add(listItem);
+            }
+            final multiRow =
+                item['musicMultiRowListItemRenderer'] as Map<String, dynamic>?;
+            if (multiRow != null) {
+              renderers.add({'__multiRow': multiRow});
+            }
+          }
+        }
+        return renderers;
+      } catch (_) {
+        return const [];
+      }
+    }
+
+    final results = await Future.wait([
+      runFilteredSearch(podcastShowsSearchParams),
+      runFilteredSearch(podcastEpisodesSearchParams),
+    ]);
+
+    final shows = <BrowseMediaItem>[];
+    final seenShows = <String>{};
+    for (final raw in results[0]) {
+      final show = _parsePodcastShowFromListItem(raw);
+      if (show != null && seenShows.add(show.id)) {
+        shows.add(show);
+      }
+    }
+
+    final episodes = <Song>[];
+    final seenEps = <String>{};
+    for (final raw in results[1]) {
+      final Song? ep;
+      if (raw['__multiRow'] is Map<String, dynamic>) {
+        ep = _parsePodcastEpisodeFromMultiRow(
+          raw['__multiRow'] as Map<String, dynamic>,
+          insidePodcastShelf: true,
+        );
+      } else {
+        ep = _parsePodcastEpisodeFromListItem(
+          raw,
+          insidePodcastShelf: true,
+        );
+      }
+      if (ep != null && seenEps.add(ep.id)) {
+        episodes.add(ep);
+      }
+    }
+
+    return (shows: shows, episodes: episodes);
+  }
+
+  /// Browses a podcast show (`MPSP...`) and returns its metadata + playable episodes.
+  static Future<PlaylistBrowseResult?> browsePodcastShow(
+    String browseId, {
+    String? gl,
+    String? hl,
+  }) async {
+    try {
+      final response = await _browse(browseId: browseId, gl: gl, hl: hl);
+      if (response == null) return null;
+
+      final sections = _extractSectionListContents(response);
+      final base = sections.isNotEmpty && sections[0] is Map<String, dynamic>
+          ? sections[0] as Map<String, dynamic>
+          : null;
+      final header =
+          base?['musicResponsiveHeaderRenderer'] as Map<String, dynamic>? ??
+              response['header']?['musicResponsiveHeaderRenderer']
+                  as Map<String, dynamic>? ??
+              response['header']?['musicDetailHeaderRenderer']
+                  as Map<String, dynamic>?;
+
+      final title = _runsToText(header?['title']).trim();
+      if (title.isEmpty) return null;
+
+      String? author;
+      final straplineRuns = _extractRuns(header?['straplineTextOne']);
+      if (straplineRuns.isNotEmpty) {
+        final formatted = formatArtistRuns(straplineRuns);
+        author = formatted.isNotEmpty ? formatted : _runsToText(straplineRuns).trim();
+      } else {
+        final subRuns = _extractRuns(header?['subtitle']);
+        if (subRuns.isNotEmpty) {
+          final formatted = formatArtistRuns(subRuns);
+          author = formatted.isNotEmpty ? formatted : _runsToText(subRuns).trim();
+        }
+      }
+
+      final thumbUrl = _extractThumbnailUrl(header?['thumbnail']);
+      final descRuns =
+          header?['description']?['musicDescriptionShelfRenderer']?['description'] ??
+              header?['description'];
+      final description = descRuns != null ? _runsToText(descRuns).trim() : null;
+
+      final episodes = <Song>[];
+      final seenIds = <String>{};
+      final secondaryContents = _extractSecondaryContents(response);
+      final candidateSections = [
+        ...secondaryContents,
+        ...sections,
+      ];
+
+      for (final section in candidateSections) {
+        if (section is! Map<String, dynamic>) continue;
+        final shelf = section['musicShelfRenderer'] as Map<String, dynamic>? ??
+            section['musicPlaylistShelfRenderer'] as Map<String, dynamic>?;
+        final items = shelf?['contents'] as List<dynamic>? ?? const [];
+        for (final item in items) {
+          if (item is! Map<String, dynamic>) continue;
+          final multiRow =
+              item['musicMultiRowListItemRenderer'] as Map<String, dynamic>?;
+          if (multiRow != null) {
+            final ep = _parsePodcastEpisodeFromMultiRow(
+              multiRow,
+              defaultShowName: title,
+              defaultShowId: browseId,
+              defaultThumbnail: thumbUrl,
+              insidePodcastShelf: true,
+            );
+            if (ep != null && seenIds.add(ep.id)) {
+              episodes.add(ep);
+            }
+            continue;
+          }
+          final listItem =
+              item['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+          if (listItem != null) {
+            final ep = _parsePodcastEpisodeFromListItem(
+              listItem,
+              defaultShowName: title,
+              defaultShowId: browseId,
+              defaultThumbnail: thumbUrl,
+              insidePodcastShelf: true,
+            );
+            if (ep != null && seenIds.add(ep.id)) {
+              episodes.add(ep);
+            }
+          }
+        }
+      }
+
+      return PlaylistBrowseResult(
+        browseId: browseId,
+        playlistId: browseId,
+        title: title,
+        author: (author != null && author.isNotEmpty) ? author : 'Podcast',
+        thumbnailUrl: thumbUrl,
+        description: (description != null && description.isNotEmpty) ? description : null,
+        songCount: episodes.length,
+        songs: episodes,
+      );
+    } catch (e, st) {
+      debugPrint('InnerTubeService.browsePodcastShow failed for $browseId: $e\n$st');
+      return null;
+    }
   }
 
   /// Fetch playlist songs

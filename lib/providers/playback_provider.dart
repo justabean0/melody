@@ -8,6 +8,24 @@ import '../services/lyrics_service.dart';
 class PlaybackProvider extends ChangeNotifier {
   static final Expando<double> _speedByProvider =
       Expando<double>('melody_playback_speed');
+  static final Expando<MelodyAudioService> _serviceByProvider =
+      Expando<MelodyAudioService>('melody_playback_service');
+
+  /// Optional test hook allowing mock PlaybackProviders to handle queue reorders.
+  @visibleForTesting
+  static final Expando<void Function(int oldIndex, int newIndex)>
+      reorderHandlerByProvider =
+      Expando<void Function(int, int)>('melody_reorder_handler');
+
+  /// Optional test hook allowing mock PlaybackProviders to expose user-queued IDs.
+  @visibleForTesting
+  static final Expando<Set<String>> userQueuedIdsByProvider =
+      Expando<Set<String>>('melody_user_queued_ids');
+
+  /// Optional test hook allowing mock PlaybackProviders to expose autoplay IDs.
+  @visibleForTesting
+  static final Expando<Set<String>> autoplayQueuedIdsByProvider =
+      Expando<Set<String>>('melody_autoplay_queued_ids');
 
   /// Returns the most recently applied playback speed for [provider] without
   /// adding instance getters that would break `implements PlaybackProvider` mocks.
@@ -17,6 +35,34 @@ class PlaybackProvider extends ChangeNotifier {
   /// Records the latest playback speed for [provider] across UI rebuilds/reopens.
   static void rememberSpeed(PlaybackProvider provider, double speed) {
     _speedByProvider[provider] = speed;
+  }
+
+  /// Reorders an upcoming queue item cleanly on [provider] without breaking mock implementations.
+  static void reorderQueue(
+    PlaybackProvider provider,
+    int oldIndex,
+    int newIndex,
+  ) {
+    final service = _serviceByProvider[provider];
+    if (service != null) {
+      service.reorderQueue(oldIndex, newIndex);
+      return;
+    }
+    reorderHandlerByProvider[provider]?.call(oldIndex, newIndex);
+  }
+
+  /// Returns true if [songId] was explicitly queued by the user on [provider].
+  static bool isUserQueued(PlaybackProvider provider, String songId) {
+    final service = _serviceByProvider[provider];
+    if (service != null) return service.isUserQueued(songId);
+    return userQueuedIdsByProvider[provider]?.contains(songId) ?? false;
+  }
+
+  /// Returns true if [songId] was populated by smart autoplay on [provider].
+  static bool isAutoplayQueued(PlaybackProvider provider, String songId) {
+    final service = _serviceByProvider[provider];
+    if (service != null) return service.isAutoplayQueued(songId);
+    return autoplayQueuedIdsByProvider[provider]?.contains(songId) ?? false;
   }
 
   final MelodyAudioService _audioService = MelodyAudioService();
@@ -43,6 +89,7 @@ class PlaybackProvider extends ChangeNotifier {
   StreamSubscription? _songSub;
 
   PlaybackProvider() {
+    _serviceByProvider[this] = _audioService;
     _speedByProvider[this] = _audioService.playbackSpeed;
     _audioService.init();
 

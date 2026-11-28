@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../models/browse_result.dart';
 import '../models/search_result.dart';
 import '../models/song.dart';
@@ -42,6 +44,8 @@ class UserTasteProfile {
 class RecommendationService {
   static final Map<String, List<MoodGenreItem>> _moodGenreCache = {};
   static final Map<String, List<BrowseMediaItem>> _featuredBrowseCache = {};
+  static final Map<String, DateTime> _featuredBrowseCacheTime = {};
+  static const Duration _browseCacheTtl = Duration(minutes: 10);
 
   static const List<String> _englishExcludedHubTerms = [
     'indian',
@@ -67,9 +71,30 @@ class RecommendationService {
     'jpop',
     'latin',
     'spanish',
+    'reggaeton',
+    'french',
+    'francais',
+    'français',
+    'chanson',
+    'en français',
+    'variété',
+    'variete',
+    'paroles',
+    'clip officiel',
+    'vidéo officielle',
+    'italian',
+    'italiano',
+    'german',
+    'deutsch',
+    'portuguese',
+    'português',
+    'turkish',
+    'türkçe',
+    'russian',
     'arabic',
     'urdu',
     'african',
+    'afrobeat',
     'carnatic',
     'hindustani',
     'i-pop',
@@ -89,6 +114,78 @@ class RecommendationService {
     r'\b(hindi|bollywood|desi|bhojpuri|haryanvi|t-series|zee music|saiyaara|guzarish|payal|kesariya|satranga|chaleya|tum hi ho|aashiqui|mohabbat|ishq|pyaar|dil|humsafar|sanam|barsaat|tere liye|rabba|zindagi|khuda|arijit|shreya ghoshal|jubin|atif aslam|pritam|neha kakkar|sonu nigam|alka yagnik|udit narayan|armaan malik|darshan raval|mohit chauhan|mohit love|tanishk|b praak|badshah|diljit)\b',
     caseSensitive: false,
   );
+  static final RegExp _frenchStrongCueRegex = RegExp(
+    r"(?:^|[\s(\[])(?:c'est|j'ai|j'veux|n'est|qu'il|qu'elle|qu'on|l'amour|l'ombre|l'âme|d'un|d'une|aujourd'hui|toujours|jamais|pourquoi|peut-être|dernière|chanson|paroles|clip officiel|vidéo officielle|français|française|cœur|étoile|soleil|maintenant|ensemble)(?:$|[\s)\],.!?:;])",
+    caseSensitive: false,
+  );
+  static final RegExp _frenchAccentRegex = RegExp(r'[àâçéèêëîïôœùûüÿ]', caseSensitive: false);
+  static final RegExp _frenchFunctionWordRegex = RegExp(
+    r'\b(?:je|tu|nous|vous|mon|ton|son|mes|tes|ses|avec|sans|dans|pour|tout|tous|rien|encore|quand|les|des|une)\b',
+    caseSensitive: false,
+  );
+  static final RegExp _spanishStrongCueRegex = RegExp(
+    r'(?:^|[\s(\[])(?:canción|música|corazón|contigo|conmigo|siempre|quien|porque|quiero|ella quiere|quiere beber|una noche|mi gente|baila conmigo|te amo|anuel aa|estoy|para ti|sin ti|te quiero|mi amor|la vida|el amor|una vez|también|video oficial|audio oficial|diablos|neblina|bichote|toco)(?:$|[\s)\],.!?:;])',
+    caseSensitive: false,
+  );
+  static final RegExp _spanishAccentRegex = RegExp(r'[ñ¡¿áéíóú]', caseSensitive: false);
+  static final RegExp _spanishFunctionWordRegex = RegExp(
+    r'\b(?:que|los|las|por|para|una|del|con|sin|como|pero|más)\b',
+    caseSensitive: false,
+  );
+
+  /// Detects unmistakable non-English Latin-script tracks (e.g. French or Spanish)
+  /// used ONLY to block unseeded chart/hub bleed when English is the entry-gate baseline.
+  static bool isLikelyForeignLatinTrack(Song song) {
+    final combined = '${song.title} ${song.artist}';
+    if (_frenchStrongCueRegex.hasMatch(combined)) return true;
+    if (_frenchAccentRegex.hasMatch(combined) &&
+        _frenchFunctionWordRegex.hasMatch(combined)) {
+      return true;
+    }
+    if (_spanishStrongCueRegex.hasMatch(combined)) return true;
+    if (_spanishAccentRegex.hasMatch(combined) &&
+        _spanishFunctionWordRegex.hasMatch(combined)) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Normalizes a track title for version deduplication (strips live/acoustic/remix/video tags).
+  static String normalizeTrackKey(String title) {
+    var normalized = title.toLowerCase();
+    normalized = normalized.replaceAll(RegExp(r'\([^)]*\)'), ' ');
+    normalized = normalized.replaceAll(RegExp(r'\[[^\]]*\]'), ' ');
+    normalized = normalized.replaceAll(
+      RegExp(
+        r'\s*[-–|]\s*(?:official\b|lyric\b|audio\b|video\b|live\b|acoustic\b|remix\b|slowed\b|reverb\b|sped up\b|instrumental\b|cover\b|version\b|radio edit\b).*$',
+      ),
+      ' ',
+    );
+    normalized = normalized.replaceAll(RegExp(r'[^\p{L}\p{N}\s]', unicode: true), ' ');
+    normalized = normalized.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return normalized;
+  }
+
+  /// Extracts a normalized primary artist key for artist-diversity capping.
+  static String primaryArtistKey(String artist) {
+    final cleaned = InnerTubeService.cleanArtistText(artist);
+    if (cleaned.isEmpty) return '';
+    final primary = cleaned
+        .split(RegExp(r',|&|\bfeat\.?\b|\bft\.?\b', caseSensitive: false))
+        .first
+        .trim()
+        .toLowerCase();
+    if (primary.isEmpty || primary == 'unknown' || primary == 'unknown artist') {
+      return '';
+    }
+    return primary;
+  }
+
+  static String _normalizedSongSignature(Song song) {
+    final titleKey = normalizeTrackKey(song.title);
+    final artistKey = primaryArtistKey(song.artist);
+    return artistKey.isNotEmpty ? '$titleKey|$artistKey' : titleKey;
+  }
 
   /// Returns true if a title/text carries regional or non-English markers excluded for [config].
   static bool _isExcludedForConfig(String text, LanguageConfig config) {
@@ -115,6 +212,7 @@ class RecommendationService {
       if (_isExcludedForConfig(combined, config)) return false;
       if (_nonLatinScriptRegex.hasMatch(combined)) return false;
       if (isLikelyHindiTrack(song)) return false;
+      if (isLikelyForeignLatinTrack(song)) return false;
     }
     return true;
   }
@@ -155,6 +253,7 @@ class RecommendationService {
   static void clearCache() {
     _moodGenreCache.clear();
     _featuredBrowseCache.clear();
+    _featuredBrowseCacheTime.clear();
   }
 
   /// Maps supported languages to country/language codes and target genre/hub keywords
@@ -289,7 +388,7 @@ class RecommendationService {
           language: 'English',
           gl: 'US',
           hl: 'en',
-          keywords: ['pop', 'hits', 'global', 'dance', 'charts'],
+          keywords: ['pop', 'hits', 'dance', 'rock', 'hip-hop'],
           useCountryCharts: true,
         );
     }
@@ -411,12 +510,19 @@ class RecommendationService {
     return 'Pop';
   }
 
-  /// Builds a taste profile by analyzing user listening history and liked songs
+  /// Builds a taste profile by analyzing user listening history and liked songs.
+  /// Excludes podcast episodes so music genre/artist weights reflect musical taste.
   static UserTasteProfile getUserTasteProfile() {
-    final history = DatabaseService.getHistory();
-    final liked = DatabaseService.getLikedSongs();
+    final history = DatabaseService.getHistory().where((s) => !s.isPodcast).toList();
+    final liked = DatabaseService.getLikedSongs().where((s) => !s.isPodcast).toList();
 
-    final allListened = [...history, ...liked];
+    final seenIds = <String>{};
+    final allListened = <Song>[];
+    for (final s in [...history, ...liked]) {
+      if (seenIds.add(s.id)) {
+        allListened.add(s);
+      }
+    }
     final listenedIds = allListened.map((s) => s.id).toSet();
 
     if (allListened.isEmpty) {
@@ -476,28 +582,72 @@ class RecommendationService {
     }
   }
 
-  /// Fetches recommended songs related to recently listened songs
+  /// Fetches similar/related songs for [recentSong] via InnerTube `next` (`RDAMVM`)
+  /// and `MPTRt_` related-artist tabs, falling back to artist/genre discovery
+  /// search if radio endpoints yield nothing.
   static Future<List<Song>> getRelatedTracksForRecentSong(
     Song recentSong, {
     String? gl,
     String? hl,
   }) async {
+    final seedNormalized = normalizeTrackKey(recentSong.title);
+    final seedArtist = primaryArtistKey(recentSong.artist);
+    final related = <Song>[];
+    final seenIds = <String>{recentSong.id};
+    final seenNormalized = <String>{};
+    if (seedNormalized.isNotEmpty) {
+      seenNormalized.add(seedArtist.isNotEmpty ? '$seedNormalized|$seedArtist' : seedNormalized);
+    }
+
+    void collect(Iterable<Song> candidates) {
+      for (final s in candidates) {
+        if (s.isPodcast || !isSingleSong(s)) continue;
+        final sNorm = normalizeTrackKey(s.title);
+        if (seedNormalized.isNotEmpty && sNorm == seedNormalized) continue;
+        final sig = _normalizedSongSignature(s);
+        if (!seenIds.add(s.id)) continue;
+        if (sNorm.isNotEmpty && !seenNormalized.add(sig)) continue;
+        related.add(s);
+      }
+    }
+
     try {
-      final cleanArtist = InnerTubeService.cleanArtistText(recentSong.artist);
-      final query = '${recentSong.title} $cleanArtist'.trim();
-      final res = await InnerTubeService.search(
-        query,
-        filter: SearchFilter.songs,
+      final mix = await InnerTubeService.getWatchNextMix(
+        recentSong.id,
         gl: gl,
         hl: hl,
       );
-      return res.songs
-          .where((s) => s.id != recentSong.id && isSingleSong(s))
-          .take(16)
-          .toList();
-    } catch (_) {
-      return const [];
+      if (mix.relatedBrowseId != null && mix.relatedBrowseId!.isNotEmpty) {
+        final tabRelated = await InnerTubeService.browseRelatedTracks(
+          mix.relatedBrowseId!,
+          gl: gl,
+          hl: hl,
+        );
+        collect(tabRelated);
+      }
+      collect(mix.songs);
+    } catch (_) {}
+
+    if (related.length < 6) {
+      try {
+        final cleanArtist = InnerTubeService.cleanArtistText(recentSong.artist);
+        final genre = inferGenre(recentSong);
+        final query = (cleanArtist.isNotEmpty &&
+                cleanArtist.toLowerCase() != 'unknown' &&
+                cleanArtist.toLowerCase() != 'unknown artist')
+            ? '$cleanArtist ${genre != 'Pop' ? genre : 'similar'} songs'.trim()
+            : '$genre hits songs';
+        final res = await InnerTubeService.search(
+          query,
+          filter: SearchFilter.songs,
+          gl: gl,
+          hl: hl,
+        );
+        collect(res.songs);
+      } catch (_) {}
     }
+
+    return related.take(20).toList();
   }
 
   /// Searches targeted single tracks for a given language and genre
@@ -773,19 +923,38 @@ class RecommendationService {
     return merged.where((s) => globalSeen.add(s.id)).toList();
   }
 
-  /// Fetches featured playlists and albums for the Home screen from real InnerTube data
+  /// Fetches featured playlists and albums for the Home screen from real InnerTube data,
+  /// backed by both in-memory and disk cache so fresh launches render immediately.
   static Future<List<BrowseMediaItem>> getFeaturedBrowseItems({
     List<String>? languages,
+    bool forceRefresh = false,
   }) async {
     final activeLangs = (languages != null && languages.isNotEmpty)
         ? languages
         : DatabaseService.getMusicLanguages();
     final effectiveLangs = activeLangs.isNotEmpty ? activeLangs : const ['English'];
     final cacheKey = effectiveLangs.join(',');
+    final diskKey = 'lang:$cacheKey';
 
-    if (_featuredBrowseCache.containsKey(cacheKey) &&
-        _featuredBrowseCache[cacheKey]!.isNotEmpty) {
-      return _featuredBrowseCache[cacheKey]!;
+    if (!forceRefresh) {
+      final memTime = _featuredBrowseCacheTime[cacheKey];
+      final memFresh =
+          memTime != null && DateTime.now().difference(memTime) < _browseCacheTtl;
+      if (memFresh &&
+          _featuredBrowseCache.containsKey(cacheKey) &&
+          _featuredBrowseCache[cacheKey]!.isNotEmpty) {
+        return _featuredBrowseCache[cacheKey]!;
+      }
+
+      final diskTime = DatabaseService.getCachedBrowseTimestamp(diskKey);
+      final diskFresh =
+          diskTime != null && DateTime.now().difference(diskTime) < _browseCacheTtl;
+      final diskItems = DatabaseService.getCachedBrowseItems(diskKey);
+      if (diskFresh && diskItems.isNotEmpty) {
+        _featuredBrowseCache[cacheKey] = diskItems;
+        _featuredBrowseCacheTime[cacheKey] = diskTime;
+        return diskItems;
+      }
     }
 
     final items = <BrowseMediaItem>[];
@@ -936,6 +1105,14 @@ class RecommendationService {
 
     if (items.isNotEmpty) {
       _featuredBrowseCache[cacheKey] = items;
+      _featuredBrowseCacheTime[cacheKey] = DateTime.now();
+      await DatabaseService.saveCachedBrowseItems(diskKey, items);
+      return items;
+    }
+
+    final fallbackDisk = DatabaseService.getCachedBrowseItems(diskKey);
+    if (fallbackDisk.isNotEmpty) {
+      return fallbackDisk;
     }
     return items;
   }
@@ -1022,55 +1199,159 @@ class RecommendationService {
     ).songs;
   }
 
-  /// Core Recommendation Algorithm: blends trending single songs with genre and artist recommendations
-  /// using Slot-Based Interleaving so trending songs are guaranteed in Quick Picks.
+  /// Selects up to [maxSeeds] diverse seed tracks from recent plays and liked songs.
+  /// Allows any language the user explicitly played or liked (earned taste).
+  static List<Song> _selectDiverseTasteSeeds({
+    required List<Song> history,
+    required List<Song> liked,
+    Song? activeSong,
+    int maxSeeds = 2,
+  }) {
+    final seeds = <Song>[];
+    final usedArtists = <String>{};
+    final usedIds = <String>{};
+
+    // Interleave latest plays and latest likes so likes immediately influence Quick Picks
+    final combined = <Song>[];
+    final maxLen = history.length > liked.length ? history.length : liked.length;
+    for (int i = 0; i < maxLen; i++) {
+      if (i < history.length) combined.add(history[i]);
+      if (i < liked.length) combined.add(liked[i]);
+    }
+
+    for (final s in combined) {
+      if (s.isPodcast) continue;
+      if (!usedIds.add(s.id)) continue;
+      final artistKey = primaryArtistKey(s.artist);
+      if (artistKey.isNotEmpty && usedArtists.contains(artistKey) && seeds.isNotEmpty) {
+        continue;
+      }
+      if (artistKey.isNotEmpty) usedArtists.add(artistKey);
+      seeds.add(s);
+      if (seeds.length >= maxSeeds) break;
+    }
+
+    if (seeds.isEmpty && activeSong != null && !activeSong.isPodcast) {
+      seeds.add(activeSong);
+    }
+
+    return seeds;
+  }
+
+  /// Applies version deduplication, active-track suppression, and per-artist capping
+  /// (`maxPerArtist`, default 2) while preferring broad artist variety in top slots.
+  @visibleForTesting
+  static List<Song> diversifyAndCapQuickPicks(
+    List<Song> candidates, {
+    Song? activeSong,
+    int maxPerArtist = 2,
+    int maxCount = 32,
+  }) {
+    final activeId = activeSong?.id;
+    final activeNormTitle = activeSong != null ? normalizeTrackKey(activeSong.title) : '';
+    final activeArtist = activeSong != null ? primaryArtistKey(activeSong.artist) : '';
+
+    final seenIds = <String>{};
+    final seenSignatures = <String>{};
+    final artistCounts = <String, int>{};
+    final primaryPass = <Song>[];
+    final overflowPass = <Song>[];
+
+    for (final raw in candidates) {
+      if (raw.isPodcast || !isSingleSong(raw)) continue;
+      if (activeId != null && raw.id == activeId) continue;
+
+      final normTitle = normalizeTrackKey(raw.title);
+      final artistKey = primaryArtistKey(raw.artist);
+
+      // Prevent revisited/live/remix/acoustic duplicates of the active playing song
+      if (activeNormTitle.isNotEmpty &&
+          normTitle == activeNormTitle &&
+          (activeArtist.isEmpty || artistKey.isEmpty || artistKey == activeArtist)) {
+        continue;
+      }
+
+      if (!seenIds.add(raw.id)) continue;
+      final signature = artistKey.isNotEmpty ? '$normTitle|$artistKey' : normTitle;
+      if (normTitle.isNotEmpty && !seenSignatures.add(signature)) continue;
+
+      if (artistKey.isEmpty) {
+        primaryPass.add(raw);
+        continue;
+      }
+
+      final currentCount = artistCounts[artistKey] ?? 0;
+      if (currentCount >= maxPerArtist) continue;
+      artistCounts[artistKey] = currentCount + 1;
+
+      if (currentCount == 0) {
+        primaryPass.add(raw);
+      } else {
+        overflowPass.add(raw);
+      }
+    }
+
+    final result = <Song>[...primaryPass, ...overflowPass];
+    return result.take(maxCount).toList();
+  }
+
+  /// Core Recommendation Algorithm: blends selected-language discovery with similar-song
+  /// seeds from recent plays & likes, preserving earned user taste across languages
+  /// while capping tracks per artist and deduplicating versions.
   static Future<List<Song>> getPersonalizedQuickPicks({
     List<String>? languages,
     String mood = 'All',
+    Song? activeSong,
   }) async {
     final activeLanguages = (languages != null && languages.isNotEmpty)
         ? languages
         : DatabaseService.getMusicLanguages();
-    final hasHindi = activeLanguages.contains('Hindi');
     final primaryConfig = getLanguageConfig(
       activeLanguages.first,
       allSelectedLanguages: activeLanguages,
     );
 
     final tasteProfile = getUserTasteProfile();
+    final history = DatabaseService.getHistory();
+    final liked = DatabaseService.getLikedSongs();
+    final seeds = tasteProfile.hasHistory
+        ? _selectDiverseTasteSeeds(
+            history: history,
+            liked: liked,
+            activeSong: activeSong,
+            maxSeeds: 2,
+          )
+        : const <Song>[];
 
     final tasks = <Future<List<Song>>>[];
 
-    // Task 1: Language trending chart singles
+    // Task 1: Baseline selected-language trending singles (strict entry-gate)
     tasks.add(searchTrendingSinglesForLanguages(activeLanguages, mood: mood));
 
-    // Task 2 & 3: Related tracks and dominant genre tracks if history exists
-    Song? historyTarget;
-    if (tasteProfile.hasHistory) {
-      final history = DatabaseService.getHistory();
-      if (history.isNotEmpty) {
-        if (hasHindi) {
-          historyTarget = history.first;
-        } else {
-          // Skip Hindi history tracks when Hindi is NOT in activeLanguages
-          historyTarget = history.take(5).cast<Song?>().firstWhere(
-                (s) => s != null && !isLikelyHindiTrack(s),
-                orElse: () => null,
-              );
-        }
-      }
-      if (historyTarget != null) {
-        tasks.add(getRelatedTracksForRecentSong(
-          historyTarget,
-          gl: primaryConfig.gl,
-          hl: primaryConfig.hl,
-        ));
-      } else {
-        tasks.add(Future.value(<Song>[]));
-      }
+    // Task 2: Related/radio tracks seeded from user's plays & likes (earned taste allowed!)
+    if (seeds.isNotEmpty) {
+      tasks.add(
+        Future.wait(
+          seeds.map(
+            (seed) => getRelatedTracksForRecentSong(
+              seed,
+              gl: primaryConfig.gl,
+              hl: primaryConfig.hl,
+            ),
+          ),
+        ).then((lists) {
+          final interleaved = <Song>[];
+          final maxLen = lists.fold<int>(0, (m, l) => l.length > m ? l.length : m);
+          for (int i = 0; i < maxLen; i++) {
+            for (final l in lists) {
+              if (i < l.length) interleaved.add(l[i]);
+            }
+          }
+          return interleaved;
+        }),
+      );
 
       final topGenre = tasteProfile.dominantGenre;
-      // Fetch getGenreTracks across up to 3 selected languages in parallel
       final targetLangs = activeLanguages.take(3).toList();
       final genreTasks = targetLangs.map((l) {
         final config = getLanguageConfig(l, allSelectedLanguages: activeLanguages);
@@ -1095,62 +1376,57 @@ class RecommendationService {
 
     final taskResults = await Future.wait(tasks);
     final trendingResults = taskResults[0];
-    final rawRelatedResults = taskResults[1];
+    final relatedResults = taskResults[1];
     final genreResults = taskResults[2];
 
-    // Guard Task 2 (history-related) from re-injecting Hindi songs when Hindi is unselected
-    final relatedResults = hasHindi
-        ? rawRelatedResults
-        : rawRelatedResults.where((s) => !isLikelyHindiTrack(s)).toList();
-
-    // Separate into Trending Pool vs. Personalized Pool
     final trendingPool = <Song>[];
     final seenTrending = <String>{};
     for (final s in trendingResults) {
-      if (isSingleSong(s) && seenTrending.add(s.id)) {
+      if (!s.isPodcast && isSingleSong(s) && seenTrending.add(s.id)) {
         trendingPool.add(s);
       }
     }
 
     final task2Ids = relatedResults.map((s) => s.id).toSet();
     final task3Ids = genreResults.map((s) => s.id).toSet();
+    final seedArtistKeys = seeds
+        .map((s) => primaryArtistKey(s.artist))
+        .where((k) => k.isNotEmpty)
+        .toSet();
 
-    // Put Task 3 (language-matched genre tracks) ahead when Hindi is not selected so history never dominates
-    final personalizedCandidates = hasHindi
-        ? [...relatedResults, ...genreResults]
-        : [...genreResults, ...relatedResults];
+    // Rank personalized candidates: blend related artists + user's taste genres without stripping earned languages.
+    final personalizedCandidates = [...relatedResults, ...genreResults];
     final personalizedScored = <Song, double>{};
     for (final song in personalizedCandidates) {
-      if (!isSingleSong(song)) continue;
+      if (song.isPodcast || !isSingleSong(song)) continue;
 
       double score = 50.0;
       final songGenre = inferGenre(song);
+      final songArtistKey = primaryArtistKey(song.artist);
 
-      // Reward matching user's top genres (+30)
       if (tasteProfile.genreWeights.containsKey(songGenre)) {
-        score += 30.0;
+        score += 25.0;
       }
 
-      // Reward matching user's top artists (+35)
+      if (task2Ids.contains(song.id)) {
+        // Boost related-artist tracks slightly above same-artist repetitions so variety stays fresh
+        final isSeedArtist = songArtistKey.isNotEmpty && seedArtistKeys.contains(songArtistKey);
+        score += isSeedArtist ? 15.0 : 28.0;
+      }
+
+      if (task3Ids.contains(song.id)) {
+        score += 18.0;
+      }
+
       for (final artist in tasteProfile.topArtists) {
         if (song.artist.toLowerCase().contains(artist.toLowerCase())) {
-          score += 35.0;
+          score += 18.0;
           break;
         }
       }
 
-      // Prioritize multi-language genre tracks over generic related-history tracks when Hindi is unselected
-      if (!hasHindi) {
-        if (task3Ids.contains(song.id)) {
-          score += 20.0;
-        } else if (task2Ids.contains(song.id)) {
-          score -= 15.0;
-        }
-      }
-
-      // Fatigue penalty if song is already in listening history (-20)
       if (tasteProfile.listenedSongIds.contains(song.id)) {
-        score -= 20.0;
+        score -= 25.0;
       }
 
       personalizedScored[song] = score;
@@ -1174,11 +1450,15 @@ class RecommendationService {
       task3GenreIds: task3Ids,
     );
 
-    final finalSongs = <Song>[...blendedResult.songs];
-    final seenFinalIds = finalSongs.map((s) => s.id).toSet();
+    final candidateSongs = <Song>[...blendedResult.songs];
+    var finalSongs = diversifyAndCapQuickPicks(
+      candidateSongs,
+      activeSong: activeSong,
+      maxPerArtist: 2,
+    );
 
     // Ensure Quick Picks fills at least 4 columns x 4 rows (16 tracks minimum)
-    // whenever additional eligible recommendations are available.
+    // whenever additional eligible baseline-language tracks are available.
     if (finalSongs.length < 16) {
       final backfillLangs = activeLanguages.take(3).toList();
       final backfillTasks = backfillLangs.map((lang) async {
@@ -1208,16 +1488,19 @@ class RecommendationService {
         0,
         (max, list) => list.length > max ? list.length : max,
       );
-      for (int i = 0; i < maxBackfill && finalSongs.length < 24; i++) {
+      final combinedWithBackfill = <Song>[...finalSongs];
+      for (int i = 0; i < maxBackfill; i++) {
         for (final list in backfillLists) {
-          if (i < list.length && finalSongs.length < 24) {
-            final candidate = list[i];
-            if (seenFinalIds.add(candidate.id)) {
-              finalSongs.add(candidate);
-            }
+          if (i < list.length) {
+            combinedWithBackfill.add(list[i]);
           }
         }
       }
+      finalSongs = diversifyAndCapQuickPicks(
+        combinedWithBackfill,
+        activeSong: activeSong,
+        maxPerArtist: 2,
+      );
     }
 
     final cleanedSongs = finalSongs.map((s) {
@@ -1228,11 +1511,11 @@ class RecommendationService {
       return s.copyWith(artist: cleanedArtist);
     }).toList();
 
-    final historyDesc = historyTarget != null
-        ? '"${historyTarget.title}" (${historyTarget.id})'
-        : (tasteProfile.hasHistory ? 'skipped(hindi-only)' : 'none');
+    final historyDesc = seeds.isNotEmpty
+        ? seeds.map((s) => '"${s.title}" (${s.id})').join(', ')
+        : 'none';
     LogService.info(
-      'getPersonalizedQuickPicks activeLanguages=$activeLanguages mood=$mood historyTarget=$historyDesc Task1=${trendingPool.length} Task2=${relatedResults.length} Task3=${genreResults.length} personalized=${personalizedPool.length} final=${cleanedSongs.length}',
+      'getPersonalizedQuickPicks activeLanguages=$activeLanguages mood=$mood seeds=[$historyDesc] Task1=${trendingPool.length} Task2=${relatedResults.length} Task3=${genreResults.length} personalized=${personalizedPool.length} final=${cleanedSongs.length}',
       tag: 'Feed',
     );
     final top6Log = cleanedSongs.take(6).toList().asMap().entries.map((entry) {
@@ -1247,5 +1530,266 @@ class RecommendationService {
     );
 
     return cleanedSongs;
+  }
+
+  /// Fetches strictly podcast shows and episodes respecting selected languages as baseline.
+  static Future<({List<BrowseMediaItem> shows, List<Song> episodes})> getPodcastsFeed({
+    List<String>? languages,
+    bool forceRefresh = false,
+  }) async {
+    final activeLanguages = (languages != null && languages.isNotEmpty)
+        ? languages
+        : DatabaseService.getMusicLanguages();
+    final effectiveLangs = activeLanguages.isNotEmpty ? activeLanguages : const ['English'];
+    final cacheKey = effectiveLangs.join(',');
+
+    if (!forceRefresh) {
+      final disk = DatabaseService.getCachedPodcasts(cacheKey);
+      final fresh = disk.timestamp != null &&
+          DateTime.now().difference(disk.timestamp!) < _browseCacheTtl;
+      if (fresh && (disk.shows.isNotEmpty || disk.episodes.isNotEmpty)) {
+        return (shows: disk.shows, episodes: disk.episodes);
+      }
+    }
+
+    final primaryConfig = getLanguageConfig(
+      effectiveLangs.first,
+      allSelectedLanguages: effectiveLangs,
+    );
+
+    bool isEligiblePodcastShow(BrowseMediaItem show, LanguageConfig config) {
+      if (show.type != 'podcast' || show.id.isEmpty || show.title.isEmpty) return false;
+      if (config.language == 'English') {
+        final combined = '${show.title} ${show.subtitle}';
+        if (_isExcludedForConfig(combined, config)) return false;
+        if (_nonLatinScriptRegex.hasMatch(combined)) return false;
+        if (isLikelyForeignLatinTrack(Song(id: show.id, title: show.title, artist: show.subtitle, thumbnailUrl: ''))) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    bool isEligiblePodcastEpisode(Song ep, LanguageConfig config) {
+      if (!ep.isPodcast || ep.id.isEmpty || ep.title.isEmpty) return false;
+      if (config.language == 'English') {
+        final combined = '${ep.title} ${ep.artist}';
+        if (_isExcludedForConfig(combined, config)) return false;
+        if (_nonLatinScriptRegex.hasMatch(combined)) return false;
+        if (isLikelyHindiTrack(ep) || isLikelyForeignLatinTrack(ep)) return false;
+      }
+      return true;
+    }
+
+    final browseFuture = primaryConfig.useCountryCharts
+        ? InnerTubeService.getPodcastsBrowse(gl: primaryConfig.gl, hl: primaryConfig.hl)
+        : Future.value((shows: const <BrowseMediaItem>[], episodes: const <Song>[]));
+
+    final perLangSearchFutures = effectiveLangs.take(3).map((lang) async {
+      final config = getLanguageConfig(lang, allSelectedLanguages: effectiveLangs);
+      final query = config.language == 'English'
+          ? 'popular english podcast'
+          : '${config.language} podcast';
+      final res = await InnerTubeService.searchPodcasts(
+        query,
+        gl: config.gl,
+        hl: config.hl,
+      );
+      return (
+        config: config,
+        shows: res.shows.where((s) => isEligiblePodcastShow(s, config)).toList(),
+        episodes: res.episodes.where((e) => isEligiblePodcastEpisode(e, config)).toList(),
+      );
+    });
+
+    final browseRes = await browseFuture;
+    final langSearchRes = await Future.wait(perLangSearchFutures);
+
+    final shows = <BrowseMediaItem>[];
+    final seenShows = <String>{};
+    final episodes = <Song>[];
+    final seenEps = <String>{};
+
+    // Interleave language-targeted shows & episodes first, then browse hub items
+    final maxShows = langSearchRes.fold<int>(0, (m, r) => r.shows.length > m ? r.shows.length : m);
+    for (int i = 0; i < maxShows; i++) {
+      for (final r in langSearchRes) {
+        if (i < r.shows.length && seenShows.add(r.shows[i].id)) {
+          shows.add(r.shows[i]);
+        }
+      }
+    }
+    for (final s in browseRes.shows) {
+      if (isEligiblePodcastShow(s, primaryConfig) && seenShows.add(s.id)) {
+        shows.add(s);
+      }
+    }
+
+    final maxEps = langSearchRes.fold<int>(0, (m, r) => r.episodes.length > m ? r.episodes.length : m);
+    for (int i = 0; i < maxEps; i++) {
+      for (final r in langSearchRes) {
+        if (i < r.episodes.length && seenEps.add(r.episodes[i].id)) {
+          episodes.add(r.episodes[i]);
+        }
+      }
+    }
+    for (final e in browseRes.episodes) {
+      if (isEligiblePodcastEpisode(e, primaryConfig) && seenEps.add(e.id)) {
+        episodes.add(e);
+      }
+    }
+
+    if (shows.isNotEmpty || episodes.isNotEmpty) {
+      await DatabaseService.saveCachedPodcasts(
+        cacheKey,
+        shows: shows,
+        episodes: episodes,
+      );
+      return (shows: shows, episodes: episodes);
+    }
+
+    final staleDisk = DatabaseService.getCachedPodcasts(cacheKey);
+    return (shows: staleDisk.shows, episodes: staleDisk.episodes);
+  }
+
+  /// Sequences a balanced autoplay queue from [candidates] seeded by [seedSong],
+  /// mixing both related-artist and same-artist tracks while deduplicating against
+  /// session history and preventing back-to-back same-artist flooding.
+  @visibleForTesting
+  static List<Song> buildAutoplayMix({
+    required Song seedSong,
+    required List<Song> candidates,
+    Set<String> excludeIds = const {},
+    Set<String> excludeNormalizedKeys = const {},
+    int limit = 15,
+  }) {
+    final seedArtist = primaryArtistKey(seedSong.artist);
+    final seedNorm = normalizeTrackKey(seedSong.title);
+    final seenIds = <String>{seedSong.id, ...excludeIds};
+    final seenSignatures = <String>{
+      if (seedNorm.isNotEmpty)
+        (seedArtist.isNotEmpty ? '$seedNorm|$seedArtist' : seedNorm),
+      ...excludeNormalizedKeys,
+    };
+
+    final sameArtistPool = <Song>[];
+    final relatedArtistPool = <Song>[];
+
+    for (final s in candidates) {
+      if (s.isPodcast != seedSong.isPodcast) continue;
+      if (!seedSong.isPodcast && !isSingleSong(s)) continue;
+      if (!seenIds.add(s.id)) continue;
+
+      final normTitle = normalizeTrackKey(s.title);
+      final artistKey = primaryArtistKey(s.artist);
+      if (seedNorm.isNotEmpty && normTitle == seedNorm) continue;
+
+      final sig = artistKey.isNotEmpty ? '$normTitle|$artistKey' : normTitle;
+      if (normTitle.isNotEmpty && !seenSignatures.add(sig)) continue;
+
+      final cleanedArtist = InnerTubeService.cleanArtistText(s.artist);
+      final cleanSong = (cleanedArtist.isNotEmpty && cleanedArtist != s.artist)
+          ? s.copyWith(artist: cleanedArtist)
+          : s;
+
+      if (seedArtist.isNotEmpty && artistKey == seedArtist) {
+        if (sameArtistPool.length < 4) {
+          sameArtistPool.add(cleanSong);
+        }
+      } else {
+        relatedArtistPool.add(cleanSong);
+      }
+    }
+
+    // Mix related-artist and same-artist tracks while avoiding back-to-back same artist
+    final mixed = <Song>[];
+    var lastArtist = seedArtist;
+    final usedIndicesSame = <int>{};
+    final usedIndicesRelated = <int>{};
+
+    Song? pickNextFrom(List<Song> pool, Set<int> used, {required bool avoidLastArtist}) {
+      for (int i = 0; i < pool.length; i++) {
+        if (used.contains(i)) continue;
+        final ak = primaryArtistKey(pool[i].artist);
+        if (!avoidLastArtist || ak.isEmpty || ak != lastArtist) {
+          used.add(i);
+          return pool[i];
+        }
+      }
+      return null;
+    }
+
+    // Desired cadence: related -> same -> related -> related -> same ...
+    final preferRelatedPattern = [true, false, true, true, false, true, true, false];
+    int step = 0;
+    while (mixed.length < limit &&
+        (usedIndicesRelated.length < relatedArtistPool.length ||
+            usedIndicesSame.length < sameArtistPool.length)) {
+      final preferRelated = step < preferRelatedPattern.length
+          ? preferRelatedPattern[step]
+          : (step % 3 != 1);
+      step++;
+
+      Song? next;
+      if (preferRelated) {
+        next = pickNextFrom(relatedArtistPool, usedIndicesRelated, avoidLastArtist: true) ??
+            pickNextFrom(sameArtistPool, usedIndicesSame, avoidLastArtist: true) ??
+            pickNextFrom(relatedArtistPool, usedIndicesRelated, avoidLastArtist: false) ??
+            pickNextFrom(sameArtistPool, usedIndicesSame, avoidLastArtist: false);
+      } else {
+        next = pickNextFrom(sameArtistPool, usedIndicesSame, avoidLastArtist: true) ??
+            pickNextFrom(relatedArtistPool, usedIndicesRelated, avoidLastArtist: true) ??
+            pickNextFrom(sameArtistPool, usedIndicesSame, avoidLastArtist: false) ??
+            pickNextFrom(relatedArtistPool, usedIndicesRelated, avoidLastArtist: false);
+      }
+
+      if (next == null) break;
+      mixed.add(next);
+      lastArtist = primaryArtistKey(next.artist);
+    }
+
+    return mixed;
+  }
+
+  /// Fetches smart autoplay recommendations seeded from [seedSong] (matching its vibe/language
+  /// without stripping unselected languages the user chose to play).
+  static Future<List<Song>> getAutoplayRecommendations(
+    Song seedSong, {
+    Set<String> excludeIds = const {},
+    Set<String> excludeNormalizedKeys = const {},
+    int limit = 15,
+  }) async {
+    if (seedSong.isPodcast) return const [];
+
+    final candidates = <Song>[];
+    try {
+      final related = await InnerTubeService.getRelatedSongs(seedSong.id);
+      candidates.addAll(related);
+    } catch (_) {}
+
+    if (candidates.length < 6) {
+      try {
+        final cleanArtist = InnerTubeService.cleanArtistText(seedSong.artist);
+        final genre = inferGenre(seedSong);
+        final query = (cleanArtist.isNotEmpty &&
+                cleanArtist.toLowerCase() != 'unknown' &&
+                cleanArtist.toLowerCase() != 'unknown artist')
+            ? '$cleanArtist ${genre != 'Pop' ? genre : ''} songs'.trim()
+            : '$genre hits songs';
+        final searchRes = await InnerTubeService.search(
+          query,
+          filter: SearchFilter.songs,
+        );
+        candidates.addAll(searchRes.songs);
+      } catch (_) {}
+    }
+
+    return buildAutoplayMix(
+      seedSong: seedSong,
+      candidates: candidates,
+      excludeIds: excludeIds,
+      excludeNormalizedKeys: excludeNormalizedKeys,
+      limit: limit,
+    );
   }
 }

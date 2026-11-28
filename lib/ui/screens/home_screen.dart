@@ -26,8 +26,11 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final ScrollController _scrollController = ScrollController();
   List<Song> _quickPicks = [];
   List<BrowseMediaItem> _browseItems = [];
+  List<BrowseMediaItem> _podcastShows = [];
+  List<Song> _podcastEpisodes = [];
   bool _isLoading = true;
   bool _hasError = false;
   int _feedRequestToken = 0;
@@ -35,8 +38,11 @@ class _HomeScreenState extends State<HomeScreen> {
   String _activeMood = 'All';
   List<String> _lastLoadedLanguages = [];
 
+  static const Duration _homeCacheTtl = Duration(minutes: 3);
+
   final List<String> _moods = [
     'All',
+    'Podcasts',
     'Chill',
     'Workout',
     'Focus',
@@ -50,6 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _lastLoadedLanguages = DatabaseService.getMusicLanguages();
     DatabaseService.musicLanguagesNotifier.addListener(_onLanguagesChanged);
+    _restoreInitialHomeCacheSync();
     _checkAppUpdateSilently();
     _initializeHome();
   }
@@ -58,7 +65,29 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     DatabaseService.musicLanguagesNotifier.removeListener(_onLanguagesChanged);
     _preWarmTimer?.cancel();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _restoreInitialHomeCacheSync() {
+    final hasLangs = DatabaseService.hasSelectedMusicLanguages();
+    final onboardingDone = DatabaseService.hasCompletedLanguageOnboarding();
+    if (!hasLangs && !onboardingDone) return;
+
+    final activeLangs = DatabaseService.getMusicLanguages();
+    final cacheKey = '$_activeMood:${activeLangs.join(",")}';
+    final langKey = 'lang:${activeLangs.join(",")}';
+    final cached = DatabaseService.getCachedHomeFeed(
+      cacheKey,
+      browseFallbackKey: langKey,
+    );
+    final sanitizedSongs = InnerTubeService.sanitizeSongs(cached.songs);
+    if (sanitizedSongs.isNotEmpty) {
+      _quickPicks = sanitizedSongs;
+      _browseItems = cached.browseItems;
+      _isLoading = false;
+      _hasError = false;
+    }
   }
 
   void _onLanguagesChanged() {
@@ -66,7 +95,12 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!listEquals(current, _lastLoadedLanguages)) {
       _lastLoadedLanguages = current;
       if (mounted) {
-        setState(() => _isLoading = true);
+        setState(() {
+          _isLoading = true;
+          _browseItems = [];
+          _podcastShows = [];
+          _podcastEpisodes = [];
+        });
         _loadFeed(_activeMood, true);
       }
     }
@@ -82,11 +116,11 @@ class _HomeScreenState extends State<HomeScreen> {
         final tokenBefore = _feedRequestToken;
         await _checkFirstTimeLanguageSetup();
         if (mounted && _feedRequestToken == tokenBefore) {
-          await _loadFeed('All', false);
+          await _loadFeed(_activeMood, false);
         }
       });
     } else {
-      _loadFeed('All', false);
+      await _loadFeed(_activeMood, false);
     }
   }
 
@@ -122,23 +156,53 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadFeed([String mood = 'All', bool isUserRefresh = false]) async {
+    if (mood == 'Podcasts') {
+      await _loadPodcastsFeed(isUserRefresh);
+      return;
+    }
+
     final requestToken = ++_feedRequestToken;
 
     final activeLangs = DatabaseService.getMusicLanguages();
     _lastLoadedLanguages = activeLangs;
     final cacheKey = '$mood:${activeLangs.join(",")}';
+    final browseFallbackKey = 'lang:${activeLangs.join(",")}';
 
-    // 1. Instant display from cache (0ms perceived latency)
-    final cached = InnerTubeService.sanitizeSongs(
-      DatabaseService.getCachedFeed(cacheKey),
+    // 1. Atomic restoration from unified disk cache (Quick Picks + Featured & Trending + Albums)
+    final cached = DatabaseService.getCachedHomeFeed(
+      cacheKey,
+      browseFallbackKey: browseFallbackKey,
     );
-    if (cached.isNotEmpty && !isUserRefresh) {
+    final cachedSongs = InnerTubeService.sanitizeSongs(cached.songs);
+    final cachedBrowse = cached.browseItems;
+    final hasWarmCache = cachedSongs.isNotEmpty && !isUserRefresh;
+
+    if (hasWarmCache) {
       if (mounted && requestToken == _feedRequestToken) {
-        setState(() {
-          _quickPicks = cached;
-          _isLoading = false;
-          _hasError = false;
-        });
+        final needsInitialRestore =
+            _isLoading || _quickPicks.isEmpty || _browseItems.isEmpty;
+        if (needsInitialRestore) {
+          setState(() {
+            _quickPicks = cachedSongs;
+            if (cachedBrowse.isNotEmpty) {
+              _browseItems = cachedBrowse;
+            }
+            _isLoading = false;
+            _hasError = false;
+          });
+        }
+      }
+
+      // Skip redundant network churn when disk cache is complete, within TTL,
+      // and user hasn't played/liked new songs since it was written.
+      final cachedTaste = DatabaseService.getCachedFeedTasteVersion(cacheKey);
+      final tasteCurrent =
+          cachedTaste == null || cachedTaste == DatabaseService.tasteVersion;
+      final isFresh = cached.timestamp != null &&
+          DateTime.now().difference(cached.timestamp!) < _homeCacheTtl;
+      if (isFresh && tasteCurrent && cachedBrowse.isNotEmpty) {
+        _schedulePreWarm(cachedSongs, requestToken);
+        return;
       }
     } else if (_quickPicks.isEmpty || isUserRefresh) {
       if (mounted && requestToken == _feedRequestToken) {
@@ -149,25 +213,29 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 2. Fetch fresh personalized feed + featured browse items concurrently
+    // 2. Fetch Quick Picks + Featured & Albums concurrently via Future.wait
+    final Song? activeSong =
+        mounted ? context.read<PlaybackProvider>().currentSong : null;
     try {
       final results = await Future.wait([
         InnerTubeService.getQuickPicks(
           languages: activeLangs,
           mood: mood,
-          forceRefresh: isUserRefresh || cached.isEmpty,
+          forceRefresh: isUserRefresh || cachedSongs.isEmpty,
+          activeSong: activeSong,
         ).timeout(
           const Duration(seconds: 10),
           onTimeout: () {
             debugPrint('Feed network request timed out - falling back to cache');
-            return cached;
+            return cachedSongs;
           },
         ),
         RecommendationService.getFeaturedBrowseItems(
           languages: activeLangs,
+          forceRefresh: isUserRefresh || cachedBrowse.isEmpty,
         ).timeout(
           const Duration(seconds: 8),
-          onTimeout: () => <BrowseMediaItem>[],
+          onTimeout: () => cachedBrowse,
         ),
       ]);
 
@@ -176,32 +244,48 @@ class _HomeScreenState extends State<HomeScreen> {
       final songs = results[0] as List<Song>;
       final browse = results[1] as List<BrowseMediaItem>;
 
-      setState(() {
-        if (songs.isNotEmpty) {
-          _quickPicks = songs;
-          _hasError = false;
-        } else if (_quickPicks.isEmpty && cached.isEmpty) {
-          _hasError = true;
-        }
-        if (browse.isNotEmpty) {
-          _browseItems = browse;
-        }
-        _isLoading = false;
-      });
+      // Persist all Home sections together atomically to disk cache
+      if (songs.isNotEmpty || browse.isNotEmpty) {
+        unawaited(
+          DatabaseService.saveCachedHomeFeed(
+            cacheKey,
+            songs: songs,
+            browseItems: browse,
+            browseFallbackKey: browseFallbackKey,
+          ),
+        );
+      }
+
+      // Avoid mid-scroll layout jumps if warm cache is already rendered and user scrolled down
+      final userHasScrolled =
+          !isUserRefresh &&
+          !_isLoading &&
+          _quickPicks.isNotEmpty &&
+          _scrollController.hasClients &&
+          _scrollController.offset > 24.0;
+
+      if (!userHasScrolled) {
+        setState(() {
+          if (songs.isNotEmpty) {
+            _quickPicks = songs;
+            _hasError = false;
+          } else if (_quickPicks.isEmpty && cachedSongs.isEmpty) {
+            _hasError = true;
+          }
+          if (browse.isNotEmpty) {
+            _browseItems = browse;
+          }
+          _isLoading = false;
+        });
+      }
 
       if (songs.isNotEmpty) {
-        _preWarmTimer?.cancel();
-        _preWarmTimer = Timer(const Duration(milliseconds: 1500), () {
-          if (!mounted || requestToken != _feedRequestToken) return;
-          for (final s in songs.take(2)) {
-            StreamResolverService.preWarm(s.id, songTitle: s.title, artist: s.artist);
-          }
-        });
+        _schedulePreWarm(songs, requestToken);
       }
     } catch (_) {
       if (!mounted || requestToken != _feedRequestToken) return;
       setState(() {
-        if (_quickPicks.isEmpty && cached.isEmpty) {
+        if (_quickPicks.isEmpty && cachedSongs.isEmpty) {
           _hasError = true;
         }
         _isLoading = false;
@@ -209,12 +293,83 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _loadPodcastsFeed(bool isUserRefresh) async {
+    final requestToken = ++_feedRequestToken;
+    final activeLangs = DatabaseService.getMusicLanguages();
+    _lastLoadedLanguages = activeLangs;
+    final langKey = activeLangs.join(',');
+
+    final cached = DatabaseService.getCachedPodcasts(langKey);
+    final hasCache =
+        (cached.shows.isNotEmpty || cached.episodes.isNotEmpty) && !isUserRefresh;
+
+    if (hasCache) {
+      if (mounted && requestToken == _feedRequestToken) {
+        setState(() {
+          _podcastShows = cached.shows;
+          _podcastEpisodes = cached.episodes;
+          _isLoading = false;
+          _hasError = false;
+        });
+      }
+      final isFresh = cached.timestamp != null &&
+          DateTime.now().difference(cached.timestamp!) < _homeCacheTtl;
+      if (isFresh) return;
+    } else if (mounted && requestToken == _feedRequestToken) {
+      setState(() {
+        _isLoading = true;
+        _hasError = false;
+      });
+    }
+
+    try {
+      final result = await RecommendationService.getPodcastsFeed(
+        languages: activeLangs,
+        forceRefresh: isUserRefresh || !hasCache,
+      ).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => (shows: cached.shows, episodes: cached.episodes),
+      );
+
+      if (!mounted || requestToken != _feedRequestToken) return;
+
+      setState(() {
+        if (result.shows.isNotEmpty || result.episodes.isNotEmpty) {
+          _podcastShows = result.shows;
+          _podcastEpisodes = result.episodes;
+          _hasError = false;
+        } else if (_podcastShows.isEmpty && _podcastEpisodes.isEmpty) {
+          _hasError = true;
+        }
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted || requestToken != _feedRequestToken) return;
+      setState(() {
+        if (_podcastShows.isEmpty && _podcastEpisodes.isEmpty) {
+          _hasError = true;
+        }
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _schedulePreWarm(List<Song> songs, int requestToken) {
+    _preWarmTimer?.cancel();
+    _preWarmTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (!mounted || requestToken != _feedRequestToken) return;
+      for (final s in songs.take(2)) {
+        StreamResolverService.preWarm(s.id, songTitle: s.title, artist: s.artist);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final playback = context.read<PlaybackProvider>();
     final bottomPadding = 172.0 + MediaQuery.paddingOf(context).bottom;
+    final isPodcastsMode = _activeMood == 'Podcasts';
 
     final albumItems = _browseItems.where((b) => b.type == 'album').toList();
     final featuredNonAlbums =
@@ -229,6 +384,136 @@ class _HomeScreenState extends State<HomeScreen> {
     final int quickPickColumns =
         quickPickPool.isEmpty ? 0 : ((quickPickPool.length - 1) ~/ 4) + 1;
 
+    final Widget bodyContent;
+    if (_isLoading) {
+      // Render skeleton directly outside RefreshIndicator so no overlapping spinner appears.
+      bodyContent = isPodcastsMode
+          ? const PodcastsFeedSkeleton(
+              key: ValueKey('podcasts_skeleton'),
+              showMoodChips: false,
+            )
+          : const HomeFeedSkeleton(
+              key: ValueKey('home_skeleton'),
+              showMoodChips: false,
+            );
+    } else {
+      final Widget loadedOrErrorChild;
+      if (isPodcastsMode) {
+        loadedOrErrorChild =
+            (_hasError || (_podcastShows.isEmpty && _podcastEpisodes.isEmpty))
+                ? _buildErrorState(
+                    theme,
+                    colorScheme,
+                    bottomPadding,
+                    isPodcasts: true,
+                  )
+                : _buildPodcastsListView(theme, colorScheme, bottomPadding);
+      } else if (_hasError && _quickPicks.isEmpty) {
+        loadedOrErrorChild = _buildErrorState(
+          theme,
+          colorScheme,
+          bottomPadding,
+          isPodcasts: false,
+        );
+      } else {
+        loadedOrErrorChild = ListView(
+          key: const ValueKey('home_content'),
+          controller: _scrollController,
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.only(bottom: bottomPadding),
+          children: [
+            const SizedBox(height: 18),
+            _buildSectionTitle('Quick Picks', theme, colorScheme),
+            const SizedBox(height: 6),
+            if (quickPickColumns > 0)
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final colWidth =
+                      (constraints.maxWidth * 0.91).clamp(280.0, 420.0);
+                  return SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.only(right: 14),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: List.generate(
+                        quickPickColumns,
+                        (colIndex) {
+                          final start = colIndex * 4;
+                          final end =
+                              (start + 4).clamp(0, quickPickPool.length);
+                          final colSongs = quickPickPool.sublist(start, end);
+                          return SizedBox(
+                            width: colWidth,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: colSongs
+                                  .map(
+                                    (song) => SongTile(
+                                      song: song,
+                                      contextQueue: _quickPicks,
+                                      contentPadding: const EdgeInsets.fromLTRB(
+                                          16, 0, 2, 0),
+                                    ),
+                                  )
+                                  .toList(),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  );
+                },
+              ),
+            if (featuredItems.isNotEmpty) ...[
+              const SizedBox(height: 22),
+              _buildSectionTitle(
+                'Featured & Trending',
+                theme,
+                colorScheme,
+              ),
+              const SizedBox(height: 12),
+              _buildBrowseShelf(featuredItems),
+            ],
+            if (albumItems.isNotEmpty && featuredNonAlbums.isNotEmpty) ...[
+              const SizedBox(height: 22),
+              _buildSectionTitle(
+                'Albums',
+                theme,
+                colorScheme,
+              ),
+              const SizedBox(height: 12),
+              _buildBrowseShelf(albumItems),
+            ],
+            if (_quickPicks.length > quickPickPool.length) ...[
+              const SizedBox(height: 22),
+              _buildSectionTitle(
+                'More For You',
+                theme,
+                colorScheme,
+              ),
+              const SizedBox(height: 8),
+              ..._quickPicks.skip(quickPickPool.length).map(
+                    (song) => SongTile(
+                      song: song,
+                      contextQueue: _quickPicks,
+                    ),
+                  ),
+            ],
+          ],
+        );
+      }
+
+      bodyContent = RefreshIndicator(
+        onRefresh: () {
+          if (!_isLoading) {
+            unawaited(_loadFeed(_activeMood, true));
+          }
+          return Future<void>.value();
+        },
+        child: loadedOrErrorChild,
+      );
+    }
+
     return Scaffold(
       body: SafeArea(
         bottom: false,
@@ -236,119 +521,43 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _buildBrandHeader(theme, colorScheme),
             _buildMoodChips(colorScheme),
-            Expanded(
-              child: RefreshIndicator(
-                onRefresh: () async {
-                  if (_isLoading) return;
-                  await _loadFeed(_activeMood, true);
-                },
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 250),
-                  child: _isLoading
-                      ? const HomeFeedSkeleton(
-                          key: ValueKey('home_skeleton'),
-                          showMoodChips: false,
-                        )
-                      : _hasError && _quickPicks.isEmpty
-                          ? _buildErrorState(theme, colorScheme, bottomPadding)
-                          : ListView(
-                              key: const ValueKey('home_content'),
-                              padding: EdgeInsets.only(bottom: bottomPadding),
-                              children: [
-                                const SizedBox(height: 18),
-                                _buildQuickPicksHeader(theme, colorScheme, playback),
-                                const SizedBox(height: 6),
-                                if (quickPickColumns > 0)
-                                  LayoutBuilder(
-                                    builder: (context, constraints) {
-                                      final colWidth =
-                                          (constraints.maxWidth * 0.91)
-                                              .clamp(280.0, 420.0);
-                                      return SingleChildScrollView(
-                                        scrollDirection: Axis.horizontal,
-                                        padding:
-                                            const EdgeInsets.only(right: 14),
-                                        child: Row(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: List.generate(
-                                            quickPickColumns,
-                                            (colIndex) {
-                                              final start = colIndex * 4;
-                                              final end = (start + 4).clamp(
-                                                  0, quickPickPool.length);
-                                              final colSongs = quickPickPool
-                                                  .sublist(start, end);
-                                              return SizedBox(
-                                                width: colWidth,
-                                                child: Column(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  children: colSongs
-                                                      .map(
-                                                        (song) => SongTile(
-                                                          song: song,
-                                                          contextQueue:
-                                                              _quickPicks,
-                                                          contentPadding:
-                                                              const EdgeInsets
-                                                                  .fromLTRB(
-                                                                  16, 0, 2, 0),
-                                                        ),
-                                                      )
-                                                      .toList(),
-                                                ),
-                                              );
-                                            },
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                if (featuredItems.isNotEmpty) ...[
-                                  const SizedBox(height: 22),
-                                  _buildSectionTitle(
-                                    'Featured & Trending',
-                                    theme,
-                                    colorScheme,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  _buildBrowseShelf(featuredItems),
-                                ],
-                                if (albumItems.isNotEmpty &&
-                                    featuredNonAlbums.isNotEmpty) ...[
-                                  const SizedBox(height: 22),
-                                  _buildSectionTitle(
-                                    'Albums',
-                                    theme,
-                                    colorScheme,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  _buildBrowseShelf(albumItems),
-                                ],
-                                if (_quickPicks.length > quickPickPool.length) ...[
-                                  const SizedBox(height: 22),
-                                  _buildSectionTitle(
-                                    'More For You',
-                                    theme,
-                                    colorScheme,
-                                  ),
-                                  const SizedBox(height: 8),
-                                  ..._quickPicks.skip(quickPickPool.length).map(
-                                        (song) => SongTile(
-                                          song: song,
-                                          contextQueue: _quickPicks,
-                                        ),
-                                      ),
-                                ],
-                              ],
-                            ),
-                ),
-              ),
-            ),
+            Expanded(child: bodyContent),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildPodcastsListView(
+    ThemeData theme,
+    ColorScheme colorScheme,
+    double bottomPadding,
+  ) {
+    return ListView(
+      key: const ValueKey('podcasts_content'),
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: EdgeInsets.only(bottom: bottomPadding),
+      children: [
+        if (_podcastShows.isNotEmpty) ...[
+          const SizedBox(height: 18),
+          _buildSectionTitle('Podcast Shows', theme, colorScheme),
+          const SizedBox(height: 12),
+          _buildBrowseShelf(_podcastShows, isPodcastShelf: true),
+        ],
+        if (_podcastEpisodes.isNotEmpty) ...[
+          SizedBox(height: _podcastShows.isNotEmpty ? 22 : 18),
+          _buildSectionTitle('Podcast Episodes', theme, colorScheme),
+          const SizedBox(height: 8),
+          ...List.generate(
+            _podcastEpisodes.length,
+            (i) => SongTile(
+              song: _podcastEpisodes[i],
+              contextQueue: _podcastEpisodes,
+              index: i,
+            ),
+          ),
+        ],
+      ],
     );
   }
 
@@ -455,7 +664,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   mood,
                   style: TextStyle(
                     fontSize: 13.5,
-                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                    fontWeight:
+                        isSelected ? FontWeight.w600 : FontWeight.w500,
                     color: isSelected
                         ? colorScheme.onPrimary
                         : colorScheme.onSurface,
@@ -484,86 +694,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildQuickPicksHeader(
-    ThemeData theme,
-    ColorScheme colorScheme,
-    PlaybackProvider playback,
-  ) {
-    final hasSongs = _quickPicks.isNotEmpty;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(
-            child: Text(
-              'Quick Picks',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontSize: 19,
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.3,
-                color: colorScheme.onSurface,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Semantics(
-            button: true,
-            enabled: hasSongs,
-            label: 'Play all quick picks',
-            child: Opacity(
-              opacity: hasSongs ? 1.0 : 0.45,
-              child: InkWell(
-                onTap: hasSongs
-                    ? () => playback.playSong(_quickPicks.first,
-                        contextQueue: _quickPicks)
-                    : null,
-                borderRadius: BorderRadius.circular(999),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(minHeight: 48),
-                  child: Center(
-                    child: Container(
-                      constraints: const BoxConstraints(minHeight: 32),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 13,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colorScheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.play_arrow_rounded,
-                            size: 16,
-                            color: colorScheme.onPrimaryContainer,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            'Play all',
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
-                              color: colorScheme.onPrimaryContainer,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildSectionTitle(
     String title,
     ThemeData theme,
@@ -583,7 +713,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildBrowseShelf(List<BrowseMediaItem> items) {
+  Widget _buildBrowseShelf(
+    List<BrowseMediaItem> items, {
+    bool isPodcastShelf = false,
+  }) {
     final shelfHeight =
         138.0 + 14.0 + MediaQuery.textScalerOf(context).scale(44.0);
     return SizedBox(
@@ -594,11 +727,13 @@ class _HomeScreenState extends State<HomeScreen> {
         itemCount: items.length,
         itemBuilder: (context, index) {
           final item = items[index];
+          final isPod = isPodcastShelf || item.type == 'podcast';
           return MediaCard(
             size: 138,
             title: item.title,
             subtitle: item.subtitle,
             imageUrl: item.thumbnailUrl,
+            fallbackIcon: isPod ? Icons.podcasts_rounded : null,
             onTap: () {
               final browseId = item.browseId ?? item.id;
               if (browseId.isEmpty) return;
@@ -606,7 +741,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 MaterialPageRoute(
                   builder: (_) => CollectionDetailScreen(
                     browseId: browseId,
-                    isAlbum: item.type == 'album',
+                    isAlbum: !isPod && item.type == 'album',
+                    isPodcast: isPod,
                     title: item.title,
                     subtitle: item.subtitle,
                     thumbnailUrl: item.thumbnailUrl,
@@ -623,27 +759,36 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildErrorState(
     ThemeData theme,
     ColorScheme colorScheme,
-    double bottomPadding,
-  ) {
+    double bottomPadding, {
+    bool isPodcasts = false,
+  }) {
     return Center(
-      key: const ValueKey('home_error'),
+      key: ValueKey(isPodcasts ? 'podcasts_error' : 'home_error'),
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: EdgeInsets.fromLTRB(24, 48, 24, bottomPadding),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.wifi_off_rounded, size: 56, color: colorScheme.outline),
+            Icon(
+              isPodcasts ? Icons.podcasts_rounded : Icons.wifi_off_rounded,
+              size: 56,
+              color: colorScheme.outline,
+            ),
             const SizedBox(height: 16),
             Text(
-              'Unable to load music feed',
+              isPodcasts
+                  ? 'Unable to load podcasts'
+                  : 'Unable to load music feed',
               style: theme.textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.bold,
               ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Check your internet connection and try again.',
+              isPodcasts
+                  ? 'Check your internet connection or try again.'
+                  : 'Check your internet connection and try again.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: colorScheme.onSurfaceVariant,
@@ -652,6 +797,9 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 20),
             FilledButton.icon(
               onPressed: () => _loadFeed(_activeMood, true),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(0, 48),
+              ),
               icon: const Icon(Icons.refresh_rounded),
               label: const Text('Retry'),
             ),

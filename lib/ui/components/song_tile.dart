@@ -15,6 +15,8 @@ class SongTile extends StatelessWidget {
   final EdgeInsetsGeometry contentPadding;
   final String? removeFromPlaylistLabel;
   final VoidCallback? onRemoveFromPlaylist;
+  final String? badgeLabel;
+  final bool badgeHighlighted;
 
   const SongTile({
     super.key,
@@ -25,6 +27,8 @@ class SongTile extends StatelessWidget {
     this.contentPadding = const EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
     this.removeFromPlaylistLabel,
     this.onRemoveFromPlaylist,
+    this.badgeLabel,
+    this.badgeHighlighted = false,
   });
 
   @override
@@ -76,7 +80,9 @@ class SongTile extends StatelessWidget {
                           height: 48,
                           color: colorScheme.surfaceContainerHigh,
                           child: Icon(
-                            Icons.music_note_rounded,
+                            song.isPodcast
+                                ? Icons.podcasts_rounded
+                                : Icons.music_note_rounded,
                             color: colorScheme.onSurfaceVariant,
                           ),
                         ),
@@ -86,7 +92,9 @@ class SongTile extends StatelessWidget {
                         height: 48,
                         color: colorScheme.surfaceContainerHigh,
                         child: Icon(
-                          Icons.music_note_rounded,
+                          song.isPodcast
+                              ? Icons.podcasts_rounded
+                              : Icons.music_note_rounded,
                           color: colorScheme.primary,
                         ),
                       ),
@@ -120,15 +128,59 @@ class SongTile extends StatelessWidget {
               color: isCurrent ? colorScheme.primary : colorScheme.onSurface,
             ),
           ),
-          subtitle: Text(
-            song.duration > 0 ? '${song.artist} • ${song.formattedDuration}' : song.artist,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontSize: 12.5,
-              color: colorScheme.onSurfaceVariant,
-            ),
-          ),
+          subtitle: badgeLabel != null
+              ? Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        song.duration > 0
+                            ? '${song.artist} • ${song.formattedDuration}'
+                            : song.artist,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontSize: 12.5,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 1.5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: badgeHighlighted
+                            ? colorScheme.primaryContainer
+                            : colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        badgeLabel!,
+                        maxLines: 1,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          color: badgeHighlighted
+                              ? colorScheme.onPrimaryContainer
+                              : colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              : Text(
+                  song.duration > 0
+                      ? '${song.artist} • ${song.formattedDuration}'
+                      : song.artist,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: 12.5,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
           trailing: PopupMenuButton<String>(
             tooltip: 'Track options',
             icon: Icon(Icons.more_vert_rounded, color: colorScheme.onSurfaceVariant),

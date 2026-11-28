@@ -250,6 +250,12 @@ void main() {
               (box) => box.width == 138 && box.height == 138,
             );
         expect(cards138.length, greaterThanOrEqualTo(4));
+
+        // Verify removed Play all pill bone (84x32) is absent from HomeFeedSkeleton
+        final playAllBone = tester.widgetList<SkeletonBox>(find.byType(SkeletonBox)).where(
+              (box) => box.width == 84 && box.height == 32,
+            );
+        expect(playAllBone, isEmpty);
       }
     });
 
@@ -258,6 +264,58 @@ void main() {
         const MaterialApp(
           home: Scaffold(
             body: HomeFeedSkeleton(showMoodChips: false),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      final chipPills = tester.widgetList<SkeletonBox>(find.byType(SkeletonBox)).where(
+            (box) => box.height == 34,
+          );
+      expect(chipPills, isEmpty);
+    });
+
+    testWidgets('PodcastsFeedSkeleton renders cleanly at 360dp / 1.4x in Dark and Light modes and supports showMoodChips', (tester) async {
+      tester.view.physicalSize = const Size(360, 780);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final darkScheme = ThemeProvider.buildColorScheme(
+        seed: const Color(0xFF8E24AA),
+        brightness: Brightness.dark,
+        pureBlack: true,
+      );
+      final lightScheme = ThemeProvider.buildColorScheme(
+        seed: const Color(0xFF8E24AA),
+        brightness: Brightness.light,
+        pureBlack: false,
+      );
+
+      for (final scheme in [darkScheme, lightScheme]) {
+        await tester.pumpWidget(
+          MediaQuery(
+            data: const MediaQueryData(
+              textScaler: TextScaler.linear(1.4),
+              disableAnimations: true,
+            ),
+            child: MaterialApp(
+              theme: ThemeData(useMaterial3: true, colorScheme: scheme),
+              home: const Scaffold(body: PodcastsFeedSkeleton()),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final showCards = tester.widgetList<SkeletonBox>(find.byType(SkeletonBox)).where(
+              (box) => box.width == 138 && box.height == 138,
+            );
+        expect(showCards.length, greaterThanOrEqualTo(3));
+      }
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: PodcastsFeedSkeleton(showMoodChips: false),
           ),
         ),
       );

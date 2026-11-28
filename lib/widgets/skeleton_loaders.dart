@@ -279,7 +279,7 @@ class _SkeletonMediaShelf extends StatelessWidget {
 }
 
 /// Layout-matched skeleton loader for the Home feed.
-/// Renders mood chips (when [showMoodChips] is true), Quick Picks header + Play all pill,
+/// Renders mood chips (when [showMoodChips] is true), Quick Picks header,
 /// 4-row horizontal column with next-column peek, Featured & Trending 138dp cards, and Albums shelf.
 class HomeFeedSkeleton extends StatelessWidget {
   final bool showMoodChips;
@@ -328,30 +328,20 @@ class HomeFeedSkeleton extends StatelessWidget {
 
             const SizedBox(height: 18),
 
-            // Quick Picks Header + Play all pill
+            // Quick Picks Header
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: SizedBox(
-                height: 48,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    SkeletonBox(
-                      width: 112,
-                      height: 22,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    SkeletonBox(
-                      width: 84,
-                      height: 32,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                  ],
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: SkeletonBox(
+                  width: 112,
+                  height: 22,
+                  borderRadius: BorderRadius.circular(6),
                 ),
               ),
             ),
 
-            const SizedBox(height: 6),
+            const SizedBox(height: 10),
 
             // 4-row Quick Picks horizontal column + narrowed next-column peek (~0.91 width)
             LayoutBuilder(
@@ -431,6 +421,94 @@ class HomeFeedSkeleton extends StatelessWidget {
               cardSize: 138,
               showSecondCaptionLine: true,
               itemCount: 4,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Layout-matched skeleton loader for the Podcasts mode on HomeScreen.
+/// Renders Podcast Shows 138dp shelf followed by Podcast Episode rows.
+class PodcastsFeedSkeleton extends StatelessWidget {
+  final bool showMoodChips;
+
+  const PodcastsFeedSkeleton({
+    super.key,
+    this.showMoodChips = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final bottomPadding = 172.0 + MediaQuery.paddingOf(context).bottom;
+
+    return ColoredBox(
+      color: colorScheme.surface,
+      child: Shimmer(
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.only(bottom: bottomPadding),
+          children: [
+            if (showMoodChips)
+              SizedBox(
+                height: 48,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  physics: const NeverScrollableScrollPhysics(),
+                  child: Row(
+                    children: List.generate(
+                      5,
+                      (i) => Padding(
+                        padding: const EdgeInsets.only(right: 8.0),
+                        child: Center(
+                          child: SkeletonBox(
+                            width: 64 + (i % 2) * 20.0,
+                            height: 34,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            const SizedBox(height: 18),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: SkeletonBox(
+                  width: 140,
+                  height: 22,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const _SkeletonMediaShelf(
+              cardSize: 138,
+              showSecondCaptionLine: true,
+              itemCount: 4,
+            ),
+            const SizedBox(height: 22),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: SkeletonBox(
+                  width: 156,
+                  height: 22,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            ...List.generate(
+              5,
+              (i) => _SkeletonSongRow(seedIndex: i),
             ),
           ],
         ),

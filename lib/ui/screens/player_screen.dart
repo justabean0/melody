@@ -1002,22 +1002,27 @@ class _PlayerScreenState extends State<PlayerScreen>
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4.0),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                upcoming.isNotEmpty
-                    ? 'Up Next (${upcoming.length} ${upcoming.length == 1 ? 'track' : 'tracks'})'
-                    : 'Up Next',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
+              Expanded(
+                child: Text(
+                  upcoming.isNotEmpty
+                      ? 'Up Next (${upcoming.length} ${upcoming.length == 1 ? 'track' : 'tracks'})'
+                      : 'Up Next',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
-              if (upcoming.isNotEmpty)
+              if (upcoming.isNotEmpty) ...[
+                const SizedBox(width: 8),
                 TextButton.icon(
                   onPressed: playback.clearQueue,
                   icon: const Icon(Icons.clear_all, size: 18),
                   label: const Text('Clear Queue'),
                 ),
+              ],
             ],
           ),
         ),
@@ -1055,43 +1060,97 @@ class _PlayerScreenState extends State<PlayerScreen>
             ),
           )
         else
-          ...upcoming.asMap().entries.map((entry) {
-            final upcomingIndex = entry.key;
-            final song = entry.value;
-            final actualQueueIndex = currentIdx + 1 + upcomingIndex;
+          ReorderableListView.builder(
+            key: const Key('player_queue_reorderable_list'),
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            itemCount: upcoming.length,
+            proxyDecorator: (child, index, animation) {
+              return Material(
+                color: colorScheme.surfaceContainerHigh,
+                elevation: 4,
+                borderRadius: BorderRadius.circular(14),
+                child: child,
+              );
+            },
+            onReorder: (oldUpcomingIdx, newUpcomingIdx) {
+              var adjusted = newUpcomingIdx;
+              if (adjusted > oldUpcomingIdx) {
+                adjusted -= 1;
+              }
+              if (adjusted == oldUpcomingIdx) return;
+              PlaybackProvider.reorderQueue(
+                playback,
+                currentIdx + 1 + oldUpcomingIdx,
+                currentIdx + 1 + adjusted,
+              );
+            },
+            itemBuilder: (itemCtx, upcomingIndex) {
+              final song = upcoming[upcomingIndex];
+              final actualQueueIndex = currentIdx + 1 + upcomingIndex;
+              final isUserQueued = PlaybackProvider.isUserQueued(playback, song.id);
+              final isAutoplay =
+                  !isUserQueued && PlaybackProvider.isAutoplayQueued(playback, song.id);
+              final badgeLabel =
+                  isUserQueued ? 'Queued' : (isAutoplay ? 'Autoplay' : null);
 
-            return Dismissible(
-              key: ValueKey('${song.id}_$actualQueueIndex'),
-              direction: DismissDirection.endToStart,
-              background: Container(
-                decoration: BoxDecoration(
-                  color: colorScheme.errorContainer,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                alignment: Alignment.centerRight,
-                padding: const EdgeInsets.only(right: 20),
-                child: Icon(
-                  Icons.delete_outline_rounded,
-                  color: colorScheme.onErrorContainer,
-                ),
-              ),
-              onDismissed: (_) {
-                playback.removeFromQueue(actualQueueIndex);
-                ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                  SnackBar(
-                    content: Text('Removed "${song.title}" from queue'),
-                    duration: const Duration(seconds: 2),
-                    behavior: SnackBarBehavior.floating,
+              return Dismissible(
+                key: ValueKey('queue_${song.id}_$actualQueueIndex'),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  decoration: BoxDecoration(
+                    color: colorScheme.errorContainer,
+                    borderRadius: BorderRadius.circular(14),
                   ),
-                );
-              },
-              child: SongTile(
-                song: song,
-                index: actualQueueIndex,
-                contextQueue: queue,
-              ),
-            );
-          }),
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.only(right: 20),
+                  child: Icon(
+                    Icons.delete_outline_rounded,
+                    color: colorScheme.onErrorContainer,
+                  ),
+                ),
+                onDismissed: (_) {
+                  playback.removeFromQueue(actualQueueIndex);
+                  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                    SnackBar(
+                      content: Text('Removed "${song.title}" from queue'),
+                      duration: const Duration(seconds: 2),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                },
+                child: Row(
+                  children: [
+                    ReorderableDragStartListener(
+                      index: upcomingIndex,
+                      child: SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: Center(
+                          child: Icon(
+                            Icons.drag_handle_rounded,
+                            size: 20,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: SongTile(
+                        song: song,
+                        index: actualQueueIndex,
+                        contextQueue: queue,
+                        badgeLabel: badgeLabel,
+                        badgeHighlighted: isUserQueued,
+                        contentPadding: const EdgeInsets.fromLTRB(0, 2, 4, 2),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
       ],
     );
   }

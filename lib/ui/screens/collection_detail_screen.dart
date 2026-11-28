@@ -16,6 +16,7 @@ import '../../utils/thumbnail_utils.dart';
 class CollectionDetailScreen extends StatefulWidget {
   final String browseId;
   final bool isAlbum;
+  final bool isPodcast;
   final String? title;
   final String? subtitle;
   final String? thumbnailUrl;
@@ -24,6 +25,7 @@ class CollectionDetailScreen extends StatefulWidget {
     super.key,
     required this.browseId,
     required this.isAlbum,
+    this.isPodcast = false,
     this.title,
     this.subtitle,
     this.thumbnailUrl,
@@ -39,6 +41,9 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
   String? _errorMessage;
   AlbumBrowseResult? _album;
   PlaylistBrowseResult? _playlist;
+
+  bool get _isPodcastShow =>
+      widget.isPodcast || widget.browseId.startsWith('MPSP');
 
   Future<void> _openCollectionArtist() async {
     final artistName = _displaySubtitle.trim();
@@ -107,7 +112,22 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
     });
 
     try {
-      if (widget.isAlbum) {
+      if (_isPodcastShow) {
+        final res = await InnerTubeService.browsePodcastShow(widget.browseId);
+        if (mounted) {
+          if (res != null) {
+            setState(() {
+              _playlist = res;
+              _isLoading = false;
+            });
+          } else {
+            setState(() {
+              _errorMessage = 'Could not load podcast details';
+              _isLoading = false;
+            });
+          }
+        }
+      } else if (widget.isAlbum) {
         final res = await InnerTubeService.browseAlbum(widget.browseId);
         if (mounted) {
           if (res != null) {
@@ -152,12 +172,18 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
     if (widget.isAlbum) {
       return _album?.title ?? widget.title ?? 'Album';
     }
+    if (_isPodcastShow) {
+      return _playlist?.title ?? widget.title ?? 'Podcast';
+    }
     return _playlist?.title ?? widget.title ?? 'Playlist';
   }
 
   String get _displaySubtitle {
     if (widget.isAlbum) {
       return _album?.artist ?? widget.subtitle ?? 'Unknown Artist';
+    }
+    if (_isPodcastShow) {
+      return _playlist?.author ?? widget.subtitle ?? 'Podcast';
     }
     return _playlist?.author ?? widget.subtitle ?? 'YouTube Music';
   }
@@ -182,6 +208,9 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
 
   String get _metadataText {
     final count = _songs.length;
+    if (_isPodcastShow) {
+      return count == 1 ? '1 episode' : '$count episodes';
+    }
     final trackStr = count == 1 ? '1 track' : '$count tracks';
     if (widget.isAlbum) {
       final year = _album?.year;
@@ -202,7 +231,9 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          widget.isAlbum ? 'Album' : 'Playlist',
+          _isPodcastShow
+              ? 'Podcast'
+              : (widget.isAlbum ? 'Album' : 'Playlist'),
           style: theme.textTheme.titleMedium?.copyWith(
             fontWeight: FontWeight.bold,
           ),
@@ -312,7 +343,11 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
                         errorWidget: (_, __, ___) => Container(
                           color: colorScheme.surfaceContainerHighest,
                           child: Icon(
-                            widget.isAlbum ? Icons.album : Icons.queue_music,
+                            _isPodcastShow
+                                ? Icons.podcasts_rounded
+                                : (widget.isAlbum
+                                    ? Icons.album
+                                    : Icons.queue_music),
                             size: 64,
                             color: colorScheme.onSurfaceVariant,
                           ),
@@ -321,7 +356,11 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
                     : Container(
                         color: colorScheme.surfaceContainerHighest,
                         child: Icon(
-                          widget.isAlbum ? Icons.album : Icons.queue_music,
+                          _isPodcastShow
+                              ? Icons.podcasts_rounded
+                              : (widget.isAlbum
+                                  ? Icons.album
+                                  : Icons.queue_music),
                           size: 64,
                           color: colorScheme.onSurfaceVariant,
                         ),
@@ -489,7 +528,9 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
               padding: const EdgeInsets.symmetric(vertical: 32.0),
               child: Center(
                 child: Text(
-                  'No tracks available',
+                  _isPodcastShow
+                      ? 'No episodes available'
+                      : 'No tracks available',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: colorScheme.onSurfaceVariant,
                   ),
@@ -500,7 +541,7 @@ class _CollectionDetailScreenState extends State<CollectionDetailScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Text(
-                'Tracks',
+                _isPodcastShow ? 'Episodes' : 'Tracks',
                 style: theme.textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
